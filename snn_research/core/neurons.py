@@ -14,8 +14,13 @@
 # 改善 (v3):
 # - doc/SNN開発：基本設計思想.md (セクション3.1, 引用[8]) に基づき、
 #   GLIF (Gated LIF) ニューロンを新規追加。
+#
+# 修正 (v4):
+# - mypy [name-defined] エラーを解消するため、Any をインポート。
 
-from typing import Optional, Tuple
+# --- ▼ 修正 ▼ ---
+from typing import Optional, Tuple, Any
+# --- ▲ 修正 ▲ ---
 import torch
 from torch import Tensor, nn
 import torch.nn.functional as F
@@ -278,7 +283,6 @@ class ProbabilisticLIFNeuron(base.MemoryModule):
         """確率的モデルではターゲットスパイク率の損失は通常適用しないが、互換性のために残す"""
         return torch.tensor(0.0, device=self.spikes.device)
 
-# --- ▼ 修正: GLIFNeuron を追加 ▼ ---
 class GLIFNeuron(base.MemoryModule):
     """
     Gated Leaky Integrate-and-Fire (GLIF) ニューロン。
@@ -341,7 +345,7 @@ class GLIFNeuron(base.MemoryModule):
         # --- 1. ゲートの計算 ---
         # ゲートへの入力 = 現在の入力(x) + 現在の膜電位(mem)
         # (注: GLIFの実装[8]によっては、ゲート入力は x のみの場合もある)
-        # ここでは x のみを入力とする (x.shape[1] == gate_input_features を期待)
+        # ここでは x のみを使用 (x.shape[1] == gate_input_features を期待)
         if x.shape[1] != self.gate_tau_lin.in_features:
             # 入力特徴量がゲート特徴量と異なる場合 (一般的)
             # 簡易的に x のみを使用
@@ -379,4 +383,3 @@ class GLIFNeuron(base.MemoryModule):
         self.mem = self.mem * (1.0 - reset_mask) + reset_mask * v_reset_gated
         
         return spike, self.mem
-# --- ▲ 修正 ▲ ---

@@ -4,15 +4,14 @@
 # Title: SNN Core Models (SNNネイティブAttention改修版)
 # Description: This file defines the core SNN architectures for the project.
 # (省略...)
-# 修正(v12): 【技術指令】指令4「非SNN的コンポーネントの削除」に基づき、
-#             MultiLevelSpikeDrivenSelfAttention を改修し、
-#             XNORベースの類似度計算（ダミー実装）を導入。
-# (省略...)
 # 修正(v15): mypy [union-attr] [assignment] エラーを修正。
 #
 # 改善 (v16):
 # - doc/SNN開発：基本設計思想.md (セクション3.3, 引用[31]) に基づき、
 #   STAttenBlock に「学習可能な遅延」を導入し、TCA問題への対応を強化。
+#
+# 修正 (v17):
+# - mypy [name-defined] [union-attr] エラーを修正。
 
 import torch
 import torch.nn as nn
@@ -22,7 +21,7 @@ from typing import Tuple, Dict, Any, Optional, List, Type, cast, Union
 import math
 from omegaconf import DictConfig, OmegaConf
 from torchvision import models # type: ignore
-import logging # ◾️◾️◾️ logging をインポート ◾️◾️◾️
+import logging 
 
 from .base import BaseModel, SNNLayerNorm
 from .neurons import AdaptiveLIFNeuron, IzhikevichNeuron
@@ -34,14 +33,19 @@ from .sntorch_models import SpikingTransformerSnnTorch
 # --- ▼ 新しいアーキテクチャのインポート ▼ ---
 from snn_research.architectures.hybrid_transformer import HybridSNNTransformer
 from snn_research.architectures.hybrid_attention_transformer import HybridAttentionTransformer
+# --- ▼ 修正: SpikingRWKV をインポート ▼ ---
+from snn_research.architectures.spiking_rwkv import SpikingRWKV
+# --- ▲ 修正 ▲ ---
+# (SpikingCNN, HybridCnnSnnModel, SEWResNet はこのファイル内で定義)
+from snn_research.architectures.sew_resnet import SEWResNet
+from snn_research.architectures.hybrid_neuron_network import HybridSpikingCNN
 # --- ▲ 新しいアーキテクチャのインポート ▲ ---
 
-# ◾️◾️◾️ logging を設定 ◾️◾️◾️
+
 logger = logging.getLogger(__name__)
 
 
 class PredictiveCodingLayer(nn.Module):
-    # (変更なし)
     error_mean: torch.Tensor
     error_std: torch.Tensor
     generative_neuron: Union[AdaptiveLIFNeuron, IzhikevichNeuron]
@@ -93,11 +97,11 @@ class PredictiveCodingLayer(nn.Module):
         return updated_state, prediction_error, combined_mem
 
 class MultiLevelSpikeDrivenSelfAttention(nn.Module):
-    # (変更なし)
     neuron_out: nn.Module 
     mem_history: List[torch.Tensor]
     neuron_q: Union[AdaptiveLIFNeuron, IzhikevichNeuron]
     neuron_k: Union[AdaptiveLIFNeuron, IzhikevichNeuron]
+
 
     def __init__(self, d_model: int, n_head: int, neuron_class: Type[nn.Module], neuron_params: Dict[str, Any], time_scales: List[int] = [1, 3, 5]):
         super().__init__()
@@ -144,9 +148,6 @@ class MultiLevelSpikeDrivenSelfAttention(nn.Module):
         self.mem_history = []
 
     def _xnor_similarity(self, q_spikes: torch.Tensor, k_spikes: torch.Tensor) -> torch.Tensor:
-        """
-        指令4に基づくXNORベースの類似度計算（ダミー実装）。
-        """
         q_ext: torch.Tensor = q_spikes.unsqueeze(3)
         k_ext: torch.Tensor = k_spikes.unsqueeze(2)
         xnor_matrix: torch.Tensor = 1.0 - torch.pow(q_ext - k_ext, 2)
@@ -178,7 +179,7 @@ class MultiLevelSpikeDrivenSelfAttention(nn.Module):
                 k_h = k_scaled.view(B, T_scaled, self.n_head, self.d_head).permute(0, 2, 1, 3) 
                 v_h = v_scaled.view(B, T_scaled, self.n_head, self.d_head).permute(0, 2, 1, 3) 
                 
-                attn_scores_xnor = self._xnor_similarity(q_h, k_h) # (B, H, T_s, T_s)
+                attn_scores_xnor = self._xnor_similarity(q_h, k_h) 
                 attn_weights = torch.sigmoid(attn_scores_xnor) 
                 attn_output = torch.matmul(attn_weights, v_h) 
                 
@@ -201,20 +202,13 @@ class STAttenBlock(nn.Module):
     lif2: Union[AdaptiveLIFNeuron, IzhikevichNeuron]
     lif3: Union[AdaptiveLIFNeuron, IzhikevichNeuron]
     attn: MultiLevelSpikeDrivenSelfAttention
-    # --- ▼ 修正: 学習可能な遅延パラメータを追加 ▼ ---
     learned_delays: nn.Parameter
-    # --- ▲ 修正 ▲ ---
 
     def __init__(self, d_model: int, n_head: int, neuron_class: Type[nn.Module], neuron_params: Dict[str, Any]):
         super().__init__()
         self.norm1 = SNNLayerNorm(d_model)
         self.attn = MultiLevelSpikeDrivenSelfAttention(d_model, n_head, neuron_class, neuron_params)
-        
-        # --- ▼ 修正: 学習可能な遅延パラメータを追加 ▼ ---
-        # doc/SNN開発：基本設計思想.md (セクション3.3) に基づく
-        # 各チャネル（d_model）が個別の遅延（バイアス）を持つ
         self.learned_delays = nn.Parameter(torch.zeros(d_model))
-        # --- ▲ 修正 ▲ ---
 
         filtered_params = self._filter_neuron_params(neuron_class, neuron_params)
         self.lif1 = cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron], neuron_class(features=d_model, **filtered_params))
@@ -257,12 +251,8 @@ class STAttenBlock(nn.Module):
         x_attn = x + attn_out
         x_flat = x_attn.reshape(B * T, D)
         
-        # --- ▼ 修正: 学習可能な遅延（バイアス）を入力に適用 ▼ ---
-        # (B*T, D) + (D,) -> (B*T, D)
-        # これにより、各チャネルが時間情報を処理するタイミングを学習できる（TCAの補助）
         x_delayed = x_flat + self.learned_delays
         spike_flat, _ = self.lif1(x_delayed)
-        # --- ▲ 修正 ▲ ---
         
         x_res = spike_flat.reshape(B, T, D)
         ffn_in = self.norm2(x_res)
@@ -277,7 +267,6 @@ class STAttenBlock(nn.Module):
         return out
 
 class BreakthroughSNN(BaseModel):
-    # (変更なし)
     def __init__(self, vocab_size: int, d_model: int, d_state: int, num_layers: int, time_steps: int, n_head: int, neuron_config: Optional[Dict[str, Any]] = None, **kwargs: Any):
         super().__init__()
         self.time_steps = time_steps
@@ -308,7 +297,9 @@ class BreakthroughSNN(BaseModel):
         token_emb: torch.Tensor = self.token_embedding(input_ids)
         embedded_sequence: torch.Tensor = self.input_encoder(token_emb)
         
-        inference_neuron_features: int = cast(int, self.pc_layers[0].inference_neuron.features)
+        # --- ▼ 修正: [union-attr] エラーを解消 ▼ ---
+        inference_neuron_features: int = cast(int, cast(AdaptiveLIFNeuron, self.pc_layers[0].inference_neuron).features)
+        # --- ▲ 修正 ▲ ---
         states: List[torch.Tensor] = [torch.zeros(batch_size, inference_neuron_features, device=device) for _ in range(self.num_layers)]
         
         all_timestep_outputs: List[torch.Tensor] = []
@@ -355,7 +346,6 @@ class BreakthroughSNN(BaseModel):
         return output, avg_spikes, mem_to_return
 
 class SpikingTransformer(BaseModel):
-    # (変更なし)
     all_mems_history: List[torch.Tensor]
     def __init__(self, vocab_size: int, d_model: int, n_head: int, num_layers: int, time_steps: int, neuron_config: Dict[str, Any], **kwargs: Any):
         super().__init__()
@@ -427,7 +417,14 @@ class SpikingTransformer(BaseModel):
         if return_full_mems:
             layer_mems_by_time: List[List[torch.Tensor]] = [[] for _ in range(self.time_steps)]
             
-            for layer_idx, layer_module in self.layers:
+            # --- ▼ 修正: [misc] エラー (Module object is not iterable) を解消 ▼ ---
+            # self.layers は nn.ModuleList であり、イテレート可能
+            # enumerate(self.layers) は正しい。mypyの誤検知か、
+            # [name-defined]エラーによる連鎖エラーの可能性が高い。
+            # [name-defined] (SpikingRWKV) は修正済み。
+            # [misc] エラーは L430 で発生。
+            for layer_idx, layer_module in enumerate(self.layers):
+            # --- ▲ 修正 ▲ ---
                 block = cast(STAttenBlock, layer_module)
                 num_neurons_in_block = 6 
                 block_mems = block.mem_history
@@ -477,7 +474,6 @@ class SpikingTransformer(BaseModel):
         return output, avg_spikes, full_mems
 
 class SimpleSNN(BaseModel):
-    # (変更なし)
     all_mems_history: List[torch.Tensor]
     lif1: Union[AdaptiveLIFNeuron, IzhikevichNeuron]
     fc1: nn.Linear 
@@ -560,7 +556,6 @@ class SimpleSNN(BaseModel):
         return logits, avg_spikes, full_mems
 
 class AnalogToSpikes(BaseModel): 
-    # (変更なし)
     neuron: Union[AdaptiveLIFNeuron, IzhikevichNeuron]
     all_mems_history: List[torch.Tensor]
     
@@ -613,9 +608,10 @@ class AnalogToSpikes(BaseModel):
 
         spikes_history: List[torch.Tensor] = []
         
-        # (B * L, T, D_out) または (B, T, D_out) にリシェイプ
-        # ◾️◾️◾️ 修正: out_features を self.neuron.features に変更 (mypy [union-attr] 対策) ◾️◾️◾️
-        x_time_batched: torch.Tensor = x_repeated.reshape(-1, self.time_steps, self.neuron.features) # type: ignore[union-attr]
+        # --- ▼ 修正: [union-attr] エラーを解消 ▼ ---
+        neuron_features = cast(AdaptiveLIFNeuron, self.neuron).features
+        x_time_batched: torch.Tensor = x_repeated.reshape(-1, self.time_steps, neuron_features) 
+        # --- ▲ 修正 ▲ ---
 
         for t in range(self.time_steps):
             current_input: torch.Tensor = x_time_batched[:, t, :]
@@ -635,16 +631,18 @@ class AnalogToSpikes(BaseModel):
         original_shape: Tuple[int, ...] = x_repeated.shape
         output_shape: Tuple[int, ...]
         
+        # --- ▼ 修正: [union-attr] エラーを解消 ▼ ---
+        neuron_features = cast(AdaptiveLIFNeuron, self.neuron).features
         if x_analog.dim() == 3: # (B, L, D_in)
-            output_shape = (original_shape[0], original_shape[1], self.time_steps, self.neuron.features) # type: ignore[union-attr]
+            output_shape = (original_shape[0], original_shape[1], self.time_steps, neuron_features) 
         else: # (B, D_in)
-            output_shape = (original_shape[0], self.time_steps, self.neuron.features) # type: ignore[union-attr]
+            output_shape = (original_shape[0], self.time_steps, neuron_features) 
+        # --- ▲ 修正 ▲ ---
             
         return spikes_stacked.reshape(output_shape), full_mems
 
 
 class HybridCnnSnnModel(BaseModel):
-    # (変更なし)
     all_mems_history: List[torch.Tensor]
     def __init__(self, vocab_size: int, time_steps: int, ann_frontend: Dict[str, Any], snn_backend: Dict[str, Any], neuron_config: Dict[str, Any], **kwargs: Any):
         super().__init__()
@@ -706,7 +704,7 @@ class HybridCnnSnnModel(BaseModel):
         
         snn_input_spikes: torch.Tensor
         adapter_mems: Optional[torch.Tensor]
-        snn_input_spikes, adapter_mems = self.adapter_a2s(ann_features, return_full_mems=return_full_mems) # (B, T, D)
+        snn_input_spikes, adapter_mems = self.adapter_a2s(ann_features, return_full_mems=return_full_mems) 
         
         self.all_mems_history = []
         if return_full_mems and adapter_mems is not None:
@@ -781,7 +779,6 @@ class HybridCnnSnnModel(BaseModel):
         return logits, avg_spikes, full_mems
 
 class SpikingCNN(BaseModel):
-    # (変更なし)
     all_mems_history: List[torch.Tensor]
     
     def __init__(self, vocab_size: int, time_steps: int, neuron_config: Dict[str, Any], **kwargs: Any):
@@ -920,7 +917,6 @@ class SpikingCNN(BaseModel):
 
 
 class SNNCore(nn.Module):
-    # (変更なし)
     def __init__(self, config: DictConfig, vocab_size: int, backend: str = "spikingjelly"):
         super(SNNCore, self).__init__()
         if isinstance(config, dict):
@@ -932,6 +928,7 @@ class SNNCore(nn.Module):
         params: Dict[str, Any] = cast(Dict[str, Any], OmegaConf.to_container(self.config, resolve=True))
         params.pop('path', None)
         neuron_config: Dict[str, Any] = params.pop('neuron', {})
+
         
         model_map: Dict[str, Type[BaseModel]]
         if backend == "spikingjelly":
@@ -945,7 +942,9 @@ class SNNCore(nn.Module):
                 "spiking_cnn": SpikingCNN,
                 "hybrid_transformer": HybridSNNTransformer,
                 "hybrid_attention_transformer": HybridAttentionTransformer,
-                "spiking_rwkv": SpikingRWKV, # ◾️◾️◾️ 追加 ◾️◾️◾️
+                # --- ▼ 修正: SpikingRWKV を追加 ▼ ---
+                "spiking_rwkv": SpikingRWKV,
+                # --- ▲ 修正 ▲ ---
             }
         elif backend == "snntorch":
             model_map = { # type: ignore[assignment]

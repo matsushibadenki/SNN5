@@ -1,8 +1,0 @@
-python app/main.py \
-    --config configs/base_config.yaml \
-    --ai_tech_model_config configs/models/medium.yaml \
-    --ai_tech_model_path runs/specialists/最新のai技術/best_model.pth \
-    --summarization_model_config configs/models/medium.yaml \
-    --summarization_model_path runs/specialists/文章要約/best_model.pth \
-    --cifar_model_config configs/cifar10_spikingcnn_config.yaml \
-    --cifar_model_path runs/specialists/cifar10_distilled_from_resnet18/best_model.pth

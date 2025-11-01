@@ -1,7 +1,7 @@
 # ファイルパス: snn_research/core/neurons.py
 # (修正)
 # 修正: 論文「Dynamic Threshold and Multi-level Attention」に基づき、
-#       AdaptiveLIFNeuronに動的発火閾値メカニズムを導入。
+#       AdaptiveLIFNeuronに動的発火閾値メカナイズムを導入。
 # 改善(snn_4_ann_parity_plan):
 # - IzhikevichNeuronにset_statefulメソッドを追加し、AdaptiveLIFNeuronとの
 #   インターフェース互換性を確保。これにより、SpikingTransformerなどで

@@ -18,23 +18,28 @@
 # - プルーニングを適用し、最適化されたモデルのコンパイルをテストする機能を追加。
 # 修正: CausalTraceCreditAssignment -> CausalTraceCreditAssignmentEnhanced
 # 修正: CausalTraceCreditAssignmentEnhancedV2 に対応
+#
+# 修正 (v7):
+# - mypy [attr-defined] エラーを解消するため、apply_magnitude_pruning を
+#   apply_sbc_pruning に変更し、ダミーの引数を追加。
 
 import sys
 from pathlib import Path
 import os
 import torch
+import torch.nn as nn # ◾️◾️◾️ 追加 ◾️◾️◾️
+from torch.utils.data import DataLoader, TensorDataset # ◾️◾️◾️ 追加 ◾️◾️◾️
 import yaml
 import copy
 
 sys.path.append(str(Path(__file__).resolve().parent))
 
 from snn_research.bio_models.simple_network import BioSNN
-# --- ▼ 修正 ▼ ---
-# V2 クラスをインポート
 from snn_research.learning_rules.causal_trace import CausalTraceCreditAssignmentEnhancedV2
-# --- ▲ 修正 ▲ ---
 from snn_research.hardware.compiler import NeuromorphicCompiler
-from snn_research.training.pruning import apply_magnitude_pruning
+# --- ▼ 修正 ▼ ---
+from snn_research.training.pruning import apply_sbc_pruning # apply_magnitude_pruning から変更
+# --- ▲ 修正 ▲ ---
 
 def main():
     """
@@ -44,14 +49,10 @@ def main():
     print("--- ニューロモーフィック・コンパイラ テスト開始 ---")
 
     learning_rate = 0.005
-    # --- ▼ 修正 ▼ ---
-    # V2 クラスを使用
     learning_rule = CausalTraceCreditAssignmentEnhancedV2(
         learning_rate=learning_rate, a_plus=1.0, a_minus=1.0,
         tau_trace=20.0, tau_eligibility=50.0
-        # V2 の追加パラメータも必要なら指定
     )
-    # --- ▲ 修正 ▲ ---
     model = BioSNN(
         layer_sizes=[10, 20, 5],
         neuron_params={'tau_mem': 10.0, 'v_threshold': 1.0, 'v_reset': 0.0, 'v_rest': 0.0},
@@ -62,7 +63,21 @@ def main():
     # (プルーニング、コンパイル、検証のロジックは変更なし)
     original_connections = sum(torch.sum(w > 0).item() for w in model.weights)
     pruning_amount = 0.3
-    pruned_model = apply_magnitude_pruning(copy.deepcopy(model), amount=pruning_amount)
+    
+    # --- ▼ 修正: apply_sbc_pruning にダミーの引数を追加 ▼ ---
+    # SBCのヘッセ行列計算（スタブ）に必要なダミーのデータローダーと損失関数
+    dummy_dataset = TensorDataset(torch.randn(10, 10), torch.randn(10, 5))
+    dummy_loader = DataLoader(dummy_dataset, batch_size=2)
+    dummy_loss = nn.MSELoss() # ダミーの損失関数
+
+    pruned_model = apply_sbc_pruning(
+        copy.deepcopy(model), 
+        amount=pruning_amount,
+        dataloader_stub=dummy_loader, # ダミー引数を追加
+        loss_fn_stub=dummy_loss       # ダミー引数を追加
+    )
+    # --- ▲ 修正 ▲ ---
+    
     pruned_connections = sum(torch.sum(w > 0).item() for w in pruned_model.weights)
     print(f"🔪 モデルをプルーニングしました: {original_connections} -> {pruned_connections} connections")
     assert pruned_connections < original_connections
@@ -79,10 +94,7 @@ def main():
             config = yaml.safe_load(f)
         assert "learning_rule_config" in config
         lr_config = config["learning_rule_config"]
-        # --- ▼ 修正 ▼ ---
-        # V2 クラス名で検証
         assert lr_config["rule_name"] == "CausalTraceCreditAssignmentEnhancedV2", "学習則の名前が一致しません。"
-        # --- ▲ 修正 ▲ ---
         assert "parameters" in lr_config
         params = lr_config["parameters"]
         assert "learning_rate" in params and abs(params["learning_rate"] - learning_rate) < 1e-6

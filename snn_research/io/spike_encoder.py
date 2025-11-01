@@ -13,11 +13,16 @@
 # 改善 (v2):
 # - doc/SNN開発：基本設計思想.md (セクション4.1, 引用[70]) に基づき、
 #   学習可能な(微分可能な)TTFSエンコーダ `DifferentiableTTFSEncoder` を追加。
+#
+# 修正 (v3): mypy [name-defined] エラーを解消するため、surrogate をインポート。
 
 import torch
-import torch.nn as nn # ◾️◾️◾️ 追加 ◾️◾️◾️
+import torch.nn as nn 
 from typing import Dict, Any, Optional
 import math 
+# --- ▼ 修正 ▼ ---
+from spikingjelly.activation_based import surrogate # type: ignore
+# --- ▲ 修正 ▲ ---
 
 class SpikeEncoder:
     """
@@ -206,7 +211,11 @@ class DifferentiableTTFSEncoder(nn.Module):
         
         # surrogate.fast_sigmoid を使う例 (代理勾配)
         # これにより、forwardでは 0/1 に近い値 (Heaviside)、backwardでは勾配が流れる
+        
+        # --- ▼ 修正 ▼ ---
+        # surrogate が未定義だったため修正
         spikes = surrogate.fast_sigmoid(self.duration - 1 - distance * self.sensitivity.view(1, -1, 1)) # 仮の実装
+        # --- ▲ 修正 ▲ ---
 
         return spikes.permute(0, 2, 1) # (B, T, N) に形状を合わせる
 # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑追加終わり◾️◾️◾◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️

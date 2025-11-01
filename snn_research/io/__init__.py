@@ -2,17 +2,18 @@
 # (更新)
 
 from .sensory_receptor import SensoryReceptor
-from .spike_encoder import SpikeEncoder
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓追加開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+# --- ▼ 修正 ▼ ---
+from .spike_encoder import SpikeEncoder, DifferentiableTTFSEncoder
 from .spike_decoder import SpikeDecoder
 from .actuator import Actuator
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑追加終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+# --- ▲ 修正 ▲ ---
 
 __all__ = [
     "SensoryReceptor",
     "SpikeEncoder",
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓追加開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+    # --- ▼ 修正 ▼ ---
+    "DifferentiableTTFSEncoder",
     "SpikeDecoder",
     "Actuator"
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑追加終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️
+    # --- ▲ 修正 ▲ ---
 ]

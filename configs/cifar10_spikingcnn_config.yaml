@@ -1,0 +1,20 @@
+# matsushibadenki/snn5/configs/cifar10_spikingcnn_config.yaml
+# SpikingCNN (CIFAR-10) モデルアーキテクチャ設定
+#
+# 修正: size mismatch エラーを解決するため、
+#       num_classes: 10 を明示的に定義する。
+
+path: "spiking_cnn_cifar10.pth"
+architecture_type: "spiking_cnn"
+
+# --- ▼ 修正: num_classes を追加 ▼ ---
+num_classes: 10 # CIFAR-10 は 10 クラス
+# --- ▲ 修正 ▲ ---
+
+time_steps: 32
+
+neuron:
+  type: "lif"
+  # (必要に応じて他のニューロンパラメータを追加)
+
+# (必要に応じて他のレイヤー設定を追加)

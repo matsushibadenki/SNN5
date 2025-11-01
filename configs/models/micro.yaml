@@ -1,0 +1,14 @@
+# ファイルパス: configs/models/micro.yaml
+# Title: スモークテスト用マイクロモデル設定
+# Description: 動作確認を最速で行うための極小モデルアーキテクチャ。
+
+model:
+  path: "breakthrough_snn_model_micro.pth"
+  architecture_type: "predictive_coding"
+  d_model: 8
+  d_state: 4
+  num_layers: 1
+  time_steps: 4
+  n_head: 1
+  neuron:
+    type: "lif"

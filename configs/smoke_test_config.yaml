@@ -1,0 +1,94 @@
+# ファイルパス: configs/smoke_test_config.yaml
+# Title: スモークテスト用基本設定
+# Description: 全機能の動作確認を高速に行うための設定ファイル。
+
+# 共通設定
+seed: 42
+device: "auto"
+
+# データ設定（極小）
+data:
+  path: "data/smoke_test_data.jsonl"
+  format: "simple_text"
+  split_ratio: 0.5 # データを少なくするため
+  tokenizer_name: "gpt2"
+
+# 学習パラメータ設定（極小）
+training:
+  paradigm: "gradient_based"
+  epochs: 1 # 1エポックだけ実行
+  batch_size: 2 # バッチサイズも小さく
+  eval_interval: 1
+  log_interval: 1
+  log_dir: "runs/smoke_tests"
+
+  # 各パラダイムの設定（内容はbase_config.yamlと同じで良い）
+  gradient_based:
+    type: "standard"
+    learning_rate: 0.001
+    use_scheduler: false
+    grad_clip_norm: 1.0
+    warmup_epochs: 1
+    use_amp: false
+    loss:
+      ce_weight: 1.0
+      spike_reg_weight: 0.01
+      mem_reg_weight: 0.0
+    distillation:
+      teacher_model: "gpt2"
+      loss:
+        ce_weight: 0.3
+        distill_weight: 0.7
+        spike_reg_weight: 0.01
+        temperature: 2.0
+        mem_reg_weight: 0.0
+
+  biologically_plausible:
+    learning_rule: "CAUSAL_TRACE"
+    adaptive_causal_sparsification:
+      enabled: false
+      contribution_threshold: 0.01
+    particle_filter:
+      enabled: false
+      num_particles: 5
+      noise_std: 0.05
+    neuron:
+      tau_mem: 10.0
+      v_threshold: 1.0
+      v_reset: 0.0
+      v_rest: 0.0
+    stdp:
+      learning_rate: 0.005
+      a_plus: 1.0
+      a_minus: 1.0
+      tau_trace: 20.0
+    reward_modulated_stdp:
+      tau_eligibility: 100.0
+    causal_trace:
+      tau_eligibility: 150.0
+
+  self_supervised:
+    learning_rate: 0.0008
+    loss:
+      prediction_weight: 1.0
+      spike_reg_weight: 0.01
+
+  physics_informed:
+    learning_rate: 0.0005
+    use_scheduler: true
+    grad_clip_norm: 1.0
+    warmup_epochs: 1
+    use_amp: true
+    loss:
+      ce_weight: 1.0
+      spike_reg_weight: 0.01
+      mem_smoothness_weight: 0.001
+
+  probabilistic_ensemble:
+    learning_rate: 0.0007
+    loss:
+      ce_weight: 1.0
+      variance_reg_weight: 0.1
+
+app:
+  max_len: 8

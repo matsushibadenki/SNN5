@@ -1,0 +1,14 @@
+# matsushibadenki/snn4/configs/models/large.yaml
+# 新しいSpiking Transformer用の大規模モデル設定
+
+model:
+  path: "spiking_transformer_large.pth"
+  architecture_type: "spiking_transformer" # "predictive_coding" または "spiking_transformer"
+  d_model: 512
+  d_state: 256  # SpikingTransformerでは直接使用されないが互換性のために残す
+  num_layers: 12
+  time_steps: 32
+  n_head: 8
+  # ニューロン設定 (SpikingTransformer内のLIFニューロンに適用される)
+  neuron:
+    type: "lif"

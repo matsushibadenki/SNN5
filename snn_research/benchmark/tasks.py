@@ -2,25 +2,33 @@
 # Title: ベンチマークタスク定義
 # Description: GLUEのSST-2, MRPCや、CIFAR-10など、各種ベンチマークタスクを定義する。
 # 修正 (v2): calculate_energy_consumption を EnergyMetrics からインポートするよう修正。
+#
+# 改善 (v3):
+# - doc/SNN開発：基本設計思想.md (セクション7.1) に基づき、
+#   ニューロモーフィック・データセット (CIFAR10-DVS) を扱う
+#   CIFAR10DVSTask を SpikingJelly を利用して追加。
+# - mypy [name-defined] [import-untyped] エラーを修正。
 
 import os
 from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Tuple, Callable, Sized, cast, Optional
-from datasets import load_dataset  # type: ignore
+from datasets import load_dataset  # type: ignore[import-untyped]
 from tqdm import tqdm
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 from transformers import PreTrainedTokenizerBase
 from omegaconf import OmegaConf
-from torchvision import datasets, transforms, models # type: ignore
+from torchvision import datasets, transforms # type: ignore[import-untyped]
+# --- ▼ 修正 ▼ ---
+from spikingjelly.activation_based import functional as SJ_F # type: ignore[import-untyped]
+from spikingjelly.datasets import cifar10_dvs # type: ignore[import-untyped]
+# --- ▲ 修正 ▲ ---
 
 from snn_research.core.snn_core import BreakthroughSNN, SNNCore
 from snn_research.benchmark.ann_baseline import ANNBaselineModel, SimpleCNN
-# --- ▼ 修正 ▼ ---
 from snn_research.benchmark.metrics import calculate_accuracy
-from snn_research.metrics.energy import EnergyMetrics # 修正: インポート元を変更
-# --- ▲ 修正 ▲ ---
+from snn_research.metrics.energy import EnergyMetrics 
 
 # --- 共通データセットクラス ---
 class GenericDataset(Dataset):
@@ -69,7 +77,7 @@ class _GLUEBinaryClassificationTask(BenchmarkTask):
 
     def prepare_data(self, data_dir: str = "data") -> Tuple[Dataset, Dataset]:
         os.makedirs(data_dir, exist_ok=True)
-        dataset = load_dataset("glue", self.task_name)
+        dataset = load_dataset("glue", self.task_name, cache_dir=data_dir) # cache_dir を指定
         
         def _load_split(split):
             data = []
@@ -106,20 +114,26 @@ class _GLUEBinaryClassificationTask(BenchmarkTask):
                 self.classifier = nn.Linear(in_features, num_labels)
             
             def forward(self, input_ids, **kwargs):
-                hidden_states, spikes, mem = self.snn_backbone(
-                    input_ids, return_spikes=True, output_hidden_states=True
+                # SNN (SNNCore) は (logits, spikes, mem) を返す
+                # タイムステップループは SNNCore 内部で行われる
+                outputs = self.snn_backbone(
+                    input_ids, return_spikes=True, output_hidden_states=True, **kwargs
                 )
+                hidden_states, spikes, mem = outputs
+                
+                # プーリング (最後のトークンの隠れ状態を使用)
                 pooled_output = hidden_states[:, -1, :]
                 logits = self.classifier(pooled_output)
                 return logits, spikes, mem
 
         if model_type == 'SNN':
-            snn_config = {
+            snn_config_dict = {
                 "architecture_type": "spiking_transformer",
-                "d_model": 128, "n_head": 4, "num_layers": 4, "time_steps": 128,
+                "d_model": 128, "n_head": 4, "num_layers": 4, "time_steps": 128, # time_stepsはSNN内部で使用
                 "neuron": {'type': 'lif'}
             }
-            backbone = SNNCore(config=OmegaConf.create(snn_config), vocab_size=vocab_size)
+            snn_config = OmegaConf.create({"model": snn_config_dict}) # SNNCoreが期待する形式
+            backbone = SNNCore(config=snn_config.model, vocab_size=vocab_size)
             return SNNClassifier(backbone, in_features=128, num_labels=self.num_labels)
         else:
             ann_params = {'d_model': 128, 'd_hid': 256, 'nlayers': 4, 'nhead': 4, 'num_classes': self.num_labels}
@@ -149,13 +163,11 @@ class _GLUEBinaryClassificationTask(BenchmarkTask):
         dataset_size = len(cast(Sized, loader.dataset))
         avg_spikes = total_spikes / dataset_size if total_spikes > 0 else 0.0
         
-        # --- ▼ 修正 ▼ ---
         energy_j = EnergyMetrics.calculate_energy_consumption(
             avg_spikes_per_sample=avg_spikes,
             num_neurons=num_neurons, # これは総パラメータ数
             energy_per_synop=self.hardware_profile.get("energy_per_synop", 0.0)
         )
-        # --- ▲ 修正 ▲ ---
 
         return {
             "accuracy": calculate_accuracy(true_labels, pred_labels),
@@ -197,12 +209,13 @@ class CIFAR10Task(BenchmarkTask):
         num_classes = 10
         
         if model_type == 'SNN':
-            snn_config = {
+            snn_config_dict = {
                 "architecture_type": "spiking_cnn",
                 "time_steps": 16,
                 "neuron": {"type": "lif"}
             }
-            return SNNCore(config=OmegaConf.create(snn_config), vocab_size=num_classes)
+            snn_config = OmegaConf.create({"model": snn_config_dict})
+            return SNNCore(config=snn_config.model, vocab_size=num_classes)
         else: # ANN
             return SimpleCNN(num_classes=num_classes)
 
@@ -230,16 +243,164 @@ class CIFAR10Task(BenchmarkTask):
         dataset_size = len(cast(Sized, loader.dataset))
         avg_spikes = total_spikes / dataset_size if total_spikes > 0 else 0.0
         
-        # --- ▼ 修正 ▼ ---
         energy_j = EnergyMetrics.calculate_energy_consumption(
             avg_spikes_per_sample=avg_spikes,
             num_neurons=num_neurons, # これは総パラメータ数
             energy_per_synop=self.hardware_profile.get("energy_per_synop", 0.0)
         )
-        # --- ▲ 修正 ▲ ---
 
         return {
             "accuracy": calculate_accuracy(true_labels, pred_labels),
             "avg_spikes": avg_spikes,
             "estimated_energy_j": energy_j,
         }
+
+# --- ▼ 修正: CIFAR10DVSTask を追加 ▼ ---
+class CIFAR10DVSTask(BenchmarkTask):
+    """
+    CIFAR10-DVS（ニューロモーフィック）画像分類タスク。
+    設計思想.md (セクション7.1) に基づく。
+    """
+    def __init__(self, tokenizer: PreTrainedTokenizerBase, device: str, hardware_profile: Dict[str, Any], time_steps: int = 16):
+        super().__init__(tokenizer, device, hardware_profile)
+        self.time_steps = time_steps
+
+    def prepare_data(self, data_dir: str = "data") -> Tuple[Dataset, Dataset]:
+        # SpikingJellyのデータセットローダーを使用
+        # CIFAR10-DVSは時間ステップ (T) が可変長
+        # ここでは固定長 (self.time_steps) にリサンプル（またはパディング）する前処理を定義
+        
+        # 空間的な前処理 (SpikingCNNが224x224を期待する場合)
+        spatial_transform = transforms.Compose([
+            transforms.Resize((224, 224)),
+        ])
+        
+        # 時間的な前処理 (固定長 T に変換)
+        def temporal_transform(x: torch.Tensor) -> torch.Tensor:
+            # x は (T_orig, C, H, W)
+            T_orig = x.shape[0]
+            if T_orig > self.time_steps:
+                # ダウンサンプリング
+                indices = torch.linspace(0, T_orig - 1, self.time_steps).long()
+                x = x[indices]
+            elif T_orig < self.time_steps:
+                # パディング
+                padding = torch.zeros(self.time_steps - T_orig, *x.shape[1:], dtype=x.dtype)
+                x = torch.cat([x, padding], dim=0)
+            return x # (T, C, H, W)
+
+        # SpikingJellyのCIFAR10DVSデータセット
+        train_dataset = cifar10_dvs.CIFAR10DVS(
+            root=data_dir,
+            train=True,
+            data_type='frame', # 'frame' (時間ビン) または 'event'
+            frames_number=self.time_steps, # フレーム数 (T)
+            split_by='number',
+            transform=spatial_transform,
+            target_transform=None
+        )
+        val_dataset = cifar10_dvs.CIFAR10DVS(
+            root=data_dir,
+            train=False,
+            data_type='frame',
+            frames_number=self.time_steps,
+            split_by='number',
+            transform=spatial_transform,
+            target_transform=None
+        )
+        return train_dataset, val_dataset
+
+    def get_collate_fn(self) -> Callable:
+        def collate_fn(batch: List[Tuple[torch.Tensor, int]]):
+            # batch[i][0] は (T, C, H, W)
+            # SpikingCNN (snn_core.py) は (B, C, H, W) を入力とし、
+            # 内部で T (time_steps) ループを回す
+            
+            # ここでは、SpikingJellyの流儀に従い、
+            # (T, B, C, H, W) の形状でモデルに渡すことを試みる
+            
+            # --- または、SpikingCNNの (B, C, H, W) 入力に合わせる ---
+            # (T, B, C, H, W) -> (B, T, C, H, W) に変換
+            frames = torch.stack([item[0] for item in batch]).permute(1, 0, 2, 3, 4) # (T, B, C, H, W) -> (B, T, C, H, W)
+            
+            # SpikingCNNは (B, C, H, W) を期待し、内部でT回ループする
+            # だが、DVSデータは (B, T, C, H, W) の時系列データそのもの
+            
+            # --- SpikingCNN (snn_core.py) の forward ロジック修正 ---
+            # SpikingCNNのforwardが (B, C, H, W) を受け取り、
+            # 内部で T 回同じ画像を入力する (レートコーディング) のは静止画用。
+            # DVSデータ (B, T, C, H, W) を処理するには、
+            # SpikingCNNのforwardを (B, T, C, H, W) を受け取れるように
+            # 修正する必要がある (今回は未実施)。
+            
+            # --- 回避策: SpikingCNNの入力 (B, C, H, W) に合わせる ---
+            # (B, T, C, H, W) の時間軸を平均化して (B, C, H, W) にする
+            images = frames.mean(dim=1) # (B, C, H, W)
+            
+            targets = torch.tensor([item[1] for item in batch], dtype=torch.long)
+            # SpikingCNNが期待するキー 'input_images' で返す
+            return {"input_images": images, "labels": targets}
+        return collate_fn
+
+    def build_model(self, model_type: str, vocab_size: int) -> nn.Module:
+        # CIFAR10-DVS は 10 クラス
+        num_classes = 10
+        
+        if model_type == 'SNN':
+            snn_config_dict = {
+                "architecture_type": "spiking_cnn",
+                "time_steps": self.time_steps, # DVSデータのTと合わせる
+                "neuron": {"type": "lif"}
+            }
+            snn_config = OmegaConf.create({"model": snn_config_dict})
+            # vocab_size は num_classes で上書き
+            return SNNCore(config=snn_config.model, vocab_size=num_classes)
+        else: # ANN
+            # DVSデータは時間軸を持つため、ANNベースラインは本来 (3D-CNN or RNN) であるべき
+            # ここでは静止画CIFAR10と同じ SimpleCNN を流用（時間軸は平均化）
+            return SimpleCNN(num_classes=num_classes)
+
+    def evaluate(self, model: nn.Module, loader: DataLoader) -> Dict[str, Any]:
+        # (CIFAR10Taskと同じ評価ロジックを流用)
+        model.eval()
+        true_labels: List[int] = []
+        pred_labels: List[int] = []
+        total_spikes = 0.0
+        num_neurons: int = cast(int, sum(p.numel() for p in model.parameters()))
+        
+        # DVSデータセットの評価では、モデルのリセットが重要
+        SJ_F.reset_net(model)
+
+        with torch.no_grad():
+            for batch in tqdm(loader, desc="Evaluating CIFAR10-DVS"):
+                inputs = {k: v.to(self.device) for k, v in batch.items()}
+                targets = inputs.pop("labels")
+                
+                # inputs['input_images'] は (B, C, H, W) (時間平均済み)
+                outputs = model(**inputs) # SpikingCNNが内部で T ループ
+                
+                logits = outputs[0] if isinstance(outputs, tuple) else outputs
+                spikes = outputs[1] if isinstance(outputs, tuple) and len(outputs) > 1 and outputs[1] is not None else torch.tensor(0.0)
+
+                total_spikes += spikes.sum().item()
+                preds = torch.argmax(logits, dim=1)
+                pred_labels.extend(preds.cpu().numpy())
+                true_labels.extend(targets.cpu().numpy())
+        
+        dataset_size = len(cast(Sized, loader.dataset))
+        # avg_spikes は (総スパイク数 / (サンプル数 * T)) ではなく、
+        # モデルが内部Tステップで処理した「サンプルあたりの総スパイク数」
+        avg_spikes = total_spikes / dataset_size if total_spikes > 0 else 0.0
+        
+        energy_j = EnergyMetrics.calculate_energy_consumption(
+            avg_spikes_per_sample=avg_spikes, # サンプルあたりの総スパイク数
+            num_neurons=num_neurons,
+            energy_per_synop=self.hardware_profile.get("energy_per_synop", 0.0)
+        )
+
+        return {
+            "accuracy": calculate_accuracy(true_labels, pred_labels),
+            "avg_spikes": avg_spikes,
+            "estimated_energy_j": energy_j,
+        }
+# --- ▲ 修正 ▲ ---

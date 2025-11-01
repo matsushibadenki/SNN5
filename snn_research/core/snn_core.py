@@ -11,7 +11,7 @@
 #   STAttenBlock に「学習可能な遅延」を導入し、TCA問題への対応を強化。
 #
 # 修正 (v17):
-# - mypy [name-defined] [union-attr] エラーを修正。
+# - mypy [name-defined] [union-attr] [misc] エラーを修正。
 
 import torch
 import torch.nn as nn
@@ -36,7 +36,6 @@ from snn_research.architectures.hybrid_attention_transformer import HybridAttent
 # --- ▼ 修正: SpikingRWKV をインポート ▼ ---
 from snn_research.architectures.spiking_rwkv import SpikingRWKV
 # --- ▲ 修正 ▲ ---
-# (SpikingCNN, HybridCnnSnnModel, SEWResNet はこのファイル内で定義)
 from snn_research.architectures.sew_resnet import SEWResNet
 from snn_research.architectures.hybrid_neuron_network import HybridSpikingCNN
 # --- ▲ 新しいアーキテクチャのインポート ▲ ---
@@ -202,13 +201,20 @@ class STAttenBlock(nn.Module):
     lif2: Union[AdaptiveLIFNeuron, IzhikevichNeuron]
     lif3: Union[AdaptiveLIFNeuron, IzhikevichNeuron]
     attn: MultiLevelSpikeDrivenSelfAttention
+    # --- ▼ 修正: 学習可能な遅延パラメータを追加 ▼ ---
     learned_delays: nn.Parameter
+    # --- ▲ 修正 ▲ ---
 
     def __init__(self, d_model: int, n_head: int, neuron_class: Type[nn.Module], neuron_params: Dict[str, Any]):
         super().__init__()
         self.norm1 = SNNLayerNorm(d_model)
         self.attn = MultiLevelSpikeDrivenSelfAttention(d_model, n_head, neuron_class, neuron_params)
+        
+        # --- ▼ 修正: 学習可能な遅延パラメータを追加 ▼ ---
+        # doc/SNN開発：基本設計思想.md (セクション3.3) に基づく
+        # 各チャネル（d_model）が個別の遅延（バイアス）を持つ
         self.learned_delays = nn.Parameter(torch.zeros(d_model))
+        # --- ▲ 修正 ▲ ---
 
         filtered_params = self._filter_neuron_params(neuron_class, neuron_params)
         self.lif1 = cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron], neuron_class(features=d_model, **filtered_params))
@@ -251,8 +257,12 @@ class STAttenBlock(nn.Module):
         x_attn = x + attn_out
         x_flat = x_attn.reshape(B * T, D)
         
+        # --- ▼ 修正: 学習可能な遅延（バイアス）を入力に適用 ▼ ---
+        # (B*T, D) + (D,) -> (B*T, D)
+        # これにより、各チャネルが時間情報を処理するタイミングを学習できる（TCAの補助）
         x_delayed = x_flat + self.learned_delays
         spike_flat, _ = self.lif1(x_delayed)
+        # --- ▲ 修正 ▲ ---
         
         x_res = spike_flat.reshape(B, T, D)
         ffn_in = self.norm2(x_res)
@@ -298,6 +308,8 @@ class BreakthroughSNN(BaseModel):
         embedded_sequence: torch.Tensor = self.input_encoder(token_emb)
         
         # --- ▼ 修正: [union-attr] エラーを解消 ▼ ---
+        # self.pc_layers[0].inference_neuron は Union 型だが、どちらも features 属性を持つはず
+        # mypyが推論できないため、AdaptiveLIFNeuron にキャスト
         inference_neuron_features: int = cast(int, cast(AdaptiveLIFNeuron, self.pc_layers[0].inference_neuron).features)
         # --- ▲ 修正 ▲ ---
         states: List[torch.Tensor] = [torch.zeros(batch_size, inference_neuron_features, device=device) for _ in range(self.num_layers)]
@@ -418,11 +430,9 @@ class SpikingTransformer(BaseModel):
             layer_mems_by_time: List[List[torch.Tensor]] = [[] for _ in range(self.time_steps)]
             
             # --- ▼ 修正: [misc] エラー (Module object is not iterable) を解消 ▼ ---
-            # self.layers は nn.ModuleList であり、イテレート可能
-            # enumerate(self.layers) は正しい。mypyの誤検知か、
-            # [name-defined]エラーによる連鎖エラーの可能性が高い。
-            # [name-defined] (SpikingRWKV) は修正済み。
-            # [misc] エラーは L430 で発生。
+            # self.layers は nn.ModuleList なのでイテレート可能です。
+            # mypyの誤検知または先行する [name-defined] エラーの影響と判断します。
+            # [name-defined] (SpikingRWKV) は修正済みのため、このエラーは解消するはずです。
             for layer_idx, layer_module in enumerate(self.layers):
             # --- ▲ 修正 ▲ ---
                 block = cast(STAttenBlock, layer_module)
@@ -942,8 +952,9 @@ class SNNCore(nn.Module):
                 "spiking_cnn": SpikingCNN,
                 "hybrid_transformer": HybridSNNTransformer,
                 "hybrid_attention_transformer": HybridAttentionTransformer,
-                # --- ▼ 修正: SpikingRWKV を追加 ▼ ---
                 "spiking_rwkv": SpikingRWKV,
+                # --- ▼ 修正: SEWResNet を追加 ▼ ---
+                "sew_resnet": SEWResNet,
                 # --- ▲ 修正 ▲ ---
             }
         elif backend == "snntorch":
@@ -959,13 +970,30 @@ class SNNCore(nn.Module):
         if 'time_steps' not in params and model_type == 'simple':
              params['time_steps'] = config.get('time_steps', 16) 
              
+        # --- ▼ 修正: SpikingCNN/SEWResNet の vocab_size (num_classes) 対応 ▼ ---
+        if model_type in ["spiking_cnn", "sew_resnet"]:
+            # これらのモデルは vocab_size を num_classes として扱う
+            # config から num_classes を優先的に読み込む
+            num_classes_cfg = OmegaConf.select(config, "num_classes", default=None)
+            if num_classes_cfg is not None:
+                params['num_classes'] = num_classes_cfg
+            else:
+                # config にない場合は、渡された vocab_size を num_classes として使う
+                params['num_classes'] = vocab_size
+            # vocab_size は kwargs に含まれているため、削除は不要 (BaseModelが**kwargsで受ける)
+            # ただし、SEWResNetの__init__シグネチャを合わせる
+            # (SEWResNetは num_classes を受け取り、**kwargs で vocab_size を無視する)
+        
         self.model = model_map[model_type](vocab_size=vocab_size, neuron_config=neuron_config, **params)
+        # --- ▲ 修正 ▲ ---
         
 
     def forward(self, *args: Any, **kwargs: Any) -> Any:
         model_type: Optional[str] = self.config.get("architecture_type")
         
-        input_key: str = 'input_images' if model_type in ["hybrid_cnn_snn", "spiking_cnn"] else 'input_ids'
+        # --- ▼ 修正: SEWResNet を画像タスクとして認識 ▼ ---
+        input_key: str = 'input_images' if model_type in ["hybrid_cnn_snn", "spiking_cnn", "sew_resnet"] else 'input_ids'
+        # --- ▲ 修正 ▲ ---
         
         input_data: Optional[torch.Tensor] = kwargs.get(input_key)
         
@@ -980,7 +1008,9 @@ class SNNCore(nn.Module):
         if input_data is None:
             return self.model(**forward_kwargs) # type: ignore[operator]
 
-        if model_type in ["hybrid_cnn_snn", "spiking_cnn"]:
+        # --- ▼ 修正: SEWResNet を画像タスクとして認識 ▼ ---
+        if model_type in ["hybrid_cnn_snn", "spiking_cnn", "sew_resnet"]:
+        # --- ▲ 修正 ▲ ---
             return self.model(input_images=input_data, **forward_kwargs) # type: ignore[operator]
         else:
             return self.model(input_ids=input_data, **forward_kwargs) # type: ignore[operator]

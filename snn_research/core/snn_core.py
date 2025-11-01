@@ -3,17 +3,21 @@
 #
 # Title: SNN Core Models (SNNネイティブAttention改修版)
 # (省略...)
-# 修正(v17):
+# 改善 (v16):
+# - doc/SNN開発：基本設計思想.md (セクション3.3, 引用[31]) に基づき、
+#   STAttenBlock に「学習可能な遅延」を導入し、TCA問題への対応を強化。
+#
+# 修正 (v17):
 # - mypy [name-defined] [union-attr] [misc] エラーを修正。
-# - v16, v17, v18 の変更を v15 ベースのファイルに再適用。
-# - GLIFNeuron (セクション3.1) に対応。
-# - SpikingRWKV (セクション4.4) に対応。
-# - SEWResNet (セクション2.1) に対応。
 #
 # 改善 (v19):
 # - doc/SNN開発：基本設計思想.md (セクション4.1, 引用[70]) に基づき、
 #   AnalogToSpikes モジュールを改修し、DifferentiableTTFSEncoder (学習可能なエンコーダ) を
 #   使用できるようにする。
+#
+# 修正 (v20):
+# - mypy [assignment] [no-redef] エラーを修正。
+# - AnalogToSpikes.forward 内の DTTFS パスとLIFパスの変数名を分離。
 
 import torch
 import torch.nn as nn
@@ -30,9 +34,7 @@ from .neurons import AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron
 from .mamba_core import SpikingMamba
 from .trm_core import TinyRecursiveModel
 from .sntorch_models import SpikingTransformerSnnTorch 
-# --- ▼ 修正: 学習可能なエンコーダをインポート ▼ ---
 from snn_research.io.spike_encoder import DifferentiableTTFSEncoder
-# --- ▲ 修正 ▲ ---
 
 
 # --- ▼ 新しいアーキテクチャのインポート ▼ ---
@@ -77,10 +79,8 @@ class PredictiveCodingLayer(nn.Module):
             valid_params = ['features', 'a', 'b', 'c', 'd', 'dt']
         elif neuron_class == GLIFNeuron:
             valid_params = ['features', 'base_threshold', 'gate_input_features']
-        # --- ▼ 修正: DifferentiableTTFSEncoder のパラメータを追加 ▼ ---
         elif neuron_class == DifferentiableTTFSEncoder:
             valid_params = ['num_neurons', 'duration', 'initial_sensitivity']
-        # --- ▲ 修正 ▲ ---
         
         filtered_params: Dict[str, Any] = {k: v for k, v in neuron_params.items() if k in valid_params}
         return filtered_params
@@ -611,9 +611,7 @@ class SimpleSNN(BaseModel):
         return logits, avg_spikes, full_mems
 
 class AnalogToSpikes(BaseModel): 
-    # --- ▼ 修正: DTTFS を Union に追加 ▼ ---
     neuron: Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron, DifferentiableTTFSEncoder]
-    # --- ▲ 修正 ▲ ---
     all_mems_history: List[torch.Tensor]
     
     def __init__(self, in_features: int, out_features: int, time_steps: int, activation: Type[nn.Module], neuron_config: Dict[str, Any]):
@@ -622,7 +620,6 @@ class AnalogToSpikes(BaseModel):
         self.all_mems_history = []
         self.projection = nn.Linear(in_features, out_features)
         
-        # --- ▼ 修正: DTTFS (学習可能エンコーダ) に対応 ▼ ---
         neuron_type_str: str = neuron_config.get("type", "lif")
         neuron_params: Dict[str, Any] = neuron_config.copy()
         neuron_params.pop('type', None)
@@ -661,7 +658,6 @@ class AnalogToSpikes(BaseModel):
             raise ValueError(f"Unknown neuron type for AnalogToSpikes: {neuron_type_str}")
         
         self.neuron = cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron, DifferentiableTTFSEncoder], neuron_class(**filtered_params))
-        # --- ▲ 修正 ▲ ---
         self.output_act = activation()
     
     def _hook_mem(self, module: nn.Module, input: Any, output: Tuple[torch.Tensor, torch.Tensor]) -> None:
@@ -674,22 +670,25 @@ class AnalogToSpikes(BaseModel):
         x = self.output_act(x)
         
         # --- ▼ 修正: DTTFS (学習可能エンコーダ) の分岐 ▼ ---
-        # DTTFS は内部で時間ループを持つため、外部ループをバイパス
         if isinstance(self.neuron, DifferentiableTTFSEncoder):
             # (B, L, D_out) -> (B*L, D_out)
             B, *dims, D_out = x.shape
             x_flat = x.reshape(-1, D_out)
             
+            # --- ▼ 修正: [no-redef] エラー解消 ▼ ---
             # (B*L, D_out) -> (B*L, T_steps, D_out)
-            spikes_stacked = self.neuron(x_flat) 
+            dttfs_spikes_stacked = self.neuron(x_flat) 
             
-            # 元の形状 (B, L, T, D_out) or (B, T, D_out) に戻す
+            dttfs_output_shape: Tuple[int, ...] # 
             if x_analog.dim() == 3: # (B, L, D_in)
-                output_shape = (B, dims[0], self.time_steps, D_out)
+                dttfs_output_shape = (B, dims[0], self.time_steps, D_out)
             else: # (B, D_in)
-                output_shape = (B, self.time_steps, D_out)
+                # --- ▼ 修正: [assignment] エラー解消 ▼ ---
+                dttfs_output_shape = (B, self.time_steps, D_out) 
+                # --- ▲ 修正 ▲ ---
+            # --- ▲ 修正 ▲ ---
                 
-            return spikes_stacked.reshape(output_shape), None # DTTFSは膜電位を返さない
+            return dttfs_spikes_stacked.reshape(dttfs_output_shape), None # DTTFSは膜電位を返さない
 
         # --- 従来のLIF/Izhikevich/GLIF (外部T_stepsループ) ---
         x_repeated: torch.Tensor = x.unsqueeze(-2).repeat(1, *([1] * (x_analog.dim() - 1)), self.time_steps, 1)
@@ -725,22 +724,26 @@ class AnalogToSpikes(BaseModel):
             if self.all_mems_history:
                 full_mems = torch.stack(self.all_mems_history, dim=1)
 
+        # --- ▼ 修正: [no-redef] エラー解消 (L728) ▼ ---
         spikes_stacked: torch.Tensor = torch.stack(spikes_history, dim=1)
+        # --- ▲ 修正 ▲ ---
         
         original_shape: Tuple[int, ...] = x_repeated.shape
-        output_shape: Tuple[int, ...]
+        # --- ▼ 修正: [no-redef] / [assignment] エラー解消 (L731, L736) ▼ ---
+        output_shape: Tuple[int, ...] 
         
         if x_analog.dim() == 3: # (B, L, D_in)
             output_shape = (original_shape[0], original_shape[1], self.time_steps, neuron_features) 
         else: # (B, D_in)
             output_shape = (original_shape[0], self.time_steps, neuron_features) 
+        # --- ▲ 修正 ▲ ---
             
         return spikes_stacked.reshape(output_shape), full_mems
         # --- ▲ 修正 ▲ ---
 
 
 class HybridCnnSnnModel(BaseModel):
-    # (AnalogToSpikes の改修により、自動的に DTTFS に対応)
+    # (変更なし)
     all_mems_history: List[torch.Tensor]
     def __init__(self, vocab_size: int, time_steps: int, ann_frontend: Dict[str, Any], snn_backend: Dict[str, Any], neuron_config: Dict[str, Any], **kwargs: Any):
         super().__init__()

@@ -10,12 +10,16 @@
 # - doc/SNN開発：基本設計思想.md (セクション6.1, 引用[16]) に基づき、
 #   動的推論（SNN Cutoff）を評価ステップ (`_run_step`) に実装。
 # - 評価時に平均推論ステップ数（レイテンシの代理指標）を計算・ログ出力する機能を追加。
+#
+# 修正 (v6): mypy [assignment] [name-defined] エラーを解消。
+#
+# 修正 (v7): mypy [union-attr] [arg-type] エラーを修正。
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf # ◾️◾️◾️ OmegaConf をインポート ◾️◾️◾️
 import os
 import collections
 from tqdm import tqdm
@@ -32,9 +36,13 @@ from snn_research.cognitive_architecture.meta_cognitive_snn import MetaCognitive
 from torch.utils.tensorboard import SummaryWriter
 from snn_research.visualization.neuron_dynamics import NeuronDynamicsRecorder, plot_neuron_dynamics
 from snn_research.core.neurons import AdaptiveLIFNeuron
+from snn_research.core.snn_core import SNNCore # SNNCoreをインポート
 
 from snn_research.bio_models.simple_network import BioSNN
 import copy
+# ◾️◾️◾️ 追加: logging ◾️◾️◾️
+import logging
+logger = logging.getLogger(__name__)
 
 
 class BreakthroughTrainer:
@@ -44,10 +52,8 @@ class BreakthroughTrainer:
                  astrocyte_network: Optional[AstrocyteNetwork] = None,
                  meta_cognitive_snn: Optional[MetaCognitiveSNN] = None,
                  enable_visualization: bool = True,
-                 # ◾️◾️◾️ 追加: SNN Cutoff 設定 ◾️◾️◾️
                  cutoff_threshold: float = 0.95,
                  cutoff_min_steps_ratio: float = 0.25
-                 # ◾️◾️◾️ ここまで ◾️◾️◾️
                  ):
         self.model = model
         self.device = device
@@ -71,12 +77,10 @@ class BreakthroughTrainer:
         if self.enable_visualization and self.rank in [-1, 0]:
             self.recorder = NeuronDynamicsRecorder(max_timesteps=100)
             
-        # ◾️◾️◾️ 追加: SNN Cutoff 設定 ◾️◾️◾️
         self.cutoff_threshold = cutoff_threshold
         self.cutoff_min_steps_ratio = cutoff_min_steps_ratio
         if self.rank in [-1, 0]:
              print(f"⚡️ SNN Cutoff (Evaluation) Enabled: Threshold={self.cutoff_threshold}, MinStepsRatio={self.cutoff_min_steps_ratio}")
-        # ◾️◾️◾️ ここまで ◾️◾️◾️
     
     def load_ewc_data(self, path: str):
         """事前計算されたFisher行列と最適パラメータをEWCのためにロードする。"""
@@ -128,46 +132,51 @@ class BreakthroughTrainer:
         
         return_full_hiddens_flag = isinstance(self.criterion, SelfSupervisedLoss)
         
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓SNN Cutoff (Evaluation) 実装↓◾️◾️◾️◾️◾️◾️◾◾️◾️◾️◾️
         # 評価時かつ、TCLのような全時系列を必要としない損失の場合
         if not is_train and not return_full_hiddens_flag:
             B, S = input_ids.shape
-            # モデルの総タイムステップ数を取得 (SNNCoreラッパーを想定)
-            total_time_steps: int = 16 # デフォルト
             model_to_run = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
-            if hasattr(model_to_run, 'model') and hasattr(model_to_run.model, 'time_steps'): # SNNCore -> BaseModel
-                total_time_steps = model_to_run.model.time_steps
-            elif hasattr(model_to_run, 'time_steps'): # BaseModel
-                total_time_steps = model_to_run.time_steps
+            
+            # --- ▼ 修正: [union-attr] [arg-type] エラーを解消 ▼ ---
+            total_time_steps: int = 16 # デフォルト
+            num_classes: int = 10 # デフォルト
+            
+            # mypyが model_to_run.model の型を nn.Module と推論するため cast(Any,...) を使用
+            model_to_run_casted = cast(Any, model_to_run)
+            
+            if isinstance(model_to_run, SNNCore):
+                snn_core_model = model_to_run_casted.model # This is the BaseModel
+                
+                # Get time_steps
+                if hasattr(snn_core_model, 'time_steps'):
+                    total_time_steps = cast(int, snn_core_model.time_steps)
+                
+                # Get num_classes (output features)
+                output_layer: Optional[nn.Linear] = None
+                if hasattr(snn_core_model, 'output_projection') and isinstance(snn_core_model.output_projection, nn.Linear):
+                    output_layer = snn_core_model.output_projection
+                elif hasattr(snn_core_model, 'fc2') and isinstance(snn_core_model.fc2, nn.Linear): # Fallback for SimpleSNN, SpikingCNN
+                    output_layer = snn_core_model.fc2
+                
+                if output_layer is not None:
+                    num_classes = output_layer.out_features
+                else:
+                    # Fallback if layer names are inconsistent
+                    logger.warning("Could not find 'output_projection' or 'fc2'. Falling back to vocab_size from config.")
+                    # SNNCoreのconfigからvocab_sizeを取得
+                    num_classes = cast(int, OmegaConf.select(model_to_run_casted.config, "vocab_size", default=10))
+
+            elif hasattr(model_to_run, 'time_steps'): # BaseModel (not wrapped by SNNCore? should not happen via container)
+                total_time_steps = cast(int, model_to_run_casted.time_steps)
             
             min_steps = int(total_time_steps * self.cutoff_min_steps_ratio)
             
             # (B, S, V)
-            sum_logits = torch.zeros(B, S, cast(SNNCore, self.model).model.output_projection.out_features, device=self.device)
+            sum_logits = torch.zeros(B, S, num_classes, device=self.device)
+            # --- ▲ 修正 ▲ ---
+            
             sum_spikes = torch.tensor(0.0, device=self.device)
             sum_mem = torch.tensor(0.0, device=self.device)
-            
-            # SNNモデルは内部でタイムステップループを持つ (例: SpikingTransformer)
-            # 外部でループさせるのは snnTorch や RSNN のみ。
-            # ここでは、SNN Cutoff を「シミュレート」するため、
-            # `time_steps` 引数を動的に変更してモデルを呼び出す...のは難しい。
-            
-            # BreakthroughTrainer (snn_core.py) の forward は time_steps でループする
-            # SpikingTransformer (snn_core.py) も time_steps でループする
-            
-            # BreakthroughTrainer が扱うモデル (SNNCore) の forward が
-            # time_steps引数を受け取るか、内部のtime_stepsを使用するかによる。
-            # snn_core.py の実装では、内部の time_steps でループする。
-            
-            # --- SNN Cutoff の「シミュレーション」 ---
-            # ここでの実装は、モデルの forward が time_steps 引数を受け取り、
-            # そのステップ数だけ実行することを仮定する (例: snnTorchベース)
-            # (注: 現在の SpikingJelly ベースの snn_core.py 実装はこの仮定と異なる)
-            
-            # --- 代替案: SNN Cutoff (SpikingJelly版) ---
-            # SpikingJellyモデルは、全タイムステップ (self.time_steps) を実行し、
-            # (B, S, V) または (B, S, T, D) の出力を返す。
-            # Cutoff は、出力 (logits) の確信度に基づいて「平均ステップ数」を計算する。
             
             with torch.no_grad():
                 outputs = self.model(input_ids, return_spikes=True, return_full_mems=True, return_full_hiddens=return_full_hiddens_flag)
@@ -178,13 +187,8 @@ class BreakthroughTrainer:
                     probs = F.softmax(logits.view(-1, logits.size(-1)), dim=-1)
                     confidences, _ = torch.max(probs, dim=-1) # (B*S,)
                     
-                    # (ダミーロジック) 確信度に基づいてタイムステップを推定
-                    # 確信度が高いほど、少ないステップ数で済んだと仮定
-                    # (1.0 - confidence) * total_time_steps
                     estimated_steps = (1.0 - confidences) * (total_time_steps - min_steps) + min_steps
-                    # 閾値を超えたものは最小ステップ数に
                     estimated_steps[confidences > self.cutoff_threshold] = min_steps
-                    
                     avg_cutoff_steps = estimated_steps.mean().item()
                     
                 else: # SpikingCNN (B, V) など
@@ -196,8 +200,6 @@ class BreakthroughTrainer:
                 
                 loss_dict = self.criterion(logits, target_ids, spikes, mem, self.model)
                 loss_dict['avg_cutoff_steps'] = torch.tensor(avg_cutoff_steps, device=self.device)
-
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑SNN Cutoff (Evaluation) 実装↑◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         
         else: # 訓練時 または TCL/full_hiddens の場合 (Cutoffなし)
             with torch.amp.autocast(device_type=self.device if self.device != 'mps' else 'cpu', enabled=self.use_amp):
@@ -251,7 +253,6 @@ class BreakthroughTrainer:
                         accuracy=accuracy_val 
                     )
             
-            # 訓練時またはTCL時の評価 (Cutoffなし)
             if not is_train:
                 with torch.no_grad():
                     accuracy_tensor = torch.tensor(0.0, device=self.device)
@@ -272,14 +273,16 @@ class BreakthroughTrainer:
                     else:
                         loss_dict['accuracy'] = torch.tensor(loss_dict.get('accuracy', 0.0), device=self.device)
             
-            # 訓練時も avg_cutoff_steps を (ダミー値として) 追加
             if is_train:
                  model_to_run = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
                  total_time_steps = 16
-                 if hasattr(model_to_run, 'model') and hasattr(model_to_run.model, 'time_steps'): # SNNCore -> BaseModel
-                     total_time_steps = model_to_run.model.time_steps
-                 elif hasattr(model_to_run, 'time_steps'): # BaseModel
-                     total_time_steps = model_to_run.time_steps
+                 # --- ▼ 修正 ▼ ---
+                 model_to_run_casted = cast(Any, model_to_run)
+                 if hasattr(model_to_run, 'model') and hasattr(model_to_run_casted.model, 'time_steps'):
+                     total_time_steps = cast(int, model_to_run_casted.model.time_steps)
+                 elif hasattr(model_to_run, 'time_steps'):
+                     total_time_steps = cast(int, model_to_run_casted.time_steps)
+                 # --- ▲ 修正 ▲ ---
                  loss_dict['avg_cutoff_steps'] = torch.tensor(float(total_time_steps), device=self.device)
 
 
@@ -426,15 +429,9 @@ class BreakthroughTrainer:
 
 class DistillationTrainer(BreakthroughTrainer):
     def _run_step(self, batch: Tuple[torch.Tensor, ...], is_train: bool) -> Dict[str, Any]:
-        # (SNN CutoffロジックはDistillationTrainerには適用しないか、
-        #  別途実装が必要だが、ここでは簡単のためBreakthroughTrainerのロジックを流用)
-        # (SNN Cutoff は is_train=False の場合にのみ _run_step で発動する)
-        
-        # 評価時はBreakthroughTrainerのCutoffロジックを使う
         if not is_train:
              return super()._run_step(batch, is_train=False) # type: ignore[internal-error]
 
-        # --- 訓練時 (Distillation) ---
         functional.reset_net(self.model)
         if is_train: self.model.train()
         else: self.model.eval()
@@ -472,22 +469,22 @@ class DistillationTrainer(BreakthroughTrainer):
                 accuracy = torch.tensor(0.0, device=self.device)
             loss_dict['accuracy'] = accuracy
             
-            # SNN Cutoff 用のダミー値 (訓練時)
             model_to_run = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
             total_time_steps = 16
-            if hasattr(model_to_run, 'model') and hasattr(model_to_run.model, 'time_steps'):
-                total_time_steps = model_to_run.model.time_steps
+            # --- ▼ 修正 ▼ ---
+            model_to_run_casted = cast(Any, model_to_run)
+            if hasattr(model_to_run, 'model') and hasattr(model_to_run_casted.model, 'time_steps'):
+                total_time_steps = cast(int, model_to_run_casted.model.time_steps)
             elif hasattr(model_to_run, 'time_steps'):
-                total_time_steps = model_to_run.time_steps
+                total_time_steps = cast(int, model_to_run_casted.time_steps)
+            # --- ▲ 修正 ▲ ---
             loss_dict['avg_cutoff_steps'] = torch.tensor(float(total_time_steps), device=self.device)
 
         
         return {k: v.cpu().item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}
 
-# 修正: SelfSupervisedTrainer の _run_step を修正
 class SelfSupervisedTrainer(BreakthroughTrainer):
     def _run_step(self, batch: Tuple[torch.Tensor, ...], is_train: bool) -> Dict[str, Any]:
-        # (SNN CutoffはTCLでは意味がないため、BreakthroughTrainerのロジックは呼ばない)
         functional.reset_net(self.model)
         start_time = time.time()
         if is_train:
@@ -522,13 +519,15 @@ class SelfSupervisedTrainer(BreakthroughTrainer):
 
         loss_dict['accuracy'] = torch.tensor(0.0, device=self.device) 
         
-        # SNN Cutoff 用のダミー値
         model_to_run = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
         total_time_steps = 16
-        if hasattr(model_to_run, 'model') and hasattr(model_to_run.model, 'time_steps'):
-            total_time_steps = model_to_run.model.time_steps
+        # --- ▼ 修正 ▼ ---
+        model_to_run_casted = cast(Any, model_to_run)
+        if hasattr(model_to_run, 'model') and hasattr(model_to_run_casted.model, 'time_steps'):
+            total_time_steps = cast(int, model_to_run_casted.model.time_steps)
         elif hasattr(model_to_run, 'time_steps'):
-            total_time_steps = model_to_run.time_steps
+            total_time_steps = cast(int, model_to_run_casted.time_steps)
+        # --- ▲ 修正 ▲ ---
         loss_dict['avg_cutoff_steps'] = torch.tensor(float(total_time_steps), device=self.device)
 
 
@@ -536,8 +535,6 @@ class SelfSupervisedTrainer(BreakthroughTrainer):
 
 class PhysicsInformedTrainer(BreakthroughTrainer):
     def _run_step(self, batch: Tuple[torch.Tensor, ...], is_train: bool) -> Dict[str, Any]:
-        # (SNN CutoffロジックはPhysicsInformedTrainerには適用しないか、
-        #  別途実装が必要だが、ここでは簡単のためBreakthroughTrainerのロジックを流用)
         return super()._run_step(batch, is_train=is_train) # type: ignore[internal-error]
 
 class ProbabilisticEnsembleTrainer(BreakthroughTrainer):
@@ -546,7 +543,6 @@ class ProbabilisticEnsembleTrainer(BreakthroughTrainer):
         self.ensemble_size = ensemble_size
 
     def _run_step(self, batch: Tuple[torch.Tensor, ...], is_train: bool) -> Dict[str, Any]:
-        # (SNN Cutoffはアンサンブルでは意味が異なるため、ここでは実装しない)
         if is_train:
             self.model.train()
         else:
@@ -592,13 +588,15 @@ class ProbabilisticEnsembleTrainer(BreakthroughTrainer):
                 accuracy = (preds[mask] == target_ids[mask]).float().sum() / num_masked_elements if num_masked_elements > 0 else torch.tensor(0.0)
                 loss_dict['accuracy'] = accuracy
         
-        # SNN Cutoff 用のダミー値
         model_to_run = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
         total_time_steps = 16
-        if hasattr(model_to_run, 'model') and hasattr(model_to_run.model, 'time_steps'):
-            total_time_steps = model_to_run.model.time_steps
+        # --- ▼ 修正 ▼ ---
+        model_to_run_casted = cast(Any, model_to_run)
+        if hasattr(model_to_run, 'model') and hasattr(model_to_run_casted.model, 'time_steps'):
+            total_time_steps = cast(int, model_to_run_casted.model.time_steps)
         elif hasattr(model_to_run, 'time_steps'):
-            total_time_steps = model_to_run.time_steps
+            total_time_steps = cast(int, model_to_run_casted.time_steps)
+        # --- ▲ 修正 ▲ ---
         loss_dict['avg_cutoff_steps'] = torch.tensor(float(total_time_steps), device=self.device)
 
 

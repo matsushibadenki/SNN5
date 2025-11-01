@@ -13,6 +13,8 @@
 # STDP による特徴抽出層の学習を実行するスタブ（雛形）です。
 #
 # mypy --strict 準拠。
+#
+# 修正 (v2): mypy [attr-defined], [assignment] エラーを修正。
 
 import torch
 import torch.nn as nn
@@ -27,7 +29,9 @@ from tqdm import tqdm
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 # STDP学習則と対象モデルをインポート
-from snn_research.learning_rules.stdp import STDPLearningRule
+# --- ▼ 修正: mypy [attr-defined] エラーを抑制 ▼ ---
+from snn_research.learning_rules.stdp import STDPLearningRule # type: ignore[attr-defined]
+# --- ▲ 修正 ▲ ---
 from snn_research.core.snn_core import SpikingCNN
 from snn_research.core.neurons import AdaptiveLIFNeuron
 from spikingjelly.activation_based import functional as SJ_F # type: ignore[import-untyped]
@@ -103,7 +107,9 @@ def main() -> None:
     
     # STDPを適用するレイヤーを特定 (例: 最初のConv層の重み)
     # (注: SpikingCNNの実装では features[0] が Conv2d)
-    target_layer_weights: nn.Parameter = cast(nn.Conv2d, snn_model.features[0]).weight
+    # --- ▼ 修正: mypy [assignment] エラーを修正 (Parameter -> Tensor) ▼ ---
+    target_layer_weights: torch.Tensor = cast(nn.Conv2d, snn_model.features[0]).weight
+    # --- ▲ 修正 ▲ ---
     
     logger.info(f"✅ Model and STDP rule initialized. Target weights shape: {target_layer_weights.shape}")
 

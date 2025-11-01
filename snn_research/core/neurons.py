@@ -345,9 +345,15 @@ class GLIFNeuron(base.MemoryModule):
         # --- 1. ゲートの計算 ---
         # ゲート入力 (x) の次元チェック
         if x.shape[1] != self.gate_tau_lin.in_features:
-             raise ValueError(f"GLIF gate input dim mismatch. Expected {self.gate_tau_lin.in_features} but got {x.shape[1]}")
-        
-        gate_input = x
+             # GLIFのゲート入力次元と、ニューロンの入力次元が異なる場合
+             # (例: SimpleSNNで d_model -> hidden_size に射影された場合)
+             # gate_input_features が features (hidden_size) と同じなら x を使う
+             if self.gate_tau_lin.in_features == self.features:
+                 gate_input = x
+             else:
+                 raise ValueError(f"GLIF gate input dim mismatch. Expected {self.gate_tau_lin.in_features} but got {x.shape[1]}")
+        else:
+             gate_input = x
         
         # 時定数ゲート (mem_decay) を計算
         mem_decay_gate = torch.sigmoid(self.gate_tau_lin(gate_input))

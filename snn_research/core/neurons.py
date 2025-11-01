@@ -313,8 +313,8 @@ class GLIFNeuron(base.MemoryModule):
         self.v_reset = nn.Parameter(torch.full((features,), 0.0)) # 0.0 で初期化
         
         # 2. 膜時定数(tau)を制御するゲート
-        # 入力(x)と現在の膜電位(v_mem)に基づいてtauを動的に決定
-        self.gate_tau_lin = nn.Linear(gate_input_features + features, features)
+        # ゲートの入力次元を gate_input_features に設定
+        self.gate_tau_lin = nn.Linear(gate_input_features, features)
         
         self.surrogate_function = surrogate.ATan(alpha=2.0)
 
@@ -343,31 +343,18 @@ class GLIFNeuron(base.MemoryModule):
             self.mem = torch.zeros_like(x)
         
         # --- 1. ゲートの計算 ---
-        # ゲートへの入力 = 現在の入力(x) + 現在の膜電位(mem)
-        # (注: GLIFの実装[8]によっては、ゲート入力は x のみの場合もある)
-        # ここでは x のみを使用 (x.shape[1] == gate_input_features を期待)
+        # ゲート入力 (x) の次元チェック
         if x.shape[1] != self.gate_tau_lin.in_features:
-            # 入力特徴量がゲート特徴量と異なる場合 (一般的)
-            # 簡易的に x のみを使用
-            if x.shape[1] == self.features:
-                 gate_input = x
-            else:
-                 # 特徴量数が異なる場合はエラー (あるいはPad/Linear)
-                 raise ValueError(f"GLIF gate input dim mismatch. Expected {self.gate_tau_lin.in_features} but got {x.shape[1]}")
-        else:
-             gate_input = x
-
+             raise ValueError(f"GLIF gate input dim mismatch. Expected {self.gate_tau_lin.in_features} but got {x.shape[1]}")
+        
+        gate_input = x
         
         # 時定数ゲート (mem_decay) を計算
-        # Sigmoidで 0~1 の範囲に
-        # (注: tau = -dt / log(decay), decay=0.9 -> tau=9.5)
         mem_decay_gate = torch.sigmoid(self.gate_tau_lin(gate_input))
         
-        v_reset_gated = self.v_reset # この実装ではv_resetを学習可能な固定値とする
+        v_reset_gated = self.v_reset 
 
         # --- 2. 膜電位の更新 (LIFダイナミクス) ---
-        # v[t+1] = decay * v[t] + (1 - decay) * I
-        # (1 - decay) * I の項を x で近似 (入力電流はゲート制御されない)
         self.mem = self.mem * mem_decay_gate + x
         
         # --- 3. スパイク生成 ---
@@ -379,7 +366,6 @@ class GLIFNeuron(base.MemoryModule):
 
         # --- 4. リセット ---
         reset_mask = spike.detach() 
-        # 学習可能なリセット電位(v_reset_gated)でリセット
         self.mem = self.mem * (1.0 - reset_mask) + reset_mask * v_reset_gated
         
         return spike, self.mem

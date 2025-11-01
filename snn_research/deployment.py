@@ -5,8 +5,14 @@
 # BugFix: state_dictのキーから 'model.' プリフィックスを削除し、読み込みエラーを修正。
 # BugFix: IndentationErrorの修正。
 # BugFix: generateメソッドの max_len が None になる TypeError を修正 (最終対策 v5)。
+#
+# 改善 (v6):
+# - doc/SNN開発：基本設計思想.md (セクション6.1, 引用[16]) に基づき、
+#   動的推論（SNN Cutoff）を generate メソッドに実装。
+#   確信度が閾値を超えた場合に早期終了するロジックを追加。
 
 import torch
+import torch.nn.functional as F # ◾️◾️◾️ 追加 ◾️◾️◾️
 import json
 from pathlib import Path
 from transformers import AutoTokenizer, PreTrainedModel, PretrainedConfig
@@ -40,6 +46,14 @@ class SNNInferenceEngine:
         device_str = OmegaConf.select(config, "device", default="auto") # selectで安全に取得
         self.device = get_auto_device() if device_str == "auto" else device_str
 
+        # ◾️◾️◾️ 追加: SNN Cutoff 設定 ◾️◾️◾️
+        self.cutoff_enabled: bool = OmegaConf.select(config, "deployment.cutoff.enabled", default=True)
+        self.cutoff_threshold: float = OmegaConf.select(config, "deployment.cutoff.threshold", default=0.95)
+        self.cutoff_min_steps: int = OmegaConf.select(config, "deployment.cutoff.min_steps", default=5)
+        if self.cutoff_enabled:
+            logger.info(f"⚡️ 動的推論 (SNN Cutoff) が有効です (閾値: {self.cutoff_threshold}, 最小ステップ: {self.cutoff_min_steps})")
+        # ◾️◾️◾️ ここまで ◾️◾️◾️
+
         self.last_inference_stats: Dict[str, Any] = {}
 
         # 先にTokenizerをロードしてvocab_sizeを取得
@@ -57,11 +71,9 @@ class SNNInferenceEngine:
         # vocab_sizeを渡してSNNCoreを初期化
         vocab_size = len(self.tokenizer)
         model_config = OmegaConf.select(config, "model", default=config) # selectで安全に取得
-        # --- ▼ 修正: model_configがNoneの場合のフォールバックを追加 ▼ ---
         if model_config is None:
              logger.warning("Model config is None in SNNInferenceEngine init. Using empty config.")
              model_config = OmegaConf.create({}) # 空のDictConfigを作成
-        # --- ▲ 修正 ▲ ---
         self.model = SNNCore(model_config, vocab_size=vocab_size)
 
         model_path_str = OmegaConf.select(config, "model.path", default=None) # selectで安全に取得
@@ -72,7 +84,6 @@ class SNNInferenceEngine:
             if model_path.exists():
                 try:
                     checkpoint = torch.load(model_path, map_location=self.device)
-                    # checkpointがstate_dictそのものか、キーを含む辞書かを確認
                     state_dict_to_load: Dict[str, Any]
                     if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
                          state_dict_to_load = checkpoint['model_state_dict']
@@ -81,11 +92,8 @@ class SNNInferenceEngine:
                     else:
                          raise TypeError(f"Unsupported checkpoint format: {type(checkpoint)}")
 
-                    # state_dictのキーから "model." プリフィックスを削除
                     new_state_dict = {k.replace('model.', ''): v for k, v in state_dict_to_load.items()}
 
-                    # SNNCoreラッパーの中の実際のモデルにstate_dictをロードする
-                    # strict=False を追加して、キーが一致しないエラーを回避
                     missing_keys, unexpected_keys = self.model.model.load_state_dict(new_state_dict, strict=False)
                     if missing_keys: logger.warning(f"Missing keys when loading state dict: {missing_keys}")
                     if unexpected_keys: logger.warning(f"Unexpected keys when loading state dict: {unexpected_keys}")
@@ -108,17 +116,16 @@ class SNNInferenceEngine:
         """
         プロンプトに基づいてテキストと統計情報をストリーミング生成する。
         max_len が None の場合にデフォルト値を設定する。
+        SNN Cutoffロジックを実装。
         """
-        # --- ▼ 修正: max_len が None または不正な値の場合の処理を強化 ▼ ---
         if max_len is None:
-            default_max_len = 100 # デフォルト値を設定
+            default_max_len = 100 
             logger.warning(f"max_len was None, using default value: {default_max_len}")
             max_len = default_max_len
         elif not isinstance(max_len, int) or max_len <= 0:
              default_max_len = 100
              logger.warning(f"Invalid max_len value ({max_len}), using default value: {default_max_len}")
              max_len = default_max_len
-        # --- ▲ 修正 ▲ ---
 
         tokenizer_callable = getattr(self.tokenizer, "__call__", None)
         if not callable(tokenizer_callable):
@@ -126,30 +133,46 @@ class SNNInferenceEngine:
         input_ids = tokenizer_callable(prompt, return_tensors="pt")["input_ids"].to(self.device)
 
         total_spikes = 0.0
-        start_time = time.time() # 推論開始時間
+        start_time = time.time() 
 
-        # --- ▼ 修正: max_len はここで整数のはず ▼ ---
         for i in range(max_len):
-        # --- ▲ 修正 ▲ ---
-            loop_start_time = time.time() # ループ開始時間
+            loop_start_time = time.time() 
             with torch.no_grad():
                 outputs, avg_spikes_tensor, _ = self.model(input_ids, return_spikes=True)
 
             avg_spikes = avg_spikes_tensor.item() if isinstance(avg_spikes_tensor, torch.Tensor) else 0.0
-            total_spikes += avg_spikes * input_ids.shape[1] # スパイク数を加算
+            total_spikes += avg_spikes * input_ids.shape[1] 
 
             next_token_logits = outputs[:, -1, :]
-            next_token_id = torch.argmax(next_token_logits, dim=-1).unsqueeze(-1)
+            
+            # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓SNN Cutoff 実装↓◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+            # 確信度（Softmaxの最大値）を計算
+            probabilities = F.softmax(next_token_logits, dim=-1)
+            confidence, next_token_id = torch.max(probabilities, dim=-1)
+            next_token_id = next_token_id.unsqueeze(-1)
+
+            if self.cutoff_enabled and confidence.item() > self.cutoff_threshold and i >= self.cutoff_min_steps:
+                logger.info(f"⚡️ SNN Cutoff発動: ステップ {i} で確信度 {confidence.item():.2%} が閾値 {self.cutoff_threshold:.2%} を超過。")
+                try:
+                     new_token = self.tokenizer.decode(next_token_id.item())
+                except Exception as e:
+                     logger.error(f"Error decoding token ID {next_token_id.item()}: {e}")
+                     new_token = "[Decode Error]"
+                
+                current_duration = time.time() - start_time
+                current_stats = {"total_spikes": total_spikes, "cutoff_step": i}
+                yield new_token, current_stats
+                break # Cutoffによりループを早期終了
+            # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑SNN Cutoff 実装↑◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
             if next_token_id.item() == getattr(self.tokenizer, 'eos_token_id', None):
                 break
 
             try:
-                 # decode処理でエラーが発生する可能性がある
                  new_token = self.tokenizer.decode(next_token_id.item())
             except Exception as e:
                  logger.error(f"Error decoding token ID {next_token_id.item()}: {e}")
-                 new_token = "[Decode Error]" # エラーを示す代替トークン
+                 new_token = "[Decode Error]"
 
             if stop_sequences and any(seq in new_token for seq in stop_sequences):
                 break
@@ -161,7 +184,5 @@ class SNNInferenceEngine:
             input_ids = torch.cat([input_ids, next_token_id], dim=1)
 
             loop_duration = time.time() - loop_start_time
-            # print(f"  Loop {i+1} duration: {loop_duration:.4f}s") # デバッグ用
 
         self.last_inference_stats = {"total_spikes": total_spikes}
-

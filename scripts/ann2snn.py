@@ -13,6 +13,19 @@
 # 改善 (v2):
 # - mypy --strict 準拠のための型ヒントを追加。
 # - print文を logging に置き換え。
+#
+# 修正 (v3):
+# - mypy [attr-defined] (ANNToSNNConverter -> AnnToSnnConverter) を修正。
+# - mypy [assignment] (int = float) を修正。
+#
+# 修正 (v4):
+# - mypy [call-arg] [attr-defined] エラーを修正。
+# - AnnToSnnConverter の新しいAPI (v3) に合わせて呼び出し方法を修正。
+#
+# 修正 (v5):
+# - AnnToSnnConverter の API (v3) への適合を再確認。
+# - AnnToSnnConverter は snn_model と model_config を __init__ で要求する。
+# - 変換実行は convert_cnn_weights メソッドで行う。
 
 import torch
 import torch.nn as nn
@@ -21,23 +34,24 @@ from torchvision import datasets, transforms # type: ignore[import-untyped]
 from torch.utils.data import DataLoader
 import sys
 from pathlib import Path
-import logging # ◾️◾️◾️ 追加 ◾️◾️◾️
-from typing import Dict, Any, cast, Tuple # ◾️◾️◾️ 追加 ◾️◾️◾️
+import logging 
+from typing import Dict, Any, cast, Tuple, List 
+import os 
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 from snn_research.benchmark.ann_baseline import SimpleCNN
-from snn_research.conversion.ann_to_snn_converter import ANNToSNNConverter
+# --- ▼ 修正: クラス名を AnnToSnnConverter に変更 ▼ ---
+from snn_research.conversion.ann_to_snn_converter import AnnToSnnConverter 
+# --- ▲ 修正 ▲ ---
 from snn_research.core.snn_core import SpikingCNN # 変換後のSNNモデル
 from snn_research.core.neurons import AdaptiveLIFNeuron
 from spikingjelly.activation_based import functional as SJ_F # type: ignore[import-untyped]
 
-# --- ▼ 修正: ロガー設定 ▼ ---
+# --- ロガー設定 ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-# --- ▲ 修正 ▲ ---
 
-# --- ▼ 修正: 型ヒントを追加 ▼ ---
 def train_ann(
     model: nn.Module, 
     device: torch.device, 
@@ -45,7 +59,6 @@ def train_ann(
     optimizer: optim.Optimizer, 
     epoch: int
 ) -> None:
-# --- ▲ 修正 ▲ ---
     model.train()
     criterion = nn.CrossEntropyLoss()
     for batch_idx, (data, target) in enumerate(train_loader):
@@ -59,16 +72,16 @@ def train_ann(
             logger.info(f'Train Epoch: {epoch} [{batch_idx * len(data)}/{len(train_loader.dataset)} ' # type: ignore[arg-type]
                         f'({100. * batch_idx / len(train_loader):.0f}%)]\tLoss: {loss.item():.6f}')
 
-# --- ▼ 修正: 型ヒントを追加 ▼ ---
 def evaluate_snn(
     model: nn.Module, 
     device: torch.device, 
     test_loader: DataLoader, 
     time_steps: int
 ) -> float:
-# --- ▲ 修正 ▲ ---
     model.eval()
-    correct: int = 0
+    # --- ▼ 修正: [assignment] エラー (int = float) を回避 ▼ ---
+    correct: float = 0.0
+    # --- ▲ 修正 ▲ ---
     total: int = 0
     with torch.no_grad():
         for data, target in test_loader:
@@ -135,27 +148,38 @@ def main() -> None:
     
     # 変換器の初期化と実行
     # ANNモデルのReLUをSNNのLIFニューロンにマッピング
-    converter = ANNToSNNConverter(
-        ann_model=ann_model, 
-        snn_model_skeleton=snn_model_skel,
-        input_shape=(1, 3, 32, 32) # CIFAR-10の入力形状
+    # --- ▼ 修正: AnnToSnnConverter の新しいAPI (v3) に合わせて修正 ▼ ---
+    snn_config_dict: Dict[str, Any] = {
+        "time_steps": time_steps,
+        "neuron": neuron_config
+    }
+    
+    converter = AnnToSnnConverter(
+        snn_model=snn_model_skel, 
+        model_config=snn_config_dict
     )
     
-    logger.info("Normalizing ANN weights (data-based)...")
-    # (簡易的なデータローダーで正規化)
-    converter.normalize_weights(data_loader=train_loader) 
+    output_dir = "runs/ann2snn_tests"
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = os.path.join(output_dir, "converted_snn_model.pth")
     
-    logger.info("Converting ANN model to SNN...")
-    snn_model: nn.Module = converter.convert()
+    # 変換を実行 (内部で正規化、閾値調整、重みコピーが行われる)
+    converter.convert_cnn_weights(
+        ann_model=ann_model,
+        output_path=output_path,
+        calibration_loader=train_loader # 閾値調整用にデータローダーを渡す
+    )
+    
+    # 変換器が保持しているSNNモデル（重みコピー済み）を取得
+    snn_model: nn.Module = converter.snn_model
+    # --- ▲ 修正 ▲ ---
+    
     snn_model = snn_model.to(device)
     logger.info("✅ ANN-SNN conversion complete.")
 
     # --- 4. SNNモデルの評価 ---
     logger.info("--- 3. SNN Evaluation ---")
-    # SpikingCNN は BaseModel を継承していないため、SNNCoreでラップする必要がある
-    # (注: snn_core.py の SpikingCNN は BaseModel を継承しているため、ラップ不要)
     
-    # SNNモデルの評価 (SpikingCNN は BaseModel を継承していると仮定)
     snn_accuracy = evaluate_snn(snn_model, device, test_loader, time_steps)
     
     logger.info(f"--- 📊 Results ---")

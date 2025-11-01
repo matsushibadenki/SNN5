@@ -6,6 +6,10 @@
 # - IzhikevichNeuronにset_statefulメソッドを追加し、AdaptiveLIFNeuronとの
 #   インターフェース互換性を確保。これにより、SpikingTransformerなどで
 #   ニューロンモデルを切り替え可能にする。
+#
+# 改善 (v2):
+# - doc/SNN開発：基本設計思想.md (セクション3.1, 引用[7]) に基づき、
+#   AdaptiveLIFNeuronの膜時定数(tau_mem)を学習可能なパラメータに変更 (PLIF化)。
 
 from typing import Optional, Tuple
 import torch
@@ -18,7 +22,13 @@ class AdaptiveLIFNeuron(base.MemoryModule):
     """
     Adaptive Leaky Integrate-and-Fire (LIF) neuron with threshold adaptation.
     Designed for vectorized operations and to be BPTT-friendly.
+    
+    v2: Implements PLIF (Parametric LIF) by making tau_mem a learnable parameter.
     """
+    # --- ▼ 修正: tau_mem を nn.Parameter に変更 ▼ ---
+    tau_mem: nn.Parameter
+    # --- ▲ 修正 ▲ ---
+
     def __init__(
         self,
         features: int,
@@ -33,15 +43,22 @@ class AdaptiveLIFNeuron(base.MemoryModule):
     ):
         super().__init__()
         self.features = features
-        self.mem_decay = math.exp(-1.0 / tau_mem)
+        
+        # --- ▼ 修正: tau_mem を学習可能なパラメータ(nn.Parameter)として登録 ▼ ---
+        # tau_mem が 1 より小さくなると不安定になるため、
+        # 実際のパラメータ(log_tau)はRで定義し、tau = exp(log_tau) + 1.1 のように
+        # 正かつ1より大きい値に制約する (tau > 1.1 を保証)
+        initial_log_tau = torch.full((features,), math.log(max(1.1, tau_mem - 1.1)))
+        self.log_tau_mem = nn.Parameter(initial_log_tau)
+        # self.mem_decay は forward で動的に計算
+        # --- ▲ 修正 ▲ ---
+        
         self.base_threshold = nn.Parameter(torch.full((features,), base_threshold))
         self.adaptation_strength = adaptation_strength
         self.target_spike_rate = target_spike_rate
         self.noise_intensity = noise_intensity
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓追加開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         self.threshold_decay = threshold_decay
         self.threshold_step = threshold_step
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑追加終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         self.surrogate_function = surrogate.ATan(alpha=2.0)
 
         self.register_buffer("mem", None)
@@ -75,16 +92,20 @@ class AdaptiveLIFNeuron(base.MemoryModule):
         if self.adaptive_threshold is None or self.adaptive_threshold.shape != x.shape:
             self.adaptive_threshold = torch.zeros_like(x)
 
-        self.mem = self.mem * self.mem_decay + x
+        # --- ▼ 修正: 学習可能な tau_mem から mem_decay を動的に計算 ▼ ---
+        # tau = exp(log_tau) + 1.1 (tau > 1.1 を保証)
+        current_tau_mem = torch.exp(self.log_tau_mem) + 1.1
+        # mem_decay = exp(-dt / tau) (dt=1.0 と仮定)
+        mem_decay = torch.exp(-1.0 / current_tau_mem)
+        
+        self.mem = self.mem * mem_decay + x
+        # --- ▲ 修正 ▲ ---
         
         if self.training and self.noise_intensity > 0:
             self.mem += torch.randn_like(self.mem) * self.noise_intensity
         
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾◾️◾️◾️◾️
-        # 動的閾値の減衰
         self.adaptive_threshold = self.adaptive_threshold * self.threshold_decay
         current_threshold = self.base_threshold + self.adaptive_threshold
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         spike = self.surrogate_function(self.mem - current_threshold)
         
         self.spikes = spike.mean(dim=0) if spike.ndim > 1 else spike
@@ -95,8 +116,6 @@ class AdaptiveLIFNeuron(base.MemoryModule):
         reset_mask = spike.detach() 
         self.mem = self.mem * (1.0 - reset_mask)
         
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
-        # 論文のメカニズムに基づき、スパイク後に閾値を上昇させる
         if self.training:
             self.adaptive_threshold = (
                 self.adaptive_threshold + self.threshold_step * spike.detach()
@@ -106,7 +125,6 @@ class AdaptiveLIFNeuron(base.MemoryModule):
                  self.adaptive_threshold = (
                     self.adaptive_threshold + self.threshold_step * spike
                 )
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         
         return spike, self.mem
 
@@ -197,6 +215,10 @@ class ProbabilisticLIFNeuron(base.MemoryModule):
     確率的にスパイクを生成する Leaky Integrate-and-Fire (LIF) ニューロン。
     論文 arXiv:2509.26507v1 のアイデアに基づく。
     """
+    # --- ▼ 修正: tau_mem を nn.Parameter に変更 (PLIF化) ▼ ---
+    log_tau_mem: nn.Parameter
+    # --- ▲ 修正 ▲ ---
+    
     def __init__(
         self,
         features: int,
@@ -207,7 +229,12 @@ class ProbabilisticLIFNeuron(base.MemoryModule):
     ):
         super().__init__()
         self.features = features
-        self.mem_decay = math.exp(-1.0 / tau_mem)
+        
+        # --- ▼ 修正: tau_mem を学習可能なパラメータ(nn.Parameter)として登録 ▼ ---
+        initial_log_tau = torch.full((features,), math.log(max(1.1, tau_mem - 1.1)))
+        self.log_tau_mem = nn.Parameter(initial_log_tau)
+        # --- ▲ 修正 ▲ ---
+        
         self.threshold = threshold
         self.temperature = temperature # 確率計算の温度パラメータ
         self.noise_intensity = noise_intensity
@@ -238,8 +265,13 @@ class ProbabilisticLIFNeuron(base.MemoryModule):
         if self.mem is None or self.mem.shape != x.shape:
             self.mem = torch.zeros_like(x)
 
+        # --- ▼ 修正: 学習可能な tau_mem から mem_decay を動的に計算 ▼ ---
+        current_tau_mem = torch.exp(self.log_tau_mem) + 1.1
+        mem_decay = torch.exp(-1.0 / current_tau_mem)
+        
         # 1. 膜電位の更新 (LIFダイナミクス)
-        self.mem = self.mem * self.mem_decay + x
+        self.mem = self.mem * mem_decay + x
+        # --- ▲ 修正 ▲ ---
 
         # 2. オプション: ノイズの追加
         if self.training and self.noise_intensity > 0:
@@ -259,8 +291,6 @@ class ProbabilisticLIFNeuron(base.MemoryModule):
             self.total_spikes += spike.detach().sum()
 
         # 4. リセット (スパイクした場合のみ)
-        # Note: 確率的モデルではリセットの扱いについて論文の詳細が必要
-        # ここでは簡易的に、スパイクしたら膜電位をリセットする
         reset_mask = spike.detach()
         self.mem = self.mem * (1.0 - reset_mask)
 
@@ -268,5 +298,4 @@ class ProbabilisticLIFNeuron(base.MemoryModule):
 
     def get_spike_rate_loss(self) -> torch.Tensor:
         """確率的モデルではターゲットスパイク率の損失は通常適用しないが、互換性のために残す"""
-        # (オプション) 発火確率の平均を制御するような損失も考えられる
         return torch.tensor(0.0, device=self.spikes.device)

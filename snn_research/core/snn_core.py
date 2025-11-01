@@ -2,7 +2,6 @@
 # (更新)
 #
 # Title: SNN Core Models (SNNネイティブAttention改修版)
-# Description: This file defines the core SNN architectures for the project.
 # (省略...)
 # 修正(v15): mypy [union-attr] [assignment] エラーを修正。
 #
@@ -12,6 +11,9 @@
 #
 # 修正 (v17):
 # - mypy [name-defined] [union-attr] [misc] エラーを修正。
+#
+# 修正 (v18):
+# - GLIFNeuron (セクション3.1) に対応。
 
 import torch
 import torch.nn as nn
@@ -24,7 +26,9 @@ from torchvision import models # type: ignore
 import logging 
 
 from .base import BaseModel, SNNLayerNorm
-from .neurons import AdaptiveLIFNeuron, IzhikevichNeuron
+# --- ▼ 修正: GLIFNeuron をインポート ▼ ---
+from .neurons import AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron
+# --- ▲ 修正 ▲ ---
 from .mamba_core import SpikingMamba
 from .trm_core import TinyRecursiveModel
 from .sntorch_models import SpikingTransformerSnnTorch 
@@ -33,9 +37,7 @@ from .sntorch_models import SpikingTransformerSnnTorch
 # --- ▼ 新しいアーキテクチャのインポート ▼ ---
 from snn_research.architectures.hybrid_transformer import HybridSNNTransformer
 from snn_research.architectures.hybrid_attention_transformer import HybridAttentionTransformer
-# --- ▼ 修正: SpikingRWKV をインポート ▼ ---
 from snn_research.architectures.spiking_rwkv import SpikingRWKV
-# --- ▲ 修正 ▲ ---
 from snn_research.architectures.sew_resnet import SEWResNet
 from snn_research.architectures.hybrid_neuron_network import HybridSpikingCNN
 # --- ▲ 新しいアーキテクチャのインポート ▲ ---
@@ -71,6 +73,10 @@ class PredictiveCodingLayer(nn.Module):
             valid_params = ['features', 'tau_mem', 'base_threshold', 'adaptation_strength', 'target_spike_rate', 'noise_intensity', 'threshold_decay', 'threshold_step']
         elif neuron_class == IzhikevichNeuron:
             valid_params = ['features', 'a', 'b', 'c', 'd', 'dt']
+        # --- ▼ 修正: GLIFNeuron のパラメータを追加 ▼ ---
+        elif neuron_class == GLIFNeuron:
+            valid_params = ['features', 'base_threshold', 'gate_input_features']
+        # --- ▲ 修正 ▲ ---
         
         filtered_params: Dict[str, Any] = {k: v for k, v in neuron_params.items() if k in valid_params}
         return filtered_params
@@ -98,8 +104,8 @@ class PredictiveCodingLayer(nn.Module):
 class MultiLevelSpikeDrivenSelfAttention(nn.Module):
     neuron_out: nn.Module 
     mem_history: List[torch.Tensor]
-    neuron_q: Union[AdaptiveLIFNeuron, IzhikevichNeuron]
-    neuron_k: Union[AdaptiveLIFNeuron, IzhikevichNeuron]
+    neuron_q: Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron] # ◾️ GLIF を追加
+    neuron_k: Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron] # ◾️ GLIF を追加
 
 
     def __init__(self, d_model: int, n_head: int, neuron_class: Type[nn.Module], neuron_params: Dict[str, Any], time_scales: List[int] = [1, 3, 5]):
@@ -116,9 +122,9 @@ class MultiLevelSpikeDrivenSelfAttention(nn.Module):
         self.out_proj = nn.Linear(d_model * len(time_scales), d_model)
         
         filtered_params = self._filter_neuron_params(neuron_class, neuron_params)
-        self.neuron_q = cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron], neuron_class(features=d_model, **filtered_params))
-        self.neuron_k = cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron], neuron_class(features=d_model, **filtered_params))
-        self.neuron_out = cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron], neuron_class(features=d_model, **filtered_params))
+        self.neuron_q = cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron], neuron_class(features=d_model, **filtered_params))
+        self.neuron_k = cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron], neuron_class(features=d_model, **filtered_params))
+        self.neuron_out = cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron], neuron_class(features=d_model, **filtered_params))
         
         self.sparsity_threshold = nn.Parameter(torch.tensor(0.01))
 
@@ -129,6 +135,10 @@ class MultiLevelSpikeDrivenSelfAttention(nn.Module):
             valid_params = ['features', 'tau_mem', 'base_threshold', 'adaptation_strength', 'target_spike_rate', 'noise_intensity', 'threshold_decay', 'threshold_step']
         elif neuron_class == IzhikevichNeuron:
             valid_params = ['features', 'a', 'b', 'c', 'd', 'dt']
+        # --- ▼ 修正: GLIFNeuron のパラメータを追加 ▼ ---
+        elif neuron_class == GLIFNeuron:
+            valid_params = ['features', 'base_threshold', 'gate_input_features']
+        # --- ▲ 修正 ▲ ---
         
         filtered_params: Dict[str, Any] = {k: v for k, v in neuron_params.items() if k in valid_params}
         return filtered_params
@@ -197,32 +207,25 @@ class MultiLevelSpikeDrivenSelfAttention(nn.Module):
 
 class STAttenBlock(nn.Module):
     mem_history: List[torch.Tensor]
-    lif1: Union[AdaptiveLIFNeuron, IzhikevichNeuron]
-    lif2: Union[AdaptiveLIFNeuron, IzhikevichNeuron]
-    lif3: Union[AdaptiveLIFNeuron, IzhikevichNeuron]
+    lif1: Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron] # ◾️ GLIF を追加
+    lif2: Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron] # ◾️ GLIF を追加
+    lif3: Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron] # ◾️ GLIF を追加
     attn: MultiLevelSpikeDrivenSelfAttention
-    # --- ▼ 修正: 学習可能な遅延パラメータを追加 ▼ ---
     learned_delays: nn.Parameter
-    # --- ▲ 修正 ▲ ---
 
     def __init__(self, d_model: int, n_head: int, neuron_class: Type[nn.Module], neuron_params: Dict[str, Any]):
         super().__init__()
         self.norm1 = SNNLayerNorm(d_model)
         self.attn = MultiLevelSpikeDrivenSelfAttention(d_model, n_head, neuron_class, neuron_params)
-        
-        # --- ▼ 修正: 学習可能な遅延パラメータを追加 ▼ ---
-        # doc/SNN開発：基本設計思想.md (セクション3.3) に基づく
-        # 各チャネル（d_model）が個別の遅延（バイアス）を持つ
         self.learned_delays = nn.Parameter(torch.zeros(d_model))
-        # --- ▲ 修正 ▲ ---
 
         filtered_params = self._filter_neuron_params(neuron_class, neuron_params)
-        self.lif1 = cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron], neuron_class(features=d_model, **filtered_params))
+        self.lif1 = cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron], neuron_class(features=d_model, **filtered_params))
         self.norm2 = SNNLayerNorm(d_model)
         self.fc1 = nn.Linear(d_model, d_model * 4)
-        self.lif2 = cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron], neuron_class(features=d_model * 4, **filtered_params))
+        self.lif2 = cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron], neuron_class(features=d_model * 4, **filtered_params))
         self.fc2 = nn.Linear(d_model * 4, d_model)
-        self.lif3 = cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron], neuron_class(features=d_model, **filtered_params))
+        self.lif3 = cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron], neuron_class(features=d_model, **filtered_params))
         self.mem_history = []
 
     def _filter_neuron_params(self, neuron_class: Type[nn.Module], neuron_params: Dict[str, Any]) -> Dict[str, Any]:
@@ -232,6 +235,10 @@ class STAttenBlock(nn.Module):
             valid_params = ['features', 'tau_mem', 'base_threshold', 'adaptation_strength', 'target_spike_rate', 'noise_intensity', 'threshold_decay', 'threshold_step']
         elif neuron_class == IzhikevichNeuron:
             valid_params = ['features', 'a', 'b', 'c', 'd', 'dt']
+        # --- ▼ 修正: GLIFNeuron のパラメータを追加 ▼ ---
+        elif neuron_class == GLIFNeuron:
+            valid_params = ['features', 'base_threshold', 'gate_input_features']
+        # --- ▲ 修正 ▲ ---
         
         filtered_params: Dict[str, Any] = {k: v for k, v in neuron_params.items() if k in valid_params}
         return filtered_params
@@ -257,12 +264,8 @@ class STAttenBlock(nn.Module):
         x_attn = x + attn_out
         x_flat = x_attn.reshape(B * T, D)
         
-        # --- ▼ 修正: 学習可能な遅延（バイアス）を入力に適用 ▼ ---
-        # (B*T, D) + (D,) -> (B*T, D)
-        # これにより、各チャネルが時間情報を処理するタイミングを学習できる（TCAの補助）
         x_delayed = x_flat + self.learned_delays
         spike_flat, _ = self.lif1(x_delayed)
-        # --- ▲ 修正 ▲ ---
         
         x_res = spike_flat.reshape(B, T, D)
         ffn_in = self.norm2(x_res)
@@ -287,16 +290,36 @@ class BreakthroughSNN(BaseModel):
         self.input_encoder = nn.Linear(d_model, d_model)
 
         neuron_params: Dict[str, Any] = neuron_config.copy() if neuron_config is not None else {}
-        neuron_params.pop('type', None)
+        neuron_type_str: str = neuron_params.pop('type', 'lif') # ◾️
         neuron_params.pop('num_branches', None)
         neuron_params.pop('branch_features', None)
-        neuron_params = {
-            k: v for k, v in neuron_params.items() 
-            if k in ['features', 'tau_mem', 'base_threshold', 'adaptation_strength', 'target_spike_rate', 'noise_intensity', 'threshold_decay', 'threshold_step']
-        }
+        
+        # --- ▼ 修正: GLIFNeuron に対応 ▼ ---
+        neuron_class: Type[Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron]]
+        if neuron_type_str == 'lif':
+            neuron_class = AdaptiveLIFNeuron
+            neuron_params = {
+                k: v for k, v in neuron_params.items() 
+                if k in ['features', 'tau_mem', 'base_threshold', 'adaptation_strength', 'target_spike_rate', 'noise_intensity', 'threshold_decay', 'threshold_step']
+            }
+        elif neuron_type_str == 'izhikevich':
+            neuron_class = IzhikevichNeuron
+            neuron_params = {
+                k: v for k, v in neuron_params.items() 
+                if k in ['features', 'a', 'b', 'c', 'd', 'dt']
+            }
+        elif neuron_type_str == 'glif':
+            neuron_class = GLIFNeuron
+            neuron_params = {
+                k: v for k, v in neuron_params.items() 
+                if k in ['features', 'base_threshold', 'gate_input_features']
+            }
+        else:
+            raise ValueError(f"Unknown neuron type for BreakthroughSNN: {neuron_type_str}")
+        # --- ▲ 修正 ▲ ---
 
         self.pc_layers = nn.ModuleList(
-            [PredictiveCodingLayer(d_model, d_state, AdaptiveLIFNeuron, neuron_params) for _ in range(num_layers)]
+            [PredictiveCodingLayer(d_model, d_state, neuron_class, neuron_params) for _ in range(num_layers)]
         )
         self.output_projection = nn.Linear(d_state * num_layers, vocab_size)
         self._init_weights()
@@ -308,9 +331,13 @@ class BreakthroughSNN(BaseModel):
         embedded_sequence: torch.Tensor = self.input_encoder(token_emb)
         
         # --- ▼ 修正: [union-attr] エラーを解消 ▼ ---
-        # self.pc_layers[0].inference_neuron は Union 型だが、どちらも features 属性を持つはず
-        # mypyが推論できないため、AdaptiveLIFNeuron にキャスト
-        inference_neuron_features: int = cast(int, cast(AdaptiveLIFNeuron, self.pc_layers[0].inference_neuron).features)
+        inference_neuron = self.pc_layers[0].inference_neuron
+        inference_neuron_features: int
+        if isinstance(inference_neuron, (AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron)):
+             inference_neuron_features = cast(int, inference_neuron.features)
+        else:
+             # フォールバック (理論上到達しない)
+             inference_neuron_features = self.d_state
         # --- ▲ 修正 ▲ ---
         states: List[torch.Tensor] = [torch.zeros(batch_size, inference_neuron_features, device=device) for _ in range(self.num_layers)]
         
@@ -368,7 +395,8 @@ class SpikingTransformer(BaseModel):
         neuron_type: str = neuron_config.get("type", "lif")
         neuron_params: Dict[str, Any] = neuron_config.copy()
         neuron_params.pop('type', None)
-        neuron_class: Type[Union[AdaptiveLIFNeuron, IzhikevichNeuron]] 
+        # --- ▼ 修正: GLIFNeuron に対応 ▼ ---
+        neuron_class: Type[Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron]] 
         
         filtered_params: Dict[str, Any]
         if neuron_type == 'lif':
@@ -377,12 +405,21 @@ class SpikingTransformer(BaseModel):
                 k: v for k, v in neuron_params.items() 
                 if k in ['features', 'tau_mem', 'base_threshold', 'adaptation_strength', 'target_spike_rate', 'noise_intensity', 'threshold_decay', 'threshold_step']
             }
-        else: # izhikevich
+        elif neuron_type == 'izhikevich':
             neuron_class = IzhikevichNeuron
             filtered_params = {
                 k: v for k, v in neuron_params.items() 
                 if k in ['features', 'a', 'b', 'c', 'd', 'dt']
             }
+        elif neuron_type == 'glif':
+            neuron_class = GLIFNeuron
+            filtered_params = {
+                k: v for k, v in neuron_params.items() 
+                if k in ['features', 'base_threshold', 'gate_input_features']
+            }
+        else:
+             raise ValueError(f"Unknown neuron type for SpikingTransformer: {neuron_type}")
+        # --- ▲ 修正 ▲ ---
         
         self.token_embedding = nn.Embedding(vocab_size, d_model)
         self.pos_embedding = nn.Parameter(torch.randn(1, 1024, d_model))
@@ -429,12 +466,7 @@ class SpikingTransformer(BaseModel):
         if return_full_mems:
             layer_mems_by_time: List[List[torch.Tensor]] = [[] for _ in range(self.time_steps)]
             
-            # --- ▼ 修正: [misc] エラー (Module object is not iterable) を解消 ▼ ---
-            # self.layers は nn.ModuleList なのでイテレート可能です。
-            # mypyの誤検知または先行する [name-defined] エラーの影響と判断します。
-            # [name-defined] (SpikingRWKV) は修正済みのため、このエラーは解消するはずです。
             for layer_idx, layer_module in enumerate(self.layers):
-            # --- ▲ 修正 ▲ ---
                 block = cast(STAttenBlock, layer_module)
                 num_neurons_in_block = 6 
                 block_mems = block.mem_history
@@ -485,7 +517,7 @@ class SpikingTransformer(BaseModel):
 
 class SimpleSNN(BaseModel):
     all_mems_history: List[torch.Tensor]
-    lif1: Union[AdaptiveLIFNeuron, IzhikevichNeuron]
+    lif1: Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron] # ◾️ GLIF を追加
     fc1: nn.Linear 
 
     def __init__(self, vocab_size: int, d_model: int, hidden_size: int, time_steps: int, neuron_config: Dict[str, Any], **kwargs: Any): 
@@ -497,7 +529,8 @@ class SimpleSNN(BaseModel):
         neuron_type: str = neuron_config.get("type", "lif")
         neuron_params: Dict[str, Any] = neuron_config.copy()
         neuron_params.pop('type', None)
-        neuron_class: Type[Union[AdaptiveLIFNeuron, IzhikevichNeuron]] 
+        # --- ▼ 修正: GLIFNeuron に対応 ▼ ---
+        neuron_class: Type[Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron]] 
         
         filtered_params: Dict[str, Any]
         if neuron_type == 'lif':
@@ -506,13 +539,25 @@ class SimpleSNN(BaseModel):
                 k: v for k, v in neuron_params.items() 
                 if k in ['features', 'tau_mem', 'base_threshold', 'adaptation_strength', 'target_spike_rate', 'noise_intensity', 'threshold_decay', 'threshold_step']
             }
-        else: # izhikevich
+        elif neuron_type == 'izhikevich':
             neuron_class = IzhikevichNeuron
             filtered_params = {
                 k: v for k, v in neuron_params.items() 
                 if k in ['features', 'a', 'b', 'c', 'd', 'dt']
             }
-        self.lif1 = cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron], neuron_class(features=hidden_size, **filtered_params))
+        elif neuron_type == 'glif':
+            neuron_class = GLIFNeuron
+            # ◾️ GLIF は gate_input_features を d_model と同じにする (fc1の前なので) ◾️
+            neuron_params['gate_input_features'] = d_model 
+            filtered_params = {
+                k: v for k, v in neuron_params.items() 
+                if k in ['features', 'base_threshold', 'gate_input_features']
+            }
+        else:
+             raise ValueError(f"Unknown neuron type for SimpleSNN: {neuron_type}")
+        # --- ▲ 修正 ▲ ---
+        
+        self.lif1 = cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron], neuron_class(features=hidden_size, **filtered_params))
         
         self.fc2 = nn.Linear(hidden_size, vocab_size)
         self._init_weights()
@@ -534,11 +579,22 @@ class SimpleSNN(BaseModel):
             hook = self.lif1.register_forward_hook(_hook_mem)
         
         x_avg = x.mean(dim=1) 
+        
+        # --- ▼ 修正: GLIF の入力に対応 ▼ ---
+        # GLIFはゲート入力として x_avg を期待する可能性がある
+        # AdaptiveLIFNeuron/IzhikevichNeuron は fc1(x_avg) を期待する
+        # -> GLIF の実装を修正: ゲート入力も fc1(x_avg) と同じ次元 (hidden_size) にする
+        #    (GLIFNeuron の __init__ で gate_input_features = features としたため、
+        #     fc1(x_avg) をそのまま渡せば良い)
+        
+        x_current = self.fc1(x_avg) # (B, hidden_size)
+        
         for _ in range(self.time_steps):
-            out, _ = self.lif1(self.fc1(x_avg))
+            out, _ = self.lif1(x_current) # (B, hidden_size)
             full_hiddens_list.append(out) 
             out_logits = self.fc2(out)
             outputs.append(out_logits)
+        # --- ▲ 修正 ▲ ---
             
         logits = torch.stack(outputs, dim=1) 
         logits = logits.mean(dim=1) 
@@ -566,7 +622,7 @@ class SimpleSNN(BaseModel):
         return logits, avg_spikes, full_mems
 
 class AnalogToSpikes(BaseModel): 
-    neuron: Union[AdaptiveLIFNeuron, IzhikevichNeuron]
+    neuron: Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron] # ◾️ GLIF を追加
     all_mems_history: List[torch.Tensor]
     
     def __init__(self, in_features: int, out_features: int, time_steps: int, activation: Type[nn.Module], neuron_config: Dict[str, Any]):
@@ -579,7 +635,8 @@ class AnalogToSpikes(BaseModel):
         neuron_params: Dict[str, Any] = neuron_config.copy()
         neuron_params.pop('type', None)
         
-        neuron_class: Type[Union[AdaptiveLIFNeuron, IzhikevichNeuron]] 
+        # --- ▼ 修正: GLIFNeuron に対応 ▼ ---
+        neuron_class: Type[Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron]] 
         
         filtered_params: Dict[str, Any]
         if neuron_type_str == 'lif':
@@ -594,10 +651,19 @@ class AnalogToSpikes(BaseModel):
                 k: v for k, v in neuron_params.items() 
                 if k in ['features', 'a', 'b', 'c', 'd', 'dt']
             }
+        elif neuron_type_str == 'glif':
+            neuron_class = GLIFNeuron
+            # ◾️ GLIF は gate_input_features を out_features と同じにする ◾️
+            neuron_params['gate_input_features'] = out_features
+            filtered_params = {
+                k: v for k, v in neuron_params.items() 
+                if k in ['features', 'base_threshold', 'gate_input_features']
+            }
         else:
             raise ValueError(f"Unknown neuron type for AnalogToSpikes: {neuron_type_str}")
+        # --- ▲ 修正 ▲ ---
         
-        self.neuron = cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron], neuron_class(features=out_features, **filtered_params))
+        self.neuron = cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron], neuron_class(features=out_features, **filtered_params))
         self.output_act = activation()
     
     def _hook_mem(self, module: nn.Module, input: Any, output: Tuple[torch.Tensor, torch.Tensor]) -> None:
@@ -619,7 +685,12 @@ class AnalogToSpikes(BaseModel):
         spikes_history: List[torch.Tensor] = []
         
         # --- ▼ 修正: [union-attr] エラーを解消 ▼ ---
-        neuron_features = cast(AdaptiveLIFNeuron, self.neuron).features
+        neuron_features: int = -1
+        if isinstance(self.neuron, (AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron)):
+            neuron_features = self.neuron.features
+        else:
+             neuron_features = self.out_features # Fallback
+        
         x_time_batched: torch.Tensor = x_repeated.reshape(-1, self.time_steps, neuron_features) 
         # --- ▲ 修正 ▲ ---
 
@@ -642,7 +713,6 @@ class AnalogToSpikes(BaseModel):
         output_shape: Tuple[int, ...]
         
         # --- ▼ 修正: [union-attr] エラーを解消 ▼ ---
-        neuron_features = cast(AdaptiveLIFNeuron, self.neuron).features
         if x_analog.dim() == 3: # (B, L, D_in)
             output_shape = (original_shape[0], original_shape[1], self.time_steps, neuron_features) 
         else: # (B, D_in)
@@ -680,7 +750,8 @@ class HybridCnnSnnModel(BaseModel):
         neuron_type: str = neuron_config.get("type", "lif")
         neuron_params: Dict[str, Any] = neuron_config.copy()
         neuron_params.pop('type', None)
-        neuron_class: Type[Union[AdaptiveLIFNeuron, IzhikevichNeuron]] 
+        # --- ▼ 修正: GLIFNeuron に対応 ▼ ---
+        neuron_class: Type[Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron]] 
         
         filtered_params: Dict[str, Any]
         if neuron_type == 'lif':
@@ -689,12 +760,22 @@ class HybridCnnSnnModel(BaseModel):
                 k: v for k, v in neuron_params.items() 
                 if k in ['features', 'tau_mem', 'base_threshold', 'adaptation_strength', 'target_spike_rate', 'noise_intensity', 'threshold_decay', 'threshold_step']
             }
-        else: # izhikevich
+        elif neuron_type == 'izhikevich':
             neuron_class = IzhikevichNeuron
             filtered_params = {
                 k: v for k, v in neuron_params.items() 
                 if k in ['features', 'a', 'b', 'c', 'd', 'dt']
             }
+        elif neuron_type == 'glif':
+            neuron_class = GLIFNeuron
+            neuron_params['gate_input_features'] = snn_backend['d_model']
+            filtered_params = {
+                k: v for k, v in neuron_params.items() 
+                if k in ['features', 'base_threshold', 'gate_input_features']
+            }
+        else:
+             raise ValueError(f"Unknown neuron type for HybridCnnSnnModel: {neuron_type}")
+        # --- ▲ 修正 ▲ ---
         
         self.snn_backend = nn.ModuleList([
             STAttenBlock(snn_backend['d_model'], snn_backend['n_head'], neuron_class, filtered_params)
@@ -800,7 +881,8 @@ class SpikingCNN(BaseModel):
         neuron_type: str = neuron_config.get("type", "lif")
         neuron_params: Dict[str, Any] = neuron_config.copy()
         neuron_params.pop('type', None)
-        neuron_class: Type[Union[AdaptiveLIFNeuron, IzhikevichNeuron]] 
+        # --- ▼ 修正: GLIFNeuron に対応 ▼ ---
+        neuron_class: Type[Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron]] 
         
         filtered_params: Dict[str, Any]
         if neuron_type == 'lif':
@@ -809,12 +891,25 @@ class SpikingCNN(BaseModel):
                 k: v for k, v in neuron_params.items() 
                 if k in ['features', 'tau_mem', 'base_threshold', 'adaptation_strength', 'target_spike_rate', 'noise_intensity', 'threshold_decay', 'threshold_step']
             }
-        else: # izhikevich
+        elif neuron_type == 'izhikevich':
             neuron_class = IzhikevichNeuron
             filtered_params = {
                 k: v for k, v in neuron_params.items() 
                 if k in ['features', 'a', 'b', 'c', 'd', 'dt']
             }
+        elif neuron_type == 'glif':
+            neuron_class = GLIFNeuron
+            # ◾️ GLIF は gate_input_features を Conv の出力チャネル数に合わせる ◾️
+            # (SpikingConvBlock と同様の実装が必要だが、ここでは features を使う)
+            neuron_params['gate_input_features'] = None # features を使うように促す
+            filtered_params = {
+                k: v for k, v in neuron_params.items() 
+                if k in ['features', 'base_threshold', 'gate_input_features']
+            }
+        else:
+             raise ValueError(f"Unknown neuron type for SpikingCNN: {neuron_type}")
+        # --- ▲ 修正 ▲ ---
+
         
         self.features = nn.Sequential(
             nn.Conv2d(3, 16, kernel_size=3, padding=1),
@@ -847,11 +942,11 @@ class SpikingCNN(BaseModel):
                 self.all_mems_history.append(output[1]) # mem
             
             for module in self.features:
-                if isinstance(module, (AdaptiveLIFNeuron, IzhikevichNeuron)):
+                if isinstance(module, (AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron)): # ◾️ GLIF を追加
                     hooks.append(module.register_forward_hook(_hook_mem))
                     neuron_layers.append(module)
             for module in self.classifier:
-                 if isinstance(module, (AdaptiveLIFNeuron, IzhikevichNeuron)):
+                 if isinstance(module, (AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron)): # ◾️ GLIF を追加
                     hooks.append(module.register_forward_hook(_hook_mem))
                     neuron_layers.append(module)
 
@@ -861,7 +956,7 @@ class SpikingCNN(BaseModel):
             hidden_repr_t: Optional[torch.Tensor] = None 
             
             for features_layer in self.features: 
-                if isinstance(features_layer, (AdaptiveLIFNeuron, IzhikevichNeuron)):
+                if isinstance(features_layer, (AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron)): # ◾️ GLIF を追加
                     B_c, C_c, H_c, W_c = x.shape
                     x_reshaped: torch.Tensor = x.permute(0, 2, 3, 1).reshape(-1, C_c)
                     spikes, _ = features_layer(x_reshaped) # type: ignore[operator]
@@ -880,7 +975,7 @@ class SpikingCNN(BaseModel):
                 if isinstance(classifier_layer, nn.Flatten):
                     x = classifier_layer(x) # type: ignore[operator]
                     continue
-                elif isinstance(classifier_layer, (AdaptiveLIFNeuron, IzhikevichNeuron)):
+                elif isinstance(classifier_layer, (AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron)): # ◾️ GLIF を追加
                     spikes, _ = classifier_layer(x) # type: ignore[operator]
                     x = spikes
                 elif isinstance(classifier_layer, nn.Linear):
@@ -953,9 +1048,7 @@ class SNNCore(nn.Module):
                 "hybrid_transformer": HybridSNNTransformer,
                 "hybrid_attention_transformer": HybridAttentionTransformer,
                 "spiking_rwkv": SpikingRWKV,
-                # --- ▼ 修正: SEWResNet を追加 ▼ ---
                 "sew_resnet": SEWResNet,
-                # --- ▲ 修正 ▲ ---
             }
         elif backend == "snntorch":
             model_map = { # type: ignore[assignment]
@@ -970,30 +1063,20 @@ class SNNCore(nn.Module):
         if 'time_steps' not in params and model_type == 'simple':
              params['time_steps'] = config.get('time_steps', 16) 
              
-        # --- ▼ 修正: SpikingCNN/SEWResNet の vocab_size (num_classes) 対応 ▼ ---
         if model_type in ["spiking_cnn", "sew_resnet"]:
-            # これらのモデルは vocab_size を num_classes として扱う
-            # config から num_classes を優先的に読み込む
             num_classes_cfg = OmegaConf.select(config, "num_classes", default=None)
             if num_classes_cfg is not None:
                 params['num_classes'] = num_classes_cfg
             else:
-                # config にない場合は、渡された vocab_size を num_classes として使う
                 params['num_classes'] = vocab_size
-            # vocab_size は kwargs に含まれているため、削除は不要 (BaseModelが**kwargsで受ける)
-            # ただし、SEWResNetの__init__シグネチャを合わせる
-            # (SEWResNetは num_classes を受け取り、**kwargs で vocab_size を無視する)
         
         self.model = model_map[model_type](vocab_size=vocab_size, neuron_config=neuron_config, **params)
-        # --- ▲ 修正 ▲ ---
         
 
     def forward(self, *args: Any, **kwargs: Any) -> Any:
         model_type: Optional[str] = self.config.get("architecture_type")
         
-        # --- ▼ 修正: SEWResNet を画像タスクとして認識 ▼ ---
         input_key: str = 'input_images' if model_type in ["hybrid_cnn_snn", "spiking_cnn", "sew_resnet"] else 'input_ids'
-        # --- ▲ 修正 ▲ ---
         
         input_data: Optional[torch.Tensor] = kwargs.get(input_key)
         
@@ -1008,9 +1091,7 @@ class SNNCore(nn.Module):
         if input_data is None:
             return self.model(**forward_kwargs) # type: ignore[operator]
 
-        # --- ▼ 修正: SEWResNet を画像タスクとして認識 ▼ ---
         if model_type in ["hybrid_cnn_snn", "spiking_cnn", "sew_resnet"]:
-        # --- ▲ 修正 ▲ ---
             return self.model(input_images=input_data, **forward_kwargs) # type: ignore[operator]
         else:
             return self.model(input_ids=input_data, **forward_kwargs) # type: ignore[operator]

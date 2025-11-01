@@ -11,9 +11,10 @@
 #
 # 修正 (v17):
 # - mypy [name-defined] [union-attr] [misc] エラーを修正。
-#
-# 修正 (v18):
+# - v16, v17, v18 の変更を v15 ベースのファイルに再適用。
 # - GLIFNeuron (セクション3.1) に対応。
+# - SpikingRWKV (セクション4.4) に対応。
+# - SEWResNet (セクション2.1) に対応。
 
 import torch
 import torch.nn as nn
@@ -23,7 +24,9 @@ from typing import Tuple, Dict, Any, Optional, List, Type, cast, Union
 import math
 from omegaconf import DictConfig, OmegaConf
 from torchvision import models # type: ignore
+# --- ▼ 修正 ▼ ---
 import logging 
+# --- ▲ 修正 ▲ ---
 
 from .base import BaseModel, SNNLayerNorm
 # --- ▼ 修正: GLIFNeuron をインポート ▼ ---
@@ -34,30 +37,31 @@ from .trm_core import TinyRecursiveModel
 from .sntorch_models import SpikingTransformerSnnTorch 
 
 
-# --- ▼ 新しいアーキテクチャのインポート ▼ ---
+# --- ▼ 新しいアーキテクチャのインポート (修正) ▼ ---
 from snn_research.architectures.hybrid_transformer import HybridSNNTransformer
 from snn_research.architectures.hybrid_attention_transformer import HybridAttentionTransformer
 from snn_research.architectures.spiking_rwkv import SpikingRWKV
 from snn_research.architectures.sew_resnet import SEWResNet
 from snn_research.architectures.hybrid_neuron_network import HybridSpikingCNN
-# --- ▲ 新しいアーキテクチャのインポート ▲ ---
+# --- ▲ 新しいアーキテクチャのインポート (修正) ▲ ---
 
-
+# --- ▼ 修正 ▼ ---
 logger = logging.getLogger(__name__)
+# --- ▲ 修正 ▲ ---
 
 
 class PredictiveCodingLayer(nn.Module):
     error_mean: torch.Tensor
     error_std: torch.Tensor
-    generative_neuron: Union[AdaptiveLIFNeuron, IzhikevichNeuron]
-    inference_neuron: Union[AdaptiveLIFNeuron, IzhikevichNeuron]
+    generative_neuron: Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron] # ◾️ GLIF を追加
+    inference_neuron: Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron] # ◾️ GLIF を追加
 
     def __init__(self, d_model: int, d_state: int, neuron_class: Type[nn.Module], neuron_params: Dict[str, Any]):
         super().__init__()
         self.generative_fc = nn.Linear(d_state, d_model)
-        self.generative_neuron = cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron], neuron_class(features=d_model, **self._filter_neuron_params(neuron_class, neuron_params)))
+        self.generative_neuron = cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron], neuron_class(features=d_model, **self._filter_neuron_params(neuron_class, neuron_params)))
         self.inference_fc = nn.Linear(d_model, d_state)
-        self.inference_neuron = cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron], neuron_class(features=d_state, **self._filter_neuron_params(neuron_class, neuron_params)))
+        self.inference_neuron = cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron], neuron_class(features=d_state, **self._filter_neuron_params(neuron_class, neuron_params)))
         self.norm_state = SNNLayerNorm(d_state)
         self.norm_error = SNNLayerNorm(d_model)
         self.error_scale = nn.Parameter(torch.ones(1))
@@ -290,7 +294,7 @@ class BreakthroughSNN(BaseModel):
         self.input_encoder = nn.Linear(d_model, d_model)
 
         neuron_params: Dict[str, Any] = neuron_config.copy() if neuron_config is not None else {}
-        neuron_type_str: str = neuron_params.pop('type', 'lif') # ◾️
+        neuron_type_str: str = neuron_params.pop('type', 'lif') 
         neuron_params.pop('num_branches', None)
         neuron_params.pop('branch_features', None)
         
@@ -310,6 +314,7 @@ class BreakthroughSNN(BaseModel):
             }
         elif neuron_type_str == 'glif':
             neuron_class = GLIFNeuron
+            neuron_params['gate_input_features'] = d_model # ゲート入力を d_model に設定
             neuron_params = {
                 k: v for k, v in neuron_params.items() 
                 if k in ['features', 'base_threshold', 'gate_input_features']
@@ -330,14 +335,13 @@ class BreakthroughSNN(BaseModel):
         token_emb: torch.Tensor = self.token_embedding(input_ids)
         embedded_sequence: torch.Tensor = self.input_encoder(token_emb)
         
-        # --- ▼ 修正: [union-attr] エラーを解消 ▼ ---
+        # --- ▼ 修正: [union-attr] エラーを解消 (isinstance) ▼ ---
         inference_neuron = self.pc_layers[0].inference_neuron
         inference_neuron_features: int
         if isinstance(inference_neuron, (AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron)):
-             inference_neuron_features = cast(int, inference_neuron.features)
+             inference_neuron_features = inference_neuron.features
         else:
-             # フォールバック (理論上到達しない)
-             inference_neuron_features = self.d_state
+             inference_neuron_features = self.d_state # Fallback
         # --- ▲ 修正 ▲ ---
         states: List[torch.Tensor] = [torch.zeros(batch_size, inference_neuron_features, device=device) for _ in range(self.num_layers)]
         
@@ -413,6 +417,7 @@ class SpikingTransformer(BaseModel):
             }
         elif neuron_type == 'glif':
             neuron_class = GLIFNeuron
+            neuron_params['gate_input_features'] = d_model
             filtered_params = {
                 k: v for k, v in neuron_params.items() 
                 if k in ['features', 'base_threshold', 'gate_input_features']
@@ -466,7 +471,9 @@ class SpikingTransformer(BaseModel):
         if return_full_mems:
             layer_mems_by_time: List[List[torch.Tensor]] = [[] for _ in range(self.time_steps)]
             
+            # --- ▼ 修正: [misc] エラー (Module object is not iterable) を解消 ▼ ---
             for layer_idx, layer_module in enumerate(self.layers):
+            # --- ▲ 修正 ▲ ---
                 block = cast(STAttenBlock, layer_module)
                 num_neurons_in_block = 6 
                 block_mems = block.mem_history
@@ -547,8 +554,8 @@ class SimpleSNN(BaseModel):
             }
         elif neuron_type == 'glif':
             neuron_class = GLIFNeuron
-            # ◾️ GLIF は gate_input_features を d_model と同じにする (fc1の前なので) ◾️
-            neuron_params['gate_input_features'] = d_model 
+            # ◾️ GLIF は gate_input_features を fc1 の出力 (hidden_size) に合わせる ◾️
+            neuron_params['gate_input_features'] = hidden_size
             filtered_params = {
                 k: v for k, v in neuron_params.items() 
                 if k in ['features', 'base_threshold', 'gate_input_features']
@@ -580,13 +587,6 @@ class SimpleSNN(BaseModel):
         
         x_avg = x.mean(dim=1) 
         
-        # --- ▼ 修正: GLIF の入力に対応 ▼ ---
-        # GLIFはゲート入力として x_avg を期待する可能性がある
-        # AdaptiveLIFNeuron/IzhikevichNeuron は fc1(x_avg) を期待する
-        # -> GLIF の実装を修正: ゲート入力も fc1(x_avg) と同じ次元 (hidden_size) にする
-        #    (GLIFNeuron の __init__ で gate_input_features = features としたため、
-        #     fc1(x_avg) をそのまま渡せば良い)
-        
         x_current = self.fc1(x_avg) # (B, hidden_size)
         
         for _ in range(self.time_steps):
@@ -594,7 +594,6 @@ class SimpleSNN(BaseModel):
             full_hiddens_list.append(out) 
             out_logits = self.fc2(out)
             outputs.append(out_logits)
-        # --- ▲ 修正 ▲ ---
             
         logits = torch.stack(outputs, dim=1) 
         logits = logits.mean(dim=1) 
@@ -653,7 +652,6 @@ class AnalogToSpikes(BaseModel):
             }
         elif neuron_type_str == 'glif':
             neuron_class = GLIFNeuron
-            # ◾️ GLIF は gate_input_features を out_features と同じにする ◾️
             neuron_params['gate_input_features'] = out_features
             filtered_params = {
                 k: v for k, v in neuron_params.items() 
@@ -684,12 +682,12 @@ class AnalogToSpikes(BaseModel):
 
         spikes_history: List[torch.Tensor] = []
         
-        # --- ▼ 修正: [union-attr] エラーを解消 ▼ ---
+        # --- ▼ 修正: [union-attr] エラーを解消 (isinstance) ▼ ---
         neuron_features: int = -1
         if isinstance(self.neuron, (AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron)):
             neuron_features = self.neuron.features
         else:
-             neuron_features = self.out_features # Fallback
+             neuron_features = self.projection.out_features # Fallback
         
         x_time_batched: torch.Tensor = x_repeated.reshape(-1, self.time_steps, neuron_features) 
         # --- ▲ 修正 ▲ ---
@@ -712,12 +710,10 @@ class AnalogToSpikes(BaseModel):
         original_shape: Tuple[int, ...] = x_repeated.shape
         output_shape: Tuple[int, ...]
         
-        # --- ▼ 修正: [union-attr] エラーを解消 ▼ ---
         if x_analog.dim() == 3: # (B, L, D_in)
             output_shape = (original_shape[0], original_shape[1], self.time_steps, neuron_features) 
         else: # (B, D_in)
             output_shape = (original_shape[0], self.time_steps, neuron_features) 
-        # --- ▲ 修正 ▲ ---
             
         return spikes_stacked.reshape(output_shape), full_mems
 
@@ -899,8 +895,6 @@ class SpikingCNN(BaseModel):
             }
         elif neuron_type == 'glif':
             neuron_class = GLIFNeuron
-            # ◾️ GLIF は gate_input_features を Conv の出力チャネル数に合わせる ◾️
-            # (SpikingConvBlock と同様の実装が必要だが、ここでは features を使う)
             neuron_params['gate_input_features'] = None # features を使うように促す
             filtered_params = {
                 k: v for k, v in neuron_params.items() 

@@ -6,13 +6,15 @@
 # モジュール（v2 Transformer, Hybridなど）をインポートします。
 # mypy --strict 準拠。
 # 修正 (v2): SpikingDiffusionModel を __all__ に追加。
+# 修正 (v3): SEWResNet を __all__ に追加。
 
 from .spiking_transformer_v2 import SpikingTransformerV2, SDSAEncoderLayer
 from .hybrid_attention_transformer import HybridAttentionTransformer, AdaptiveTransformerLayer
 from .hybrid_neuron_network import HybridSpikingCNN
 from .hybrid_transformer import HybridSNNTransformer, HybridTransformerLayer
-# --- ▼ 追加 ▼ ---
 from .spiking_diffusion_model import SpikingDiffusionModel
+# --- ▼ 追加 ▼ ---
+from .sew_resnet import SEWResNet, SEWResidualBlock
 # --- ▲ 追加 ▲ ---
 from typing import List
 
@@ -24,7 +26,9 @@ __all__: List[str] = [
     "HybridSpikingCNN",
     "HybridSNNTransformer",
     "HybridTransformerLayer",
-    # --- ▼ 追加 ▼ ---
     "SpikingDiffusionModel",
+    # --- ▼ 追加 ▼ ---
+    "SEWResNet",
+    "SEWResidualBlock",
     # --- ▲ 追加 ▲ ---
 ]

@@ -17,28 +17,28 @@
 # 修正 (v3): mypy [name-defined: Union] エラーを解消。
 # 修正 (v4): mypy [name-defined: logger] エラーを解消。
 # 修正 (v5): mypyエラー(v4)の修正漏れ（Union, cast）を再度修正。
+# 修正 (v6): mypy [name-defined] [operator] エラーを解消 (インポートの整理)
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-# --- ▼ 修正 v3, v5 ▼ ---
+# --- ▼ 修正 v3, v5, v6 ▼ ---
 from typing import Tuple, Dict, Any, Type, Optional, List, cast, Union
-# --- ▲ 修正 v3, v5 ▲ ---
 import math
-# --- ▼ 修正 v2 & v4 ▼ ---
 import logging
-# --- ▲ 修正 v2 & v4 ▲ ---
+# --- ▲ 修正 v3, v5, v6 ▲ ---
 
 # SNNのコアコンポーネントをインポート
 from snn_research.core.base import BaseModel, SNNLayerNorm
 from snn_research.core.neurons import AdaptiveLIFNeuron, IzhikevichNeuron
-from spikingjelly.activation_based import functional as SJ_F # type: ignore
-from spikingjelly.activation_based import base as sj_base # type: ignore
+from spikingjelly.activation_based import functional as SJ_F # type: ignore[import-untyped]
+from spikingjelly.activation_based import base as sj_base # type: ignore[import-untyped]
 
-# --- ▼ 修正 v4 ▼ ---
-# ロガー設定
+# --- ▼ 修正 v4, v6 ▼ ---
+# ロガー設定 (トップレベル、全インポート後)
 logger = logging.getLogger(__name__)
-# --- ▲ 修正 v4 ▲ ---
+# --- ▲ 修正 v4, v6 ▲ ---
+
 
 class SpikingRWKVBlock(sj_base.MemoryModule):
     """
@@ -51,7 +51,6 @@ class SpikingRWKVBlock(sj_base.MemoryModule):
     time_mix_k: nn.Linear
     time_mix_v: nn.Linear
     time_mix_r: nn.Linear
-    # --- ▼ 修正 v3, v5 ▼ ---
     time_key_lif: Union[AdaptiveLIFNeuron, IzhikevichNeuron]
     time_value_lif: Union[AdaptiveLIFNeuron, IzhikevichNeuron]
     time_receptance_lif: Union[AdaptiveLIFNeuron, IzhikevichNeuron]
@@ -61,7 +60,6 @@ class SpikingRWKVBlock(sj_base.MemoryModule):
     channel_mix_r: nn.Linear
     channel_key_lif: Union[AdaptiveLIFNeuron, IzhikevichNeuron]
     channel_receptance_lif: Union[AdaptiveLIFNeuron, IzhikevichNeuron]
-    # --- ▲ 修正 v3, v5 ▲ ---
     
     time_decay: nn.Parameter
     time_first: nn.Parameter
@@ -87,11 +85,9 @@ class SpikingRWKVBlock(sj_base.MemoryModule):
         self.time_first = nn.Parameter(torch.ones(d_model) * 0.1) 
 
         # Time-mixing用ニューロン
-        # --- ▼ 修正 v2, v5 ▼ ---
         self.time_key_lif = cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron], neuron_class(features=d_model, **neuron_params))
         self.time_value_lif = cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron], neuron_class(features=d_model, **neuron_params))
         self.time_receptance_lif = cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron], neuron_class(features=d_model, **neuron_params))
-        # --- ▲ 修正 v2, v5 ▲ ---
 
         # --- Channel-mixing (FFNの代替) ---
         self.ln_channel = SNNLayerNorm(d_model)
@@ -101,10 +97,8 @@ class SpikingRWKVBlock(sj_base.MemoryModule):
         self.channel_mix_v = nn.Linear(d_ffn, d_model, bias=False) # v は k, r の後
 
         # Channel-mixing用ニューロン
-        # --- ▼ 修正 v2, v5 ▼ ---
         self.channel_key_lif = cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron], neuron_class(features=d_ffn, **neuron_params))
         self.channel_receptance_lif = cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron], neuron_class(features=d_model, **neuron_params))
-        # --- ▲ 修正 v2, v5 ▲ ---
 
     def set_stateful(self, stateful: bool) -> None:
         super().set_stateful(stateful)
@@ -112,7 +106,6 @@ class SpikingRWKVBlock(sj_base.MemoryModule):
         for module in [self.time_key_lif, self.time_value_lif, self.time_receptance_lif,
                        self.channel_key_lif, self.channel_receptance_lif]:
             if hasattr(module, 'set_stateful'):
-                # 修正: mypy [unsafe-call]
                 cast(Any, module).set_stateful(stateful)
 
     def reset(self) -> None:
@@ -120,7 +113,6 @@ class SpikingRWKVBlock(sj_base.MemoryModule):
         for module in [self.time_key_lif, self.time_value_lif, self.time_receptance_lif,
                        self.channel_key_lif, self.channel_receptance_lif]:
             if hasattr(module, 'reset'):
-                # 修正: mypy [unsafe-call]
                 cast(Any, module).reset()
 
     def forward(
@@ -233,12 +225,10 @@ class SpikingRWKV(BaseModel):
         ])
         
         # SpikeGPT(引用[88])のアイデア: Time-mixing state (wkv) をLIFニューロンで管理
-        # --- ▼ 修正 v5 ▼ ---
         self.time_mixing_neurons = nn.ModuleList([
              cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron], neuron_class(features=d_model, **neuron_params))
              for _ in range(num_layers)
         ])
-        # --- ▲ 修正 v5 ▲ ---
 
         self.final_norm = SNNLayerNorm(d_model)
         self.output_projection = nn.Linear(d_model, vocab_size)

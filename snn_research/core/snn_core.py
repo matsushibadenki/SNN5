@@ -3,18 +3,17 @@
 #
 # Title: SNN Core Models (SNNネイティブAttention改修版)
 # (省略...)
-# 修正(v15): mypy [union-attr] [assignment] エラーを修正。
-#
-# 改善 (v16):
-# - doc/SNN開発：基本設計思想.md (セクション3.3, 引用[31]) に基づき、
-#   STAttenBlock に「学習可能な遅延」を導入し、TCA問題への対応を強化。
-#
-# 修正 (v17):
+# 修正(v17):
 # - mypy [name-defined] [union-attr] [misc] エラーを修正。
 # - v16, v17, v18 の変更を v15 ベースのファイルに再適用。
 # - GLIFNeuron (セクション3.1) に対応。
 # - SpikingRWKV (セクション4.4) に対応。
 # - SEWResNet (セクション2.1) に対応。
+#
+# 改善 (v19):
+# - doc/SNN開発：基本設計思想.md (セクション4.1, 引用[70]) に基づき、
+#   AnalogToSpikes モジュールを改修し、DifferentiableTTFSEncoder (学習可能なエンコーダ) を
+#   使用できるようにする。
 
 import torch
 import torch.nn as nn
@@ -24,37 +23,36 @@ from typing import Tuple, Dict, Any, Optional, List, Type, cast, Union
 import math
 from omegaconf import DictConfig, OmegaConf
 from torchvision import models # type: ignore
-# --- ▼ 修正 ▼ ---
 import logging 
-# --- ▲ 修正 ▲ ---
 
 from .base import BaseModel, SNNLayerNorm
-# --- ▼ 修正: GLIFNeuron をインポート ▼ ---
 from .neurons import AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron
-# --- ▲ 修正 ▲ ---
 from .mamba_core import SpikingMamba
 from .trm_core import TinyRecursiveModel
 from .sntorch_models import SpikingTransformerSnnTorch 
+# --- ▼ 修正: 学習可能なエンコーダをインポート ▼ ---
+from snn_research.io.spike_encoder import DifferentiableTTFSEncoder
+# --- ▲ 修正 ▲ ---
 
 
-# --- ▼ 新しいアーキテクチャのインポート (修正) ▼ ---
+# --- ▼ 新しいアーキテクチャのインポート ▼ ---
 from snn_research.architectures.hybrid_transformer import HybridSNNTransformer
 from snn_research.architectures.hybrid_attention_transformer import HybridAttentionTransformer
 from snn_research.architectures.spiking_rwkv import SpikingRWKV
 from snn_research.architectures.sew_resnet import SEWResNet
 from snn_research.architectures.hybrid_neuron_network import HybridSpikingCNN
-# --- ▲ 新しいアーキテクチャのインポート (修正) ▲ ---
+# --- ▲ 新しいアーキテクチャのインポート ▲ ---
 
-# --- ▼ 修正 ▼ ---
+
 logger = logging.getLogger(__name__)
-# --- ▲ 修正 ▲ ---
 
 
 class PredictiveCodingLayer(nn.Module):
+    # (変更なし)
     error_mean: torch.Tensor
     error_std: torch.Tensor
-    generative_neuron: Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron] # ◾️ GLIF を追加
-    inference_neuron: Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron] # ◾️ GLIF を追加
+    generative_neuron: Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron] 
+    inference_neuron: Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron] 
 
     def __init__(self, d_model: int, d_state: int, neuron_class: Type[nn.Module], neuron_params: Dict[str, Any]):
         super().__init__()
@@ -77,9 +75,11 @@ class PredictiveCodingLayer(nn.Module):
             valid_params = ['features', 'tau_mem', 'base_threshold', 'adaptation_strength', 'target_spike_rate', 'noise_intensity', 'threshold_decay', 'threshold_step']
         elif neuron_class == IzhikevichNeuron:
             valid_params = ['features', 'a', 'b', 'c', 'd', 'dt']
-        # --- ▼ 修正: GLIFNeuron のパラメータを追加 ▼ ---
         elif neuron_class == GLIFNeuron:
             valid_params = ['features', 'base_threshold', 'gate_input_features']
+        # --- ▼ 修正: DifferentiableTTFSEncoder のパラメータを追加 ▼ ---
+        elif neuron_class == DifferentiableTTFSEncoder:
+            valid_params = ['num_neurons', 'duration', 'initial_sensitivity']
         # --- ▲ 修正 ▲ ---
         
         filtered_params: Dict[str, Any] = {k: v for k, v in neuron_params.items() if k in valid_params}
@@ -106,10 +106,11 @@ class PredictiveCodingLayer(nn.Module):
         return updated_state, prediction_error, combined_mem
 
 class MultiLevelSpikeDrivenSelfAttention(nn.Module):
+    # (変更なし)
     neuron_out: nn.Module 
     mem_history: List[torch.Tensor]
-    neuron_q: Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron] # ◾️ GLIF を追加
-    neuron_k: Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron] # ◾️ GLIF を追加
+    neuron_q: Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron] 
+    neuron_k: Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron] 
 
 
     def __init__(self, d_model: int, n_head: int, neuron_class: Type[nn.Module], neuron_params: Dict[str, Any], time_scales: List[int] = [1, 3, 5]):
@@ -139,10 +140,8 @@ class MultiLevelSpikeDrivenSelfAttention(nn.Module):
             valid_params = ['features', 'tau_mem', 'base_threshold', 'adaptation_strength', 'target_spike_rate', 'noise_intensity', 'threshold_decay', 'threshold_step']
         elif neuron_class == IzhikevichNeuron:
             valid_params = ['features', 'a', 'b', 'c', 'd', 'dt']
-        # --- ▼ 修正: GLIFNeuron のパラメータを追加 ▼ ---
         elif neuron_class == GLIFNeuron:
             valid_params = ['features', 'base_threshold', 'gate_input_features']
-        # --- ▲ 修正 ▲ ---
         
         filtered_params: Dict[str, Any] = {k: v for k, v in neuron_params.items() if k in valid_params}
         return filtered_params
@@ -210,10 +209,11 @@ class MultiLevelSpikeDrivenSelfAttention(nn.Module):
         return final_spikes.reshape(B, T, C)
 
 class STAttenBlock(nn.Module):
+    # (変更なし)
     mem_history: List[torch.Tensor]
-    lif1: Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron] # ◾️ GLIF を追加
-    lif2: Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron] # ◾️ GLIF を追加
-    lif3: Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron] # ◾️ GLIF を追加
+    lif1: Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron] 
+    lif2: Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron] 
+    lif3: Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron] 
     attn: MultiLevelSpikeDrivenSelfAttention
     learned_delays: nn.Parameter
 
@@ -239,10 +239,8 @@ class STAttenBlock(nn.Module):
             valid_params = ['features', 'tau_mem', 'base_threshold', 'adaptation_strength', 'target_spike_rate', 'noise_intensity', 'threshold_decay', 'threshold_step']
         elif neuron_class == IzhikevichNeuron:
             valid_params = ['features', 'a', 'b', 'c', 'd', 'dt']
-        # --- ▼ 修正: GLIFNeuron のパラメータを追加 ▼ ---
         elif neuron_class == GLIFNeuron:
             valid_params = ['features', 'base_threshold', 'gate_input_features']
-        # --- ▲ 修正 ▲ ---
         
         filtered_params: Dict[str, Any] = {k: v for k, v in neuron_params.items() if k in valid_params}
         return filtered_params
@@ -284,6 +282,7 @@ class STAttenBlock(nn.Module):
         return out
 
 class BreakthroughSNN(BaseModel):
+    # (変更なし)
     def __init__(self, vocab_size: int, d_model: int, d_state: int, num_layers: int, time_steps: int, n_head: int, neuron_config: Optional[Dict[str, Any]] = None, **kwargs: Any):
         super().__init__()
         self.time_steps = time_steps
@@ -298,7 +297,6 @@ class BreakthroughSNN(BaseModel):
         neuron_params.pop('num_branches', None)
         neuron_params.pop('branch_features', None)
         
-        # --- ▼ 修正: GLIFNeuron に対応 ▼ ---
         neuron_class: Type[Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron]]
         if neuron_type_str == 'lif':
             neuron_class = AdaptiveLIFNeuron
@@ -321,7 +319,6 @@ class BreakthroughSNN(BaseModel):
             }
         else:
             raise ValueError(f"Unknown neuron type for BreakthroughSNN: {neuron_type_str}")
-        # --- ▲ 修正 ▲ ---
 
         self.pc_layers = nn.ModuleList(
             [PredictiveCodingLayer(d_model, d_state, neuron_class, neuron_params) for _ in range(num_layers)]
@@ -335,14 +332,12 @@ class BreakthroughSNN(BaseModel):
         token_emb: torch.Tensor = self.token_embedding(input_ids)
         embedded_sequence: torch.Tensor = self.input_encoder(token_emb)
         
-        # --- ▼ 修正: [union-attr] エラーを解消 (isinstance) ▼ ---
         inference_neuron = self.pc_layers[0].inference_neuron
         inference_neuron_features: int
         if isinstance(inference_neuron, (AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron)):
              inference_neuron_features = inference_neuron.features
         else:
              inference_neuron_features = self.d_state # Fallback
-        # --- ▲ 修正 ▲ ---
         states: List[torch.Tensor] = [torch.zeros(batch_size, inference_neuron_features, device=device) for _ in range(self.num_layers)]
         
         all_timestep_outputs: List[torch.Tensor] = []
@@ -389,6 +384,7 @@ class BreakthroughSNN(BaseModel):
         return output, avg_spikes, mem_to_return
 
 class SpikingTransformer(BaseModel):
+    # (変更なし)
     all_mems_history: List[torch.Tensor]
     def __init__(self, vocab_size: int, d_model: int, n_head: int, num_layers: int, time_steps: int, neuron_config: Dict[str, Any], **kwargs: Any):
         super().__init__()
@@ -399,7 +395,6 @@ class SpikingTransformer(BaseModel):
         neuron_type: str = neuron_config.get("type", "lif")
         neuron_params: Dict[str, Any] = neuron_config.copy()
         neuron_params.pop('type', None)
-        # --- ▼ 修正: GLIFNeuron に対応 ▼ ---
         neuron_class: Type[Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron]] 
         
         filtered_params: Dict[str, Any]
@@ -424,7 +419,6 @@ class SpikingTransformer(BaseModel):
             }
         else:
              raise ValueError(f"Unknown neuron type for SpikingTransformer: {neuron_type}")
-        # --- ▲ 修正 ▲ ---
         
         self.token_embedding = nn.Embedding(vocab_size, d_model)
         self.pos_embedding = nn.Parameter(torch.randn(1, 1024, d_model))
@@ -471,9 +465,7 @@ class SpikingTransformer(BaseModel):
         if return_full_mems:
             layer_mems_by_time: List[List[torch.Tensor]] = [[] for _ in range(self.time_steps)]
             
-            # --- ▼ 修正: [misc] エラー (Module object is not iterable) を解消 ▼ ---
             for layer_idx, layer_module in enumerate(self.layers):
-            # --- ▲ 修正 ▲ ---
                 block = cast(STAttenBlock, layer_module)
                 num_neurons_in_block = 6 
                 block_mems = block.mem_history
@@ -523,8 +515,9 @@ class SpikingTransformer(BaseModel):
         return output, avg_spikes, full_mems
 
 class SimpleSNN(BaseModel):
+    # (変更なし)
     all_mems_history: List[torch.Tensor]
-    lif1: Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron] # ◾️ GLIF を追加
+    lif1: Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron] 
     fc1: nn.Linear 
 
     def __init__(self, vocab_size: int, d_model: int, hidden_size: int, time_steps: int, neuron_config: Dict[str, Any], **kwargs: Any): 
@@ -536,7 +529,6 @@ class SimpleSNN(BaseModel):
         neuron_type: str = neuron_config.get("type", "lif")
         neuron_params: Dict[str, Any] = neuron_config.copy()
         neuron_params.pop('type', None)
-        # --- ▼ 修正: GLIFNeuron に対応 ▼ ---
         neuron_class: Type[Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron]] 
         
         filtered_params: Dict[str, Any]
@@ -554,7 +546,6 @@ class SimpleSNN(BaseModel):
             }
         elif neuron_type == 'glif':
             neuron_class = GLIFNeuron
-            # ◾️ GLIF は gate_input_features を fc1 の出力 (hidden_size) に合わせる ◾️
             neuron_params['gate_input_features'] = hidden_size
             filtered_params = {
                 k: v for k, v in neuron_params.items() 
@@ -562,7 +553,6 @@ class SimpleSNN(BaseModel):
             }
         else:
              raise ValueError(f"Unknown neuron type for SimpleSNN: {neuron_type}")
-        # --- ▲ 修正 ▲ ---
         
         self.lif1 = cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron], neuron_class(features=hidden_size, **filtered_params))
         
@@ -621,7 +611,9 @@ class SimpleSNN(BaseModel):
         return logits, avg_spikes, full_mems
 
 class AnalogToSpikes(BaseModel): 
-    neuron: Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron] # ◾️ GLIF を追加
+    # --- ▼ 修正: DTTFS を Union に追加 ▼ ---
+    neuron: Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron, DifferentiableTTFSEncoder]
+    # --- ▲ 修正 ▲ ---
     all_mems_history: List[torch.Tensor]
     
     def __init__(self, in_features: int, out_features: int, time_steps: int, activation: Type[nn.Module], neuron_config: Dict[str, Any]):
@@ -630,12 +622,12 @@ class AnalogToSpikes(BaseModel):
         self.all_mems_history = []
         self.projection = nn.Linear(in_features, out_features)
         
+        # --- ▼ 修正: DTTFS (学習可能エンコーダ) に対応 ▼ ---
         neuron_type_str: str = neuron_config.get("type", "lif")
         neuron_params: Dict[str, Any] = neuron_config.copy()
         neuron_params.pop('type', None)
         
-        # --- ▼ 修正: GLIFNeuron に対応 ▼ ---
-        neuron_class: Type[Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron]] 
+        neuron_class: Type[Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron, DifferentiableTTFSEncoder]] 
         
         filtered_params: Dict[str, Any]
         if neuron_type_str == 'lif':
@@ -657,19 +649,49 @@ class AnalogToSpikes(BaseModel):
                 k: v for k, v in neuron_params.items() 
                 if k in ['features', 'base_threshold', 'gate_input_features']
             }
+        elif neuron_type_str == 'dttfs': # 設計思想 4.1
+            neuron_class = DifferentiableTTFSEncoder
+            neuron_params['num_neurons'] = out_features
+            neuron_params['duration'] = time_steps
+            filtered_params = {
+                k: v for k, v in neuron_params.items() 
+                if k in ['num_neurons', 'duration', 'initial_sensitivity']
+            }
         else:
             raise ValueError(f"Unknown neuron type for AnalogToSpikes: {neuron_type_str}")
-        # --- ▲ 修正 ▲ ---
         
-        self.neuron = cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron], neuron_class(features=out_features, **filtered_params))
+        self.neuron = cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron, DifferentiableTTFSEncoder], neuron_class(**filtered_params))
+        # --- ▲ 修正 ▲ ---
         self.output_act = activation()
     
     def _hook_mem(self, module: nn.Module, input: Any, output: Tuple[torch.Tensor, torch.Tensor]) -> None:
         self.all_mems_history.append(output[1]) # mem
     
     def forward(self, x_analog: torch.Tensor, return_full_mems: bool = False) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        # (B, L, D_in) or (B, D_in)
         x: torch.Tensor = self.projection(x_analog)
+        # (B, L, D_out) or (B, D_out)
         x = self.output_act(x)
+        
+        # --- ▼ 修正: DTTFS (学習可能エンコーダ) の分岐 ▼ ---
+        # DTTFS は内部で時間ループを持つため、外部ループをバイパス
+        if isinstance(self.neuron, DifferentiableTTFSEncoder):
+            # (B, L, D_out) -> (B*L, D_out)
+            B, *dims, D_out = x.shape
+            x_flat = x.reshape(-1, D_out)
+            
+            # (B*L, D_out) -> (B*L, T_steps, D_out)
+            spikes_stacked = self.neuron(x_flat) 
+            
+            # 元の形状 (B, L, T, D_out) or (B, T, D_out) に戻す
+            if x_analog.dim() == 3: # (B, L, D_in)
+                output_shape = (B, dims[0], self.time_steps, D_out)
+            else: # (B, D_in)
+                output_shape = (B, self.time_steps, D_out)
+                
+            return spikes_stacked.reshape(output_shape), None # DTTFSは膜電位を返さない
+
+        # --- 従来のLIF/Izhikevich/GLIF (外部T_stepsループ) ---
         x_repeated: torch.Tensor = x.unsqueeze(-2).repeat(1, *([1] * (x_analog.dim() - 1)), self.time_steps, 1)
         
         cast(base.MemoryModule, self.neuron).set_stateful(True)
@@ -682,7 +704,6 @@ class AnalogToSpikes(BaseModel):
 
         spikes_history: List[torch.Tensor] = []
         
-        # --- ▼ 修正: [union-attr] エラーを解消 (isinstance) ▼ ---
         neuron_features: int = -1
         if isinstance(self.neuron, (AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron)):
             neuron_features = self.neuron.features
@@ -690,7 +711,6 @@ class AnalogToSpikes(BaseModel):
              neuron_features = self.projection.out_features # Fallback
         
         x_time_batched: torch.Tensor = x_repeated.reshape(-1, self.time_steps, neuron_features) 
-        # --- ▲ 修正 ▲ ---
 
         for t in range(self.time_steps):
             current_input: torch.Tensor = x_time_batched[:, t, :]
@@ -716,9 +736,11 @@ class AnalogToSpikes(BaseModel):
             output_shape = (original_shape[0], self.time_steps, neuron_features) 
             
         return spikes_stacked.reshape(output_shape), full_mems
+        # --- ▲ 修正 ▲ ---
 
 
 class HybridCnnSnnModel(BaseModel):
+    # (AnalogToSpikes の改修により、自動的に DTTFS に対応)
     all_mems_history: List[torch.Tensor]
     def __init__(self, vocab_size: int, time_steps: int, ann_frontend: Dict[str, Any], snn_backend: Dict[str, Any], neuron_config: Dict[str, Any], **kwargs: Any):
         super().__init__()
@@ -740,13 +762,12 @@ class HybridCnnSnnModel(BaseModel):
             out_features=snn_backend['d_model'],
             time_steps=time_steps,
             activation=nn.ReLU,
-            neuron_config=neuron_config
+            neuron_config=neuron_config # neuron_config をそのまま渡す
         )
         
         neuron_type: str = neuron_config.get("type", "lif")
         neuron_params: Dict[str, Any] = neuron_config.copy()
         neuron_params.pop('type', None)
-        # --- ▼ 修正: GLIFNeuron に対応 ▼ ---
         neuron_class: Type[Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron]] 
         
         filtered_params: Dict[str, Any]
@@ -770,8 +791,8 @@ class HybridCnnSnnModel(BaseModel):
                 if k in ['features', 'base_threshold', 'gate_input_features']
             }
         else:
-             raise ValueError(f"Unknown neuron type for HybridCnnSnnModel: {neuron_type}")
-        # --- ▲ 修正 ▲ ---
+             # dttfs は AnalogToSpikes 内部でのみ使用
+             raise ValueError(f"Unknown neuron type for HybridCnnSnnModel backend: {neuron_type}")
         
         self.snn_backend = nn.ModuleList([
             STAttenBlock(snn_backend['d_model'], snn_backend['n_head'], neuron_class, filtered_params)
@@ -866,6 +887,7 @@ class HybridCnnSnnModel(BaseModel):
         return logits, avg_spikes, full_mems
 
 class SpikingCNN(BaseModel):
+    # (変更なし)
     all_mems_history: List[torch.Tensor]
     
     def __init__(self, vocab_size: int, time_steps: int, neuron_config: Dict[str, Any], **kwargs: Any):
@@ -877,7 +899,6 @@ class SpikingCNN(BaseModel):
         neuron_type: str = neuron_config.get("type", "lif")
         neuron_params: Dict[str, Any] = neuron_config.copy()
         neuron_params.pop('type', None)
-        # --- ▼ 修正: GLIFNeuron に対応 ▼ ---
         neuron_class: Type[Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron]] 
         
         filtered_params: Dict[str, Any]
@@ -895,14 +916,13 @@ class SpikingCNN(BaseModel):
             }
         elif neuron_type == 'glif':
             neuron_class = GLIFNeuron
-            neuron_params['gate_input_features'] = None # features を使うように促す
+            neuron_params['gate_input_features'] = None 
             filtered_params = {
                 k: v for k, v in neuron_params.items() 
                 if k in ['features', 'base_threshold', 'gate_input_features']
             }
         else:
              raise ValueError(f"Unknown neuron type for SpikingCNN: {neuron_type}")
-        # --- ▲ 修正 ▲ ---
 
         
         self.features = nn.Sequential(
@@ -936,11 +956,11 @@ class SpikingCNN(BaseModel):
                 self.all_mems_history.append(output[1]) # mem
             
             for module in self.features:
-                if isinstance(module, (AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron)): # ◾️ GLIF を追加
+                if isinstance(module, (AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron)): 
                     hooks.append(module.register_forward_hook(_hook_mem))
                     neuron_layers.append(module)
             for module in self.classifier:
-                 if isinstance(module, (AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron)): # ◾️ GLIF を追加
+                 if isinstance(module, (AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron)): 
                     hooks.append(module.register_forward_hook(_hook_mem))
                     neuron_layers.append(module)
 
@@ -950,7 +970,7 @@ class SpikingCNN(BaseModel):
             hidden_repr_t: Optional[torch.Tensor] = None 
             
             for features_layer in self.features: 
-                if isinstance(features_layer, (AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron)): # ◾️ GLIF を追加
+                if isinstance(features_layer, (AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron)): 
                     B_c, C_c, H_c, W_c = x.shape
                     x_reshaped: torch.Tensor = x.permute(0, 2, 3, 1).reshape(-1, C_c)
                     spikes, _ = features_layer(x_reshaped) # type: ignore[operator]
@@ -969,7 +989,7 @@ class SpikingCNN(BaseModel):
                 if isinstance(classifier_layer, nn.Flatten):
                     x = classifier_layer(x) # type: ignore[operator]
                     continue
-                elif isinstance(classifier_layer, (AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron)): # ◾️ GLIF を追加
+                elif isinstance(classifier_layer, (AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron)): 
                     spikes, _ = classifier_layer(x) # type: ignore[operator]
                     x = spikes
                 elif isinstance(classifier_layer, nn.Linear):
@@ -1016,6 +1036,7 @@ class SpikingCNN(BaseModel):
 
 
 class SNNCore(nn.Module):
+    # (変更なし)
     def __init__(self, config: DictConfig, vocab_size: int, backend: str = "spikingjelly"):
         super(SNNCore, self).__init__()
         if isinstance(config, dict):

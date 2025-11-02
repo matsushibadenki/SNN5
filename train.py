@@ -12,6 +12,10 @@
 #
 # 修正 (v8): [syntax] error: Unindent does not match any outer indentation level
 #            collate_fn 関数のインデントを修正。
+#
+# 修正 (SNN5改善レポート 4.3 対応):
+# - 最終モデルの処理において、プルーニングと量子化の実行順序を
+#   「1. プルーニング」→「2. 量子化」に変更。
 
 import argparse
 import os
@@ -33,7 +37,9 @@ from snn_research.data.datasets import get_dataset_class, DistillationDataset, D
 from snn_research.training.trainers import BreakthroughTrainer, ParticleFilterTrainer
 from snn_research.training.bio_trainer import BioRLTrainer
 from snn_research.training.quantization import apply_qat, convert_to_quantized_model
-from snn_research.training.pruning import apply_sbc_pruning
+# --- ▼ 修正 (SBCと時空間プルーニングをインポート) ▼ ---
+from snn_research.training.pruning import apply_sbc_pruning, apply_spatio_temporal_pruning
+# --- ▲ 修正 ▲ ---
 from scripts.data_preparation import prepare_wikitext_data
 from snn_research.core.snn_core import SNNCore
 from app.utils import get_auto_device
@@ -281,29 +287,51 @@ def train( # type: ignore[no-untyped-def]
             trainer._compute_ewc_fisher_matrix(train_loader, args.task_name)
 
         # 最終モデルの処理 (量子化、プルーニング)
+        # --- ▼ 修正 (SNN5改善レポート 4.3 対応): プルーニングと量子化の順序を変更 ▼ ---
         if rank in [-1, 0]:
-            final_model = trainer.model.module if is_distributed else trainer.model
+            final_model_wrapped = trainer.model.module if is_distributed else trainer.model
+            
+            # SNNCoreラッパーから内部モデルを取得
+            final_model: nn.Module
+            if isinstance(final_model_wrapped, SNNCore):
+                final_model = final_model_wrapped.model
+            else:
+                final_model = final_model_wrapped
+            
             if isinstance(final_model, nn.Module):
-                if config.training.quantization.enabled:
-                    quantized_model = convert_to_quantized_model(final_model.to('cpu'))
-                    quantized_path = os.path.join(config.training.log_dir, 'quantized_best_model.pth')
-                    torch.save(quantized_model.state_dict(), quantized_path)
+                model_to_process = final_model # 処理対象のモデル
                 
+                # 1. プルーニング (SBC) を先に実行
                 if config.training.pruning.enabled:
                     pruning_amount = config.training.pruning.amount
                     logger.info("Applying SBC Pruning to the final best model...")
+                    
                     # SBCはヘッセ行列計算のためにデータローダーと損失関数を必要とする
-                    # (注: ここでは簡易的にval_loaderとtrainer.criterionを渡すが、
-                    # 実際のSBC実装では、より少量のキャリブレーションデータセットを使うべき)
                     pruned_model = apply_sbc_pruning(
-                        final_model, 
+                        model_to_process, 
                         amount=pruning_amount,
                         dataloader_stub=val_loader, # スタブとして検証ローダーを渡す
                         loss_fn_stub=trainer.criterion # スタブとしてトレーナーの損失関数を渡す
                     )
                     pruned_path = os.path.join(config.training.log_dir, 'pruned_sbc_best_model.pth')
                     torch.save(pruned_model.state_dict(), pruned_path)
-
+                    logger.info(f"✅ Pruned model saved to {pruned_path}")
+                    model_to_process = pruned_model # 次のステップのため、処理済みモデルを更新
+                
+                # 2. 量子化 (QAT) を後に実行
+                if config.training.quantization.enabled:
+                    logger.info("Applying QAT conversion to the final model (post-pruning if enabled)...")
+                    # 量子化はプルーニング済みモデル (または元のモデル) に適用
+                    # QATは `prepare_qat` 済みのモデルに対して `convert` を行う
+                    # （このスクリプトでは `apply_qat` が `prepare_qat` を呼んでいる）
+                    # （厳密には `apply_qat` は訓練開始前に行うべきだが、
+                    #   ここでは訓練後のモデルを変換する `convert_to_quantized_model` を使用）
+                    quantized_model = convert_to_quantized_model(model_to_process.to('cpu'))
+                    quantized_path = os.path.join(config.training.log_dir, 'quantized_best_model.pth')
+                    torch.save(quantized_model.state_dict(), quantized_path)
+                    logger.info(f"✅ Quantized model saved to {quantized_path}")
+        # --- ▲ 修正 ▲ ---
+            
     else:
         raise ValueError(f"Unknown training paradigm: '{paradigm}'.")
 

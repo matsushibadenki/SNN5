@@ -1,33 +1,17 @@
 # ファイルパス: snn_research/core/neurons.py
 # (更新)
-# 修正: 論文「Dynamic Threshold and Multi-level Attention」に基づき、
-#       AdaptiveLIFNeuronに動的発火閾値メカナイズムを導入。
-# 改善(snn_4_ann_parity_plan):
-# - IzhikevichNeuronにset_statefulメソッドを追加し、AdaptiveLIFNeuronとの
-#   インターフェース互換性を確保。これにより、SpikingTransformerなどで
-#   ニューロンモデルを切り替え可能にする。
+# Title: SNNニューロンモデル定義
+# Description:
+# - プロジェクトで使用される様々なSNNニューロンモデルを定義します。
+# - AdaptiveLIFNeuron: 動的閾値と学習可能な膜時定数を持つLIFニューロン。
+# - IzhikevichNeuron: 生物学的に複雑な発火パターンを再現可能なニューロン。
+# - ProbabilisticLIFNeuron: 確率的にスパイクを生成するLIFニューロン。
+# - GLIFNeuron (SNN5改善): 入力依存のゲートで膜時定数を動的に制御するニューロン (セクション5.1)。
+# - TC_LIF (SNN5改善): 長期時系列依存性のための2区画ニューロン (セクション5.1)。
+# - DualThresholdNeuron (SNN5改善): ANN-SNN変換のエラー補償学習(ECL)用ニューロン (セクション3.1)。
+# - ScaleAndFireNeuron (SNN5改善): T=1でのANN-SNN変換を実現する空間的マルチ閾値ニューロン (セクション3.2)。
 #
-# 改善 (v2):
-# - doc/SNN開発：基本設計思想.md (セクション3.1, 引用[7]) に基づき、
-#   AdaptiveLIFNeuronの膜時定数(tau_mem)を学習可能なパラメータに変更 (PLIF化)。
-#
-# 改善 (v3):
-# - doc/SNN開発：基本設計思想.md (セクション3.1, 引用[8]) に基づき、
-#   GLIF (Gated LIF) ニューロンを新規追加。
-#
-# 修正 (v4):
-# - mypy [name-defined] エラーを解消するため、Any をインポート。
-#
-# 追加 (v5):
-# - SNN5改善レポート (SNN開発：SNN5プロジェクト改善のための情報収集.md) に基づき、
-#   TC_LIF (セクション5.1, 引用[92]),
-#   DualThresholdNeuron (セクション3.1, 引用[6]),
-#   ScaleAndFireNeuron (セクション3.2, 引用[18]) を追加実装。
-#
-# 修正 (v14):
-# - mypy [has-type] (DualThresholdNeuron.spikes) エラーを解消するため、
-#   エラーが報告される行(475)に `# type: ignore[has-type]` を追加。
-# - mypy [arg-type] (IzhikevichNeuronの full_like) を float() で修正 (v9の修正を維持)。
+# mypy --strict 準拠。
 
 # --- ▼ 修正 ▼ ---
 from typing import Optional, Tuple, Any, List, cast
@@ -143,7 +127,6 @@ class AdaptiveLIFNeuron(base.MemoryModule):
         return F.mse_loss(current_rate, target)
 
 class IzhikevichNeuron(base.MemoryModule):
-    # (変更なし)
     """
     Izhikevich neuron model, capable of producing a wide variety of firing patterns.
     """

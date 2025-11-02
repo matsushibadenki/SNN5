@@ -1,5 +1,5 @@
 # ファイルパス: snn_research/core/neurons.py
-# (修正)
+# (更新)
 # 修正: 論文「Dynamic Threshold and Multi-level Attention」に基づき、
 #       AdaptiveLIFNeuronに動的発火閾値メカナイズムを導入。
 # 改善(snn_4_ann_parity_plan):
@@ -17,9 +17,15 @@
 #
 # 修正 (v4):
 # - mypy [name-defined] エラーを解消するため、Any をインポート。
+#
+# 追加 (v5):
+# - SNN5改善レポート (SNN開発：SNN5プロジェクト改善のための情報収集.md) に基づき、
+#   TC_LIF (セクション5.1, 引用[92]),
+#   DualThresholdNeuron (セクション3.1, 引用[6]),
+#   ScaleAndFireNeuron (セクション3.2, 引用[18]) を追加実装。
 
 # --- ▼ 修正 ▼ ---
-from typing import Optional, Tuple, Any
+from typing import Optional, Tuple, Any, List
 # --- ▲ 修正 ▲ ---
 import torch
 from torch import Tensor, nn
@@ -375,3 +381,270 @@ class GLIFNeuron(base.MemoryModule):
         self.mem = self.mem * (1.0 - reset_mask) + reset_mask * v_reset_gated
         
         return spike, self.mem
+
+# --- ▼▼▼ SNN5改善レポートに基づく追加実装 ▼▼▼ ---
+
+class TC_LIF(base.MemoryModule):
+    """
+    Two-Compartment LIF (TC-LIF) ニューロン。
+    SNN5改善レポート (セクション5.1, 引用[92, 94]) に基づく実装。
+    長期時系列依存性の学習を目的とする。
+    
+    - Somatic (体細胞) コンパートメント: 高速なダイナミクス、スパイク生成
+    - Dendritic (樹状突起) コンパートメント: 低速なダイナミクス、長期的な文脈の統合
+    """
+    tau_s: nn.Parameter # Somatic (体細胞) 膜時定数 (学習可能)
+    tau_d: nn.Parameter # Dendritic (樹状突起) 膜時定数 (学習可能)
+    w_ds: nn.Parameter # Dendritic -> Somatic 結合強度
+    w_sd: nn.Parameter # Somatic -> Dendritic 結合強度 (フィードバック)
+
+    def __init__(
+        self,
+        features: int,
+        tau_s_init: float = 5.0,     # 体細胞の時定数 (高速)
+        tau_d_init: float = 20.0,    # 樹状突起の時定数 (低速)
+        w_ds_init: float = 0.5,      # 樹状突起から体細胞への結合強度
+        w_sd_init: float = 0.1,      # 体細胞から樹状突起への結合強度
+        base_threshold: float = 1.0,
+        v_reset: float = 0.0,
+    ):
+        super().__init__()
+        self.features = features
+        self.base_threshold = nn.Parameter(torch.full((features,), base_threshold))
+        self.v_reset = nn.Parameter(torch.full((features,), v_reset))
+        
+        # 学習可能な時定数 (PLIFと同様)
+        self.log_tau_s = nn.Parameter(torch.full((features,), math.log(max(1.1, tau_s_init - 1.1))))
+        self.log_tau_d = nn.Parameter(torch.full((features,), math.log(max(1.1, tau_d_init - 1.1))))
+        
+        # 学習可能な結合強度
+        self.w_ds = nn.Parameter(torch.full((features,), w_ds_init))
+        self.w_sd = nn.Parameter(torch.full((features,), w_sd_init))
+
+        self.surrogate_function = surrogate.ATan(alpha=2.0)
+
+        self.register_buffer("v_s", None) # Somatic membrane potential
+        self.register_buffer("v_d", None) # Dendritic membrane potential
+        self.register_buffer("spikes", torch.zeros(features))
+        self.register_buffer("total_spikes", torch.tensor(0.0))
+        self.stateful = False
+
+    def set_stateful(self, stateful: bool):
+        self.stateful = stateful
+        if not stateful:
+            self.reset()
+
+    def reset(self):
+        super().reset()
+        self.v_s = None
+        self.v_d = None
+        self.spikes.zero_()
+        self.total_spikes.zero_()
+
+    def forward(self, x: Tensor) -> Tuple[Tensor, Tensor]:
+        """1タイムステップの処理"""
+        if not self.stateful:
+            self.v_s = None
+            self.v_d = None
+
+        if self.v_s is None or self.v_s.shape != x.shape:
+            self.v_s = torch.zeros_like(x)
+        if self.v_d is None or self.v_d.shape != x.shape:
+            self.v_d = torch.zeros_like(x)
+
+        # 時定数から減衰率を計算
+        current_tau_s = torch.exp(self.log_tau_s) + 1.1
+        decay_s = torch.exp(-1.0 / current_tau_s)
+        
+        current_tau_d = torch.exp(self.log_tau_d) + 1.1
+        decay_d = torch.exp(-1.0 / current_tau_d)
+
+        # 1. 樹状突起 (Dendritic) の更新 (低速)
+        # 入力電流(x)と体細胞からのフィードバック(w_sd * spikes)を受け取る
+        # (スパイクではなく、結合された入力としてxを受け取る)
+        # 論文[94]の実装に合わせ、xは両方のコンパートメントに直接入力されると仮定
+        dendritic_input = x + self.w_sd * self.spikes # 前のステップのスパイクで変調
+        self.v_d = self.v_d * decay_d + dendritic_input
+        
+        # 2. 体細胞 (Somatic) の更新 (高速)
+        somatic_input = x + self.w_ds * self.v_d # 樹状突起の電位で変調
+        self.v_s = self.v_s * decay_s + somatic_input
+        
+        # 3. スパイク生成
+        spike = self.surrogate_function(self.v_s - self.base_threshold)
+        
+        self.spikes = spike.detach() # 次のステップのフィードバック用 (勾配なし)
+        with torch.no_grad():
+            self.total_spikes += self.spikes.sum()
+
+        # 4. リセット (v_resetは学習可能)
+        reset_mask = self.spikes
+        self.v_s = self.v_s * (1.0 - reset_mask) + reset_mask * self.v_reset
+        # (論文[94]によっては樹状突起もリセットするが、ここでは体細胞のみ)
+        
+        return spike, self.v_s # 体細胞の電位を返す
+
+class DualThresholdNeuron(base.MemoryModule):
+    """
+    Dual Threshold Neuron (エラー補償学習用)。
+    SNN5改善レポート (セクション3.1, 引用[6]) に基づく実装。
+    量子化エラーと不均一性エラーを削減する。
+    """
+    tau_mem: nn.Parameter
+    threshold_high: nn.Parameter # T_h (学習可能なしきい値)
+    threshold_low: nn.Parameter  # T_l (デュアルしきい値)
+
+    def __init__(
+        self,
+        features: int,
+        tau_mem: float = 20.0,
+        threshold_high_init: float = 1.0, # T_h (クリッピング用)
+        threshold_low_init: float = 0.5,  # T_l (量子化エラー削減用)
+        v_reset: float = 0.0,
+    ):
+        super().__init__()
+        self.features = features
+        self.log_tau_mem = nn.Parameter(torch.full((features,), math.log(max(1.1, tau_mem - 1.1))))
+        
+        # 引用[6]に基づき、2つのしきい値を学習可能パラメータとする
+        self.threshold_high = nn.Parameter(torch.full((features,), threshold_high_init))
+        self.threshold_low = nn.Parameter(torch.full((features,), threshold_low_init))
+        
+        self.v_reset = nn.Parameter(torch.full((features,), v_reset))
+        self.surrogate_function = surrogate.ATan(alpha=2.0)
+
+        self.register_buffer("mem", None)
+        self.register_buffer("spikes", torch.zeros(features))
+        self.register_buffer("total_spikes", torch.tensor(0.0))
+        self.stateful = False
+
+    def set_stateful(self, stateful: bool):
+        self.stateful = stateful
+        if not stateful:
+            self.reset()
+
+    def reset(self):
+        super().reset()
+        self.mem = None
+        self.spikes.zero_()
+        self.total_spikes.zero_()
+
+    def forward(self, x: Tensor) -> Tuple[Tensor, Tensor]:
+        """1タイムステップの処理"""
+        if not self.stateful:
+            self.mem = None
+
+        if self.mem is None or self.mem.shape != x.shape:
+            # 引用[6]に従い、膜電位をT_l/2で初期化 (不均一性エラー削減)
+            self.mem = torch.full_like(x, self.threshold_low.detach() / 2.0)
+
+        current_tau_mem = torch.exp(self.log_tau_mem) + 1.1
+        mem_decay = torch.exp(-1.0 / current_tau_mem)
+        
+        # 膜電位の更新
+        self.mem = self.mem * mem_decay + x
+        
+        # スパイク生成 (T_h を使用)
+        spike = self.surrogate_function(self.mem - self.threshold_high)
+        
+        self.spikes = spike.detach()
+        with torch.no_grad():
+            self.total_spikes += self.spikes.sum()
+
+        # リセット (デュアルしきい値を使用)
+        # 引用[6]の式(7)に基づくリセット
+        # S=1 の場合: V[t+1] = V[t] - T_h
+        # S=0 の場合: V[t+1] = V[t]
+        # ただし、 V[t+1] < T_l の場合は、V[t+1] = V_reset (または T_l/2) にリセット
+        
+        reset_mem = self.mem - self.spikes * self.threshold_high
+        
+        # T_l を下回ったニューロンを検出
+        below_low_threshold = reset_mem < self.threshold_low
+        
+        # スパイクしたニューロン(reset_mem) と スパイクせずT_lを下回ったニューロンの両方をリセット
+        reset_condition = (self.spikes > 0.5) | below_low_threshold
+        
+        self.mem = torch.where(
+            reset_condition,
+            self.v_reset.expand_as(self.mem), # V_reset にリセット
+            reset_mem # それ以外は減算後の膜電位を維持
+        )
+        
+        return spike, self.mem
+
+class ScaleAndFireNeuron(base.MemoryModule):
+    """
+    Scale-and-Fire (SFN) ニューロン。
+    SNN5改善レポート (セクション3.2, 引用[18]) に基づく実装。
+    T=1 (シングルタイムステップ) でのANN-SNN変換を目指す。
+    
+    これは時間ループを必要とせず、T=1で空間的なマルチしきい値計算を行う。
+    """
+    def __init__(
+        self,
+        features: int,
+        num_levels: int = 8, # 空間的な量子化レベル数 (しきい値の数)
+        base_threshold: float = 1.0,
+    ):
+        super().__init__()
+        self.features = features
+        self.num_levels = num_levels # K (しきい値の数)
+        
+        # K個の学習可能なしきい値を定義
+        thresholds = torch.linspace(0.5, num_levels - 0.5, num_levels) / num_levels * base_threshold
+        self.thresholds = nn.Parameter(thresholds.unsqueeze(0).repeat(features, 1)) # (Features, K)
+        
+        # K個の学習可能なスケーリング係数（重み）を定義
+        self.scales = nn.Parameter(torch.ones(features, num_levels)) # (Features, K)
+        
+        self.surrogate_function = surrogate.ATan(alpha=2.0)
+        
+        self.register_buffer("spikes", torch.zeros(features))
+        self.register_buffer("total_spikes", torch.tensor(0.0))
+
+    def set_stateful(self, stateful: bool):
+        # SFNはステートレス (T=1)
+        pass
+
+    def reset(self):
+        super().reset()
+        self.spikes.zero_()
+        self.total_spikes.zero_()
+
+    def forward(self, x: Tensor) -> Tuple[Tensor, Tensor]:
+        """
+        T=1 でのアナログ入力処理 (ANN-SNN変換用)。
+        
+        Args:
+            x (Tensor): ANNからのアナログ活性化入力 (B, Features)。
+            
+        Returns:
+            Tuple[Tensor, Tensor]: (SNNの出力値(アナログ), 膜電位(ダミー))
+        """
+        B, N = x.shape
+        if N != self.features:
+            raise ValueError(f"Input dimension ({N}) does not match num_neurons ({self.features})")
+
+        # 入力を (B, N, 1) に拡張し、しきい値 (N, K) と比較
+        x_expanded = x.unsqueeze(-1) # (B, N, 1)
+        thresholds_expanded = self.thresholds.unsqueeze(0) # (1, N, K)
+        
+        # 空間的なマルチしきい値比較 (B, N, K)
+        spatial_spikes = self.surrogate_function(x_expanded - thresholds_expanded)
+        
+        # 学習可能なスケーリング係数（重み）を適用
+        scales_expanded = self.scales.unsqueeze(0) # (1, N, K)
+        
+        # 空間的なスパイクに重み付けして合計 (B, N)
+        # これが T=1 での時間積分（発火率）の空間的近似値となる
+        output_analog = (spatial_spikes * scales_expanded).sum(dim=-1)
+        
+        # スパイク統計（ダミー）
+        self.spikes = spatial_spikes.mean(dim=(0, 2)) # Kレベルでの平均スパイク率
+        with torch.no_grad():
+            self.total_spikes += spatial_spikes.detach().sum()
+
+        # SFNはT=1でアナログ値を直接出力する (SNNの最終層や変換層として使う)
+        # 戻り値の型 (spike, mem) に合わせる
+        return output_analog, output_analog # memの代わりにoutput_analogを返す

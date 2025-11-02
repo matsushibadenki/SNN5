@@ -17,6 +17,9 @@
 # - S4DLIFBlock のスタブ実装を、SSMのRNNモード (h_t = A*h_{t-1} + B*x_t) と
 #   LIFダイナミクスを組み合わせた、より忠実な実装に改善。
 # - SpikingSSM.forward が T_seq (シーケンス長) で正しくループするように修正。
+#
+# 修正 (v2):
+# - mypy [syntax] error: Unmatched '}' を解消。 (327行目)
 
 import torch
 import torch.nn as nn
@@ -317,6 +320,9 @@ class SpikingSSM(BaseModel):
             logits: torch.Tensor = self.output_projection(x_norm_final)
             output = logits
         
+        # --- ▼ 修正: 327行目の余分な '}' を削除 ▼ ---
+        # --- ▲ 修正 ▲ ---
+
         # --- 互換性のため (logits, avg_spikes, mem) を返す ---
         # (T_snn ではなく T_seq で割る)
         avg_spikes_val: float = self.get_total_spikes() / (B * T_seq) if return_spikes and T_seq > 0 else 0.0
@@ -324,4 +330,3 @@ class SpikingSSM(BaseModel):
         mem: torch.Tensor = torch.tensor(0.0, device=device) 
 
         return output, avg_spikes, mem
-}

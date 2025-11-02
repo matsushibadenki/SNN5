@@ -12,12 +12,17 @@
 #   SNN固有の膜電位量子化 (SpQuant-SNN) をシミュレートする関数を追加。
 #
 # 修正 (v3): mypy [name-defined] エラーを修正。
+#
+# 改善 (SNN5改善レポート 4.2 対応):
+# - _quantize_membrane_potential (スタブ) を、学習可能なスケールファクタを
+#   持つ QuantizeMembranePotential モジュールに置き換え。
+# - SpQuantWrapper が新しい量子化モジュールを使用するように修正。
 
 import torch
 import torch.nn as nn
 import copy
 # --- ▼ 修正 ▼ ---
-from typing import Dict, Any, cast, Tuple
+from typing import Dict, Any, cast, Tuple, Optional
 import logging
 import torch.nn.functional as F # [name-defined] F をインポート
 
@@ -77,61 +82,116 @@ def convert_to_quantized_model(model: nn.Module) -> nn.Module:
 
 # --- ▼▼▼ SNN5改善レポートに基づく追加実装 (セクション4.2, [20]) ▼▼▼ ---
 
-@torch.no_grad()
-def _quantize_membrane_potential(mem: torch.Tensor) -> torch.Tensor:
+# --- ▼ 改善 (SNN5改善レポート 4.2 対応) ▼ ---
+# 学習可能なスケールファクタを持つ3値量子化関数
+class TernaryQuantizeFunction(torch.autograd.Function):
     """
-    (スタブ) SpQuant-SNN [20] に基づき、膜電位(mem)を3値(-1, 0, +1)に量子化する。
+    (改善) SpQuant-SNN [20] に基づく、学習可能なスケールファクタを持つ
+    3値量子化のカスタム勾配。
     """
-    # ここでは単純な閾値ベースの量子化をスタブとして実装
-    # 実際には学習可能な閾値やスケールファクタが必要
-    threshold_pos: float = 0.5
-    threshold_neg: float = -0.5
-    
-    mem_quant = torch.zeros_like(mem)
-    mem_quant[mem > threshold_pos] = 1.0
-    mem_quant[mem < threshold_neg] = -1.0
-    return mem_quant
+    @staticmethod
+    def forward(ctx: Any, x: torch.Tensor, alpha: torch.Tensor, threshold: float = 0.5) -> torch.Tensor:
+        """
+        順伝播: 3値 (-alpha, 0, +alpha) に量子化
+        y = +alpha (if x > threshold)
+        y = 0      (if |x| <= threshold)
+        y = -alpha (if x < -threshold)
+        """
+        ctx.save_for_backward(x, alpha)
+        ctx.threshold = threshold
+        
+        out = torch.zeros_like(x)
+        out[x > threshold] = alpha.item()
+        out[x < -threshold] = -alpha.item()
+        return out
+
+    @staticmethod
+    def backward(ctx: Any, grad_output: torch.Tensor) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
+        """
+        逆伝播:
+        - x への勾配: Straight-Through Estimator (STE)
+        - alpha への勾配: 量子化の境界に基づき計算
+        """
+        x, alpha = ctx.saved_tensors
+        threshold: float = cast(float, ctx.threshold)
+        
+        # --- 入力 (x) への勾配 (STE) ---
+        # |x| <= 1.0 の範囲でのみ勾配を流す (STEの標準的なクリッピング)
+        grad_x = grad_output.clone()
+        grad_x[torch.abs(x) > 1.0] = 0 
+        
+        # --- スケールファクタ (alpha) への勾配 ---
+        # dL/d_alpha = dL/dy * dy/d_alpha
+        # dy/d_alpha = +1 (if x > threshold), -1 (if x < -threshold), 0 (else)
+        grad_alpha = torch.zeros_like(alpha)
+        grad_alpha_term = (grad_output * (x > threshold).float()) + (grad_output * (x < -threshold).float() * -1.0)
+        grad_alpha = grad_alpha_term.sum() # 全バッチ・全ニューロンで勾配を合計
+        
+        return grad_x, grad_alpha, None # threshold への勾配はなし (学習させない)
+
+class QuantizeMembranePotential(nn.Module):
+    """
+    (改善) SpQuant-SNN [20] に基づく、学習可能な3値量子化モジュール。
+    """
+    def __init__(self, initial_alpha: float = 1.0, threshold: float = 0.5):
+        super().__init__()
+        # スケールファクタ (alpha) を学習可能なパラメータとして定義
+        self.alpha = nn.Parameter(torch.tensor(initial_alpha))
+        self.threshold = threshold
+        
+    def forward(self, mem: torch.Tensor) -> torch.Tensor:
+        """膜電位(mem)を3値(-alpha, 0, +alpha)に量子化する。"""
+        return TernaryQuantizeFunction.apply(mem, self.alpha, self.threshold)
+
 
 @torch.no_grad()
-def _apply_negative_membrane_pruning(mem: torch.Tensor) -> torch.Tensor:
+def _apply_negative_membrane_pruning(mem_quant: torch.Tensor) -> torch.Tensor:
     """
-    (スタブ) SpQuant-SNN [20] に基づき、量子化された膜電位の負の値をプルーニング（ゼロ化）する。
+    (改善) SpQuant-SNN [20] に基づき、量子化された膜電位の負の値をプルーニング（ゼロ化）する。
     """
-    # mem は 3値 (-1, 0, 1) に量子化済みと仮定
-    pruned_mem = F.relu(mem) # 負の値を0にする
+    # mem_quant は (-alpha, 0, +alpha) の3値と仮定
+    pruned_mem = F.relu(mem_quant) # 負の値 (-alpha) を 0 にする
     return pruned_mem
 
 class SpQuantWrapper(nn.Module):
     """
     SpQuant-SNN [20] の「二重圧縮」をシミュレートするため、
-    既存のSNNニューロンをラップするラッパーモジュール (スタブ)。
+    既存のSNNニューロンをラップするラッパーモジュール (スタブ改善)。
     """
+    neuron: nn.Module
+    quantizer: QuantizeMembranePotential # 型ヒントを修正
+
     def __init__(self, neuron_module: nn.Module):
         super().__init__()
         if not isinstance(neuron_module, (AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron)):
             raise TypeError(f"SpQuantWrapperはLIF, Izhikevich, GLIFニューロンのみラップ可能です。Got: {type(neuron_module)}")
         
-        self.neuron: nn.Module = neuron_module
-        logger.info(f"SpQuantWrapper: ラッピング -> {type(neuron_module).__name__}")
+        self.neuron = neuron_module
+        
+        # --- ▼ 改善: 学習可能な量子化モジュールをインスタンス化 ▼ ---
+        # 閾値はニューロンのベース閾値の半分などを参考に設定可能
+        base_thresh: float = 1.0
+        if hasattr(neuron_module, 'base_threshold'):
+             # (mypy) base_threshold は nn.Parameter の可能性がある
+             thresh_param = getattr(neuron_module, 'base_threshold')
+             if isinstance(thresh_param, torch.Tensor):
+                 base_thresh = thresh_param.mean().item()
+             elif isinstance(thresh_param, float):
+                 base_thresh = thresh_param
+                 
+        self.quantizer = QuantizeMembranePotential(
+            initial_alpha=base_thresh, # スケールをベース閾値に合わせる
+            threshold=base_thresh * 0.5 # 量子化の閾値
+        )
+        logger.info(f"SpQuantWrapper: ラッピング -> {type(neuron_module).__name__} (Quantization Alpha: {self.quantizer.alpha.item():.2f}, Thresh: {self.quantizer.threshold:.2f})")
+        # --- ▲ 改善 ▲ ---
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         # 1. 元のニューロンで膜電位を計算
-        # (注: 本来はLIFの内部ロジック (mem = mem * decay + x) に介入する必要がある)
-        # (簡易実装: 入力xを膜電位の代理とみなす)
-        
-        # --- (より正確なスタブ) ---
-        # 内部状態 (mem) を取得する必要があるが、forwardの戻り値は (spike, mem)
-        # 実行前に mem を取得するのは困難。
-        # したがって、このラッパーはニューロンの *入力電流* (x) ではなく、
-        # *膜電位* (mem) を量子化する必要がある。
-        
-        # このスタブ実装では、ニューロンの *出力* である膜電位 (mem_out) を
-        # 次のステップの入力として（ダミーで）量子化・プルーニングする
-        
         spike, mem_out = self.neuron(x)
         
-        # 2. 膜電位を量子化
-        mem_quant = _quantize_membrane_potential(mem_out)
+        # 2. 膜電位を量子化 (学習可能な関数を使用)
+        mem_quant = self.quantizer(mem_out)
         
         # 3. 負の膜電位をプルーニング
         mem_pruned = _apply_negative_membrane_pruning(mem_quant)
@@ -140,6 +200,8 @@ class SpQuantWrapper(nn.Module):
         #  強制的に設定する必要があるが、現在のLIF実装では困難)
         
         # ここでは、元のスパイクと、デバッグ用にプルーニングされた膜電位を返す
+        # (注: QAT中は、mem_quant または mem_pruned を次の層に渡すべきかもしれないが、
+        #  現在のアーキテクチャでは mem は返されるだけで伝播しない)
         return spike, mem_pruned
 
     def set_stateful(self, stateful: bool) -> None:
@@ -149,6 +211,7 @@ class SpQuantWrapper(nn.Module):
     def reset(self) -> None:
         if hasattr(self.neuron, 'reset'):
             cast(Any, self.neuron).reset()
+# --- ▲▲▲ SNN5改善レポートに基づく修正 ▲▲▲ ---
 
 def apply_spquant_quantization(model: nn.Module, inplace: bool = True) -> nn.Module:
     """

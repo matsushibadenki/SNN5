@@ -18,6 +18,9 @@
 # 修正 (v20):
 # - mypy [assignment] [no-redef] エラーを修正。
 # - AnalogToSpikes.forward 内の DTTFS パスとLIFパスの変数名を分離。
+#
+# 追加 (v21):
+# - SNN5改善レポート (セクション6.2) に基づき、TSkipsSNN をモデルマップに追加。
 
 import torch
 import torch.nn as nn
@@ -30,7 +33,12 @@ from torchvision import models # type: ignore
 import logging 
 
 from .base import BaseModel, SNNLayerNorm
-from .neurons import AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron
+# --- ▼ 修正: SNN5改善レポートで追加したニューロンをインポート ▼ ---
+from .neurons import (
+    AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron,
+    TC_LIF, DualThresholdNeuron, ScaleAndFireNeuron
+)
+# --- ▲ 修正 ▲ ---
 from .mamba_core import SpikingMamba
 from .trm_core import TinyRecursiveModel
 from .sntorch_models import SpikingTransformerSnnTorch 
@@ -43,7 +51,9 @@ from snn_research.architectures.hybrid_attention_transformer import HybridAttent
 from snn_research.architectures.spiking_rwkv import SpikingRWKV
 from snn_research.architectures.sew_resnet import SEWResNet
 from snn_research.architectures.hybrid_neuron_network import HybridSpikingCNN
-# --- ▲ 新しいアーキテクチャのインポート ▲ ---
+# --- ▼ SNN5改善レポートで追加したアーキテクチャをインポート ▼ ---
+from snn_research.architectures.tskips_snn import TSkipsSNN
+# --- ▲ SNN5改善レポートで追加したアーキテクチャをインポート ▲ ---
 
 
 logger = logging.getLogger(__name__)
@@ -81,7 +91,15 @@ class PredictiveCodingLayer(nn.Module):
             valid_params = ['features', 'base_threshold', 'gate_input_features']
         elif neuron_class == DifferentiableTTFSEncoder:
             valid_params = ['num_neurons', 'duration', 'initial_sensitivity']
-        
+        # --- ▼ SNN5改善レポートで追加したニューロンのパラメータ ▼ ---
+        elif neuron_class == TC_LIF:
+            valid_params = ['features', 'tau_s_init', 'tau_d_init', 'w_ds_init', 'w_sd_init', 'base_threshold', 'v_reset']
+        elif neuron_class == DualThresholdNeuron:
+            valid_params = ['features', 'tau_mem', 'threshold_high_init', 'threshold_low_init', 'v_reset']
+        elif neuron_class == ScaleAndFireNeuron:
+            valid_params = ['features', 'num_levels', 'base_threshold']
+        # --- ▲ SNN5改善レポートで追加したニューロンのパラメータ ▲ ---
+
         filtered_params: Dict[str, Any] = {k: v for k, v in neuron_params.items() if k in valid_params}
         return filtered_params
 
@@ -142,6 +160,15 @@ class MultiLevelSpikeDrivenSelfAttention(nn.Module):
             valid_params = ['features', 'a', 'b', 'c', 'd', 'dt']
         elif neuron_class == GLIFNeuron:
             valid_params = ['features', 'base_threshold', 'gate_input_features']
+        # --- ▼ SNN5改善レポートで追加したニューロンのパラメータ ▼ ---
+        elif neuron_class == TC_LIF:
+            valid_params = ['features', 'tau_s_init', 'tau_d_init', 'w_ds_init', 'w_sd_init', 'base_threshold', 'v_reset']
+        elif neuron_class == DualThresholdNeuron:
+            valid_params = ['features', 'tau_mem', 'threshold_high_init', 'threshold_low_init', 'v_reset']
+        elif neuron_class == ScaleAndFireNeuron:
+            valid_params = ['features', 'num_levels', 'base_threshold']
+        # --- ▲ SNN5改善レポートで追加したニューロンのパラメータ ▲ ---
+
         
         filtered_params: Dict[str, Any] = {k: v for k, v in neuron_params.items() if k in valid_params}
         return filtered_params
@@ -241,6 +268,14 @@ class STAttenBlock(nn.Module):
             valid_params = ['features', 'a', 'b', 'c', 'd', 'dt']
         elif neuron_class == GLIFNeuron:
             valid_params = ['features', 'base_threshold', 'gate_input_features']
+        # --- ▼ SNN5改善レポートで追加したニューロンのパラメータ ▼ ---
+        elif neuron_class == TC_LIF:
+            valid_params = ['features', 'tau_s_init', 'tau_d_init', 'w_ds_init', 'w_sd_init', 'base_threshold', 'v_reset']
+        elif neuron_class == DualThresholdNeuron:
+            valid_params = ['features', 'tau_mem', 'threshold_high_init', 'threshold_low_init', 'v_reset']
+        elif neuron_class == ScaleAndFireNeuron:
+            valid_params = ['features', 'num_levels', 'base_threshold']
+        # --- ▲ SNN5改善レポートで追加したニューロンのパラメータ ▲ ---
         
         filtered_params: Dict[str, Any] = {k: v for k, v in neuron_params.items() if k in valid_params}
         return filtered_params
@@ -317,6 +352,14 @@ class BreakthroughSNN(BaseModel):
                 k: v for k, v in neuron_params.items() 
                 if k in ['features', 'base_threshold', 'gate_input_features']
             }
+        # --- ▼ SNN5改善レポートで追加したニューロンをサポート ▼ ---
+        elif neuron_type_str == 'tc_lif':
+            neuron_class = TC_LIF # type: ignore[assignment]
+            neuron_params = {
+                k: v for k, v in neuron_params.items() 
+                if k in ['features', 'tau_s_init', 'tau_d_init', 'w_ds_init', 'w_sd_init', 'base_threshold', 'v_reset']
+            }
+        # --- ▲ SNN5改善レポートで追加したニューロンをサポート ▲ ---
         else:
             raise ValueError(f"Unknown neuron type for BreakthroughSNN: {neuron_type_str}")
 
@@ -334,7 +377,7 @@ class BreakthroughSNN(BaseModel):
         
         inference_neuron = self.pc_layers[0].inference_neuron
         inference_neuron_features: int
-        if isinstance(inference_neuron, (AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron)):
+        if isinstance(inference_neuron, (AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron, TC_LIF)): # TC_LIFを追加
              inference_neuron_features = inference_neuron.features
         else:
              inference_neuron_features = self.d_state # Fallback
@@ -417,6 +460,14 @@ class SpikingTransformer(BaseModel):
                 k: v for k, v in neuron_params.items() 
                 if k in ['features', 'base_threshold', 'gate_input_features']
             }
+        # --- ▼ SNN5改善レポートで追加したニューロンをサポート ▼ ---
+        elif neuron_type_str == 'tc_lif':
+            neuron_class = TC_LIF # type: ignore[assignment]
+            filtered_params = {
+                k: v for k, v in neuron_params.items() 
+                if k in ['features', 'tau_s_init', 'tau_d_init', 'w_ds_init', 'w_sd_init', 'base_threshold', 'v_reset']
+            }
+        # --- ▲ SNN5改善レポートで追加したニューロンをサポート ▲ ---
         else:
              raise ValueError(f"Unknown neuron type for SpikingTransformer: {neuron_type}")
         
@@ -551,6 +602,14 @@ class SimpleSNN(BaseModel):
                 k: v for k, v in neuron_params.items() 
                 if k in ['features', 'base_threshold', 'gate_input_features']
             }
+        # --- ▼ SNN5改善レポートで追加したニューロンをサポート ▼ ---
+        elif neuron_type_str == 'tc_lif':
+            neuron_class = TC_LIF # type: ignore[assignment]
+            filtered_params = {
+                k: v for k, v in neuron_params.items() 
+                if k in ['features', 'tau_s_init', 'tau_d_init', 'w_ds_init', 'w_sd_init', 'base_threshold', 'v_reset']
+            }
+        # --- ▲ SNN5改善レポートで追加したニューロンをサポート ▲ ---
         else:
              raise ValueError(f"Unknown neuron type for SimpleSNN: {neuron_type}")
         
@@ -654,10 +713,26 @@ class AnalogToSpikes(BaseModel):
                 k: v for k, v in neuron_params.items() 
                 if k in ['num_neurons', 'duration', 'initial_sensitivity']
             }
+        # --- ▼ SNN5改善レポートで追加したニューロンをサポート ▼ ---
+        elif neuron_type_str == 'tc_lif':
+            neuron_class = TC_LIF # type: ignore[assignment]
+            filtered_params = {
+                k: v for k, v in neuron_params.items() 
+                if k in ['features', 'tau_s_init', 'tau_d_init', 'w_ds_init', 'w_sd_init', 'base_threshold', 'v_reset']
+            }
+        elif neuron_type_str == 'dual_threshold':
+            neuron_class = DualThresholdNeuron # type: ignore[assignment]
+            filtered_params = {
+                k: v for k, v in neuron_params.items() 
+                if k in ['features', 'tau_mem', 'threshold_high_init', 'threshold_low_init', 'v_reset']
+            }
+        # --- ▲ SNN5改善レポートで追加したニューロンをサポート ▲ ---
         else:
             raise ValueError(f"Unknown neuron type for AnalogToSpikes: {neuron_type_str}")
         
-        self.neuron = cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron, DifferentiableTTFSEncoder], neuron_class(**filtered_params))
+        # --- ▼ SNN5改善レポートで追加したニューロンをサポート ▼ ---
+        self.neuron = cast(Union[AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron, DifferentiableTTFSEncoder, TC_LIF, DualThresholdNeuron], neuron_class(**filtered_params))
+        # --- ▲ SNN5改善レポートで追加したニューロンをサポート ▲ ---
         self.output_act = activation()
     
     def _hook_mem(self, module: nn.Module, input: Any, output: Tuple[torch.Tensor, torch.Tensor]) -> None:
@@ -690,7 +765,7 @@ class AnalogToSpikes(BaseModel):
                 
             return dttfs_spikes_stacked.reshape(dttfs_output_shape), None # DTTFSは膜電位を返さない
 
-        # --- 従来のLIF/Izhikevich/GLIF (外部T_stepsループ) ---
+        # --- 従来のLIF/Izhikevich/GLIF/TC_LIF/DualThreshold (外部T_stepsループ) ---
         x_repeated: torch.Tensor = x.unsqueeze(-2).repeat(1, *([1] * (x_analog.dim() - 1)), self.time_steps, 1)
         
         cast(base.MemoryModule, self.neuron).set_stateful(True)
@@ -704,8 +779,10 @@ class AnalogToSpikes(BaseModel):
         spikes_history: List[torch.Tensor] = []
         
         neuron_features: int = -1
-        if isinstance(self.neuron, (AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron)):
+        # --- ▼ SNN5改善レポートで追加したニューロンをサポート ▼ ---
+        if isinstance(self.neuron, (AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron, TC_LIF, DualThresholdNeuron)):
             neuron_features = self.neuron.features
+        # --- ▲ SNN5改善レポートで追加したニューロンをサポート ▲ ---
         else:
              neuron_features = self.projection.out_features # Fallback
         
@@ -793,6 +870,14 @@ class HybridCnnSnnModel(BaseModel):
                 k: v for k, v in neuron_params.items() 
                 if k in ['features', 'base_threshold', 'gate_input_features']
             }
+        # --- ▼ SNN5改善レポートで追加したニューロンをサポート ▼ ---
+        elif neuron_type == 'tc_lif':
+            neuron_class = TC_LIF # type: ignore[assignment]
+            filtered_params = {
+                k: v for k, v in neuron_params.items() 
+                if k in ['features', 'tau_s_init', 'tau_d_init', 'w_ds_init', 'w_sd_init', 'base_threshold', 'v_reset']
+            }
+        # --- ▲ SNN5改善レポートで追加したニューロンをサポート ▲ ---
         else:
              # dttfs は AnalogToSpikes 内部でのみ使用
              raise ValueError(f"Unknown neuron type for HybridCnnSnnModel backend: {neuron_type}")
@@ -924,6 +1009,20 @@ class SpikingCNN(BaseModel):
                 k: v for k, v in neuron_params.items() 
                 if k in ['features', 'base_threshold', 'gate_input_features']
             }
+        # --- ▼ SNN5改善レポートで追加したニューロンをサポート ▼ ---
+        elif neuron_type == 'tc_lif':
+            neuron_class = TC_LIF # type: ignore[assignment]
+            filtered_params = {
+                k: v for k, v in neuron_params.items() 
+                if k in ['features', 'tau_s_init', 'tau_d_init', 'w_ds_init', 'w_sd_init', 'base_threshold', 'v_reset']
+            }
+        elif neuron_type == 'dual_threshold':
+            neuron_class = DualThresholdNeuron # type: ignore[assignment]
+            filtered_params = {
+                k: v for k, v in neuron_params.items() 
+                if k in ['features', 'tau_mem', 'threshold_high_init', 'threshold_low_init', 'v_reset']
+            }
+        # --- ▲ SNN5改善レポートで追加したニューロンをサポート ▲ ---
         else:
              raise ValueError(f"Unknown neuron type for SpikingCNN: {neuron_type}")
 
@@ -959,11 +1058,11 @@ class SpikingCNN(BaseModel):
                 self.all_mems_history.append(output[1]) # mem
             
             for module in self.features:
-                if isinstance(module, (AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron)): 
+                if isinstance(module, (AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron, TC_LIF, DualThresholdNeuron)): 
                     hooks.append(module.register_forward_hook(_hook_mem))
                     neuron_layers.append(module)
             for module in self.classifier:
-                 if isinstance(module, (AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron)): 
+                 if isinstance(module, (AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron, TC_LIF, DualThresholdNeuron)): 
                     hooks.append(module.register_forward_hook(_hook_mem))
                     neuron_layers.append(module)
 
@@ -973,7 +1072,7 @@ class SpikingCNN(BaseModel):
             hidden_repr_t: Optional[torch.Tensor] = None 
             
             for features_layer in self.features: 
-                if isinstance(features_layer, (AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron)): 
+                if isinstance(features_layer, (AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron, TC_LIF, DualThresholdNeuron)): 
                     B_c, C_c, H_c, W_c = x.shape
                     x_reshaped: torch.Tensor = x.permute(0, 2, 3, 1).reshape(-1, C_c)
                     spikes, _ = features_layer(x_reshaped) # type: ignore[operator]
@@ -992,7 +1091,7 @@ class SpikingCNN(BaseModel):
                 if isinstance(classifier_layer, nn.Flatten):
                     x = classifier_layer(x) # type: ignore[operator]
                     continue
-                elif isinstance(classifier_layer, (AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron)): 
+                elif isinstance(classifier_layer, (AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron, TC_LIF, DualThresholdNeuron)): 
                     spikes, _ = classifier_layer(x) # type: ignore[operator]
                     x = spikes
                 elif isinstance(classifier_layer, nn.Linear):
@@ -1067,6 +1166,9 @@ class SNNCore(nn.Module):
                 "hybrid_attention_transformer": HybridAttentionTransformer,
                 "spiking_rwkv": SpikingRWKV,
                 "sew_resnet": SEWResNet,
+                # --- ▼ SNN5改善レポートで追加したアーキテクチャを登録 ▼ ---
+                "tskips_snn": TSkipsSNN, # type: ignore[dict-item]
+                # --- ▲ SNN5改善レポートで追加したアーキテクチャを登録 ▲ ---
             }
         elif backend == "snntorch":
             model_map = { # type: ignore[assignment]
@@ -1094,7 +1196,15 @@ class SNNCore(nn.Module):
     def forward(self, *args: Any, **kwargs: Any) -> Any:
         model_type: Optional[str] = self.config.get("architecture_type")
         
-        input_key: str = 'input_images' if model_type in ["hybrid_cnn_snn", "spiking_cnn", "sew_resnet"] else 'input_ids'
+        # --- ▼ SNN5改善レポートで追加したアーキテクチャの入力キー ▼ ---
+        input_key: str
+        if model_type in ["hybrid_cnn_snn", "spiking_cnn", "sew_resnet"]:
+            input_key = "input_images"
+        elif model_type == "tskips_snn":
+            input_key = "input_sequence"
+        # --- ▲ SNN5改善レポートで追加したアーキテクチャの入力キー ▲ ---
+        else:
+            input_key = 'input_ids'
         
         input_data: Optional[torch.Tensor] = kwargs.get(input_key)
         
@@ -1109,7 +1219,11 @@ class SNNCore(nn.Module):
         if input_data is None:
             return self.model(**forward_kwargs) # type: ignore[operator]
 
+        # --- ▼ SNN5改善レポートで追加したアーキテクチャの入力キー ▼ ---
         if model_type in ["hybrid_cnn_snn", "spiking_cnn", "sew_resnet"]:
             return self.model(input_images=input_data, **forward_kwargs) # type: ignore[operator]
+        elif model_type == "tskips_snn":
+            return self.model(input_sequence=input_data, **forward_kwargs) # type: ignore[operator]
+        # --- ▲ SNN5改善レポートで追加したアーキテクチャの入力キー ▲ ---
         else:
             return self.model(input_ids=input_data, **forward_kwargs) # type: ignore[operator]

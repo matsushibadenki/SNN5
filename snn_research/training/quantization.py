@@ -10,19 +10,23 @@
 # 追加 (v2):
 # - SNN5改善レポート (セクション4.2, 引用[20]) に基づき、
 #   SNN固有の膜電位量子化 (SpQuant-SNN) をシミュレートする関数を追加。
+#
+# 修正 (v3): mypy [name-defined] エラーを修正。
 
 import torch
 import torch.nn as nn
 import copy
-# --- ▼ 追加 ▼ ---
-from typing import Dict, Any, cast
+# --- ▼ 修正 ▼ ---
+from typing import Dict, Any, cast, Tuple
 import logging
+import torch.nn.functional as F # [name-defined] F をインポート
 
 from snn_research.core.neurons import AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron
 from spikingjelly.activation_based import base as sj_base # type: ignore
+from snn_research.core.base import BaseModel # [name-defined] BaseModel をインポート
 
 logger = logging.getLogger(__name__)
-# --- ▲ 追加 ▲ ---
+# --- ▲ 修正 ▲ ---
 
 
 def apply_qat(model: nn.Module, inplace: bool = True) -> nn.Module:

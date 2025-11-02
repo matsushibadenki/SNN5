@@ -1,5 +1,7 @@
 # ファイルパス: snn_research/agent/self_evolving_agent.py
 # (HSEO統合による改善案 - mypyエラー修正 v3)
+# Title: 自己進化エージェント (HSEO統合版)
+# Description:
 # HSEO (Hybrid Swarm Evolution Optimization) を新しい進化オペレータとして追加し、
 # 微分不要な最適化手法を用いて学習パラメータを探索する機能を追加します。
 # mypyエラーを修正。
@@ -231,10 +233,6 @@ class SelfEvolvingAgentMaster(AutonomousAgent):
 
         return priorities
 
-    # --- (_select_evolution_operator, _update_evolution_history, _evolve_architecture,
-    #      _evolve_learning_parameters, _evolve_learning_paradigm, _evolve_neuron_type,
-    #      _evolve_learning_rule_params, _apply_social_evolution_recipe, get_next_version,
-    #      run_evolution_cycle は変更なし) ---
     def _select_evolution_operator(self, priorities: Dict[str, float], current_budget: float) -> Optional[str]:
         """優先度、過去の成功率、コスト予算に基づいて進化オペレータを選択する。"""
         weighted_priorities: Dict[str, float] = {}

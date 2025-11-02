@@ -1,29 +1,16 @@
 # ファイルパス: snn_research/core/snn_core.py
 # (更新)
 #
-# Title: SNN Core Models (SNNネイティブAttention改修版)
+# Title: SNN Core Models (SpikingSSM 登録)
 # (省略...)
-# 改善 (v16):
-# - doc/SNN開発：基本設計思想.md (セクション3.3, 引用[31]) に基づき、
-#   STAttenBlock に「学習可能な遅延」を導入し、TCA問題への対応を強化。
-#
-# 修正 (v17):
-# - mypy [name-defined] [union-attr] [misc] エラーを修正。
-#
-# 改善 (v19):
-# - doc/SNN開発：基本設計思想.md (セクション4.1, 引用[70]) に基づき、
-#   AnalogToSpikes モジュールを改修し、DifferentiableTTFSEncoder (学習可能なエンコーダ) を
-#   使用できるようにする。
-#
-# 修正 (v20):
-# - mypy [assignment] [no-redef] エラーを修正。
-# - AnalogToSpikes.forward 内の DTTFS パスとLIFパスの変数名を分離。
-#
 # 追加 (v21):
 # - SNN5改善レポート (セクション6.2) に基づき、TSkipsSNN をモデルマップに追加。
 #
 # 修正 (v22):
 # - mypy [name-defined] エラー (neuron_type_str) を修正。
+#
+# 追加 (v23):
+# - SNN5改善レポート (セクション5.3) に基づき、SpikingSSM をモデルマップに追加。
 
 import torch
 import torch.nn as nn
@@ -56,6 +43,7 @@ from snn_research.architectures.sew_resnet import SEWResNet
 from snn_research.architectures.hybrid_neuron_network import HybridSpikingCNN
 # --- ▼ SNN5改善レポートで追加したアーキテクチャをインポート ▼ ---
 from snn_research.architectures.tskips_snn import TSkipsSNN
+from snn_research.architectures.spiking_ssm import SpikingSSM # SpikingSSM をインポート
 # --- ▲ SNN5改善レポートで追加したアーキテクチャをインポート ▲ ---
 
 
@@ -1175,6 +1163,7 @@ class SNNCore(nn.Module):
                 "sew_resnet": SEWResNet,
                 # --- ▼ SNN5改善レポートで追加したアーキテクチャを登録 ▼ ---
                 "tskips_snn": TSkipsSNN, # type: ignore[dict-item]
+                "spiking_ssm": SpikingSSM, # type: ignore[dict-item]
                 # --- ▲ SNN5改善レポートで追加したアーキテクチャを登録 ▲ ---
             }
         elif backend == "snntorch":
@@ -1209,6 +1198,8 @@ class SNNCore(nn.Module):
             input_key = "input_images"
         elif model_type == "tskips_snn":
             input_key = "input_sequence"
+        elif model_type == "spiking_ssm": # SpikingSSM の入力キーを追加
+            input_key = "input_ids" # SpikingSSM は input_ids を期待する
         # --- ▲ SNN5改善レポートで追加したアーキテクチャの入力キー ▲ ---
         else:
             input_key = 'input_ids'
@@ -1233,4 +1224,5 @@ class SNNCore(nn.Module):
             return self.model(input_sequence=input_data, **forward_kwargs) # type: ignore[operator]
         # --- ▲ SNN5改善レポートで追加したアーキテクチャの入力キー ▲ ---
         else:
+             # SpikingSSM も "input_ids" を使うため、else ブロックで処理される
             return self.model(input_ids=input_data, **forward_kwargs) # type: ignore[operator]

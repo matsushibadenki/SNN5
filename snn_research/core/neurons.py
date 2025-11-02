@@ -23,6 +23,10 @@
 #   TC_LIF (セクション5.1, 引用[92]),
 #   DualThresholdNeuron (セクション3.1, 引用[6]),
 #   ScaleAndFireNeuron (セクション3.2, 引用[18]) を追加実装。
+#
+# 修正 (v6):
+# - mypy [has-type] (spikes -> self.spikes) を修正。
+# - mypy [arg-type] (self.c -> float(self.c)) を修正。
 
 # --- ▼ 修正 ▼ ---
 from typing import Optional, Tuple, Any, List
@@ -188,10 +192,12 @@ class IzhikevichNeuron(base.MemoryModule):
             self.v = None
             self.u = None
             
+        # --- ▼ 修正: mypy [arg-type] エラーを修正 (float()キャストを追加) ▼ ---
         if self.v is None or self.v.shape != x.shape:
-            self.v = torch.full_like(x, self.c)
+            self.v = torch.full_like(x, float(self.c))
         if self.u is None or self.u.shape != x.shape:
-            self.u = torch.full_like(x, self.b * self.c)
+            self.u = torch.full_like(x, float(self.b * self.c))
+        # --- ▲ 修正 ▲ ---
 
         dv = 0.04 * self.v**2 + 5 * self.v + 140 - self.u + x
         du = self.a * (self.b * self.v - self.u)
@@ -206,7 +212,9 @@ class IzhikevichNeuron(base.MemoryModule):
             self.total_spikes += spike.detach().sum()
         
         reset_mask = (self.v >= self.v_peak).detach()
-        self.v = torch.where(reset_mask, torch.full_like(self.v, self.c), self.v)
+        # --- ▼ 修正: mypy [arg-type] エラーを修正 (float()キャストを追加) ▼ ---
+        self.v = torch.where(reset_mask, torch.full_like(self.v, float(self.c)), self.v)
+        # --- ▲ 修正 ▲ ---
         self.u = torch.where(reset_mask, self.u + self.d, self.u)
         
         self.v = torch.clamp(self.v, min=-100.0, max=50.0)
@@ -549,7 +557,9 @@ class DualThresholdNeuron(base.MemoryModule):
         
         self.spikes = spike.detach()
         with torch.no_grad():
+            # --- ▼ 修正: mypy [has-type] エラーを修正 (spikes -> self.spikes) ▼ ---
             self.total_spikes += self.spikes.sum()
+            # --- ▲ 修正 ▲ ---
 
         # リセット (デュアルしきい値を使用)
         # 引用[6]の式(7)に基づくリセット

@@ -4,6 +4,7 @@
 # Description: 学習、データ、モデルレジストリなどの基本設定を管理。
 # 改善点(v1): 知識蒸留の学習率を調整し、損失の重みを変更。
 # 改善点(v2): probabilistic_neuron の設定を追加。
+# 改善点(v3): SNN5改善レポートに基づき、時空間プルーニングとSpQuant量子化の設定を追加。
 
 # 共通設定
 seed: 42
@@ -24,12 +25,25 @@ training:
   batch_size: 16 # バッチサイズを少し増やす
 
   quantization:
-    enabled: false
+    enabled: false # PyTorch標準QAT
     backend: 'fbgemm'
+    # --- ▼ SNN5改善レポート 4.2 に基づく追加 ▼ ---
+    spquant:
+      enabled: false # SNN固有の膜電位量子化 (SpQuant)
+      # (SpQuant固有のパラメータがあればここに追加)
+    # --- ▲ SNN5改善レポート 4.2 に基づく追加 ▲ ---
 
   pruning:
-    enabled: false
-    amount: 0.2
+    enabled: false # (このフラグはSBCまたは両方の有効化に使用)
+    # --- ▼ SNN5改善レポート 4.1/4.4 に基づく追加/変更 ▼ ---
+    sbc: # SBC (ワンショット・プルーニング)
+      enabled: false
+      amount: 0.2
+    spatio_temporal: # 時空間プルーニング
+      enabled: false
+      spatial_amount: 0.2 # 空間プルーニングの割合
+      kl_threshold: 0.01  # 時間プルーニングの飽和判定閾値
+    # --- ▲ SNN5改善レポート 4.1/4.4 に基づく追加/変更 ▲ ---
 
   meta_cognition:
     enabled: true

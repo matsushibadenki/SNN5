@@ -1,19 +1,16 @@
-# matsushibadenki/snn_research/conversion/ann_to_snn_converter.py
+# ファイルパス: snn_research/conversion/ann_to_snn_converter.py
 # (更新)
-# GGUF/Safetensors形式のANNモデルからSNNへの変換・蒸留を行うコンバータ
-#
-# 機能:
+# Title: ANN-SNN 変換コンバータ (ECL対応)
+# Description:
+# - GGUF/Safetensors形式のANNモデルからSNNへの変換・蒸留を行うコンバータ。
 # - [改善 v3] 堅牢な変換パイプラインを実装。BatchNorm Folding, 安全な重みコピー,
 #   パーセンタイルベースの閾値キャリブレーション、ロギングを導入。
-# - [改善 v3] LLM変換の非現実性を明確化し、ハイブリッドアプローチの重要性を強調。
-#
-# 修正 (v4):
-# - SNN5改善レポート (セクション3.1) に基づき、ECLコンポーネントの
+# - [改善 v4] SNN5改善レポート (セクション3.1) に基づき、ECLコンポーネントの
 #   インポートと、`convert_cnn_weights` でECL関連コンポーネント
 #   (LearnableClippingLayer, DualThresholdNeuron) の使用を
 #   考慮するロジック（スタブ）を追加。
 #
-# 修正 (v5): mypy [name-defined] エラーを修正。
+# mypy --strict 準拠。
 
 import torch
 import torch.nn as nn
@@ -93,7 +90,7 @@ class AnnToSnnConverter:
         calibration_loader: Optional[Any] = None,
         # --- ▼ 追加 ▼ ---
         use_ecl: bool = False # ECL (エラー補償学習) を試みるか
-        # --- ▲ 追加 ▲ ---
+        # --- ▲ 追加 ▼ ---
     ) -> None:
         """
         Hugging FaceのLLMをロードし、正規化と高度なマッピングを行ってSNNに変換する。
@@ -156,7 +153,7 @@ class AnnToSnnConverter:
         calibration_loader: Any,
         # --- ▼ 追加 ▼ ---
         use_ecl: bool = False
-        # --- ▲ 追加 ▲ ---
+        # --- ▲ 追加 ▼ ---
     ):
         """CNNモデルの高忠実度変換を実行する。"""
         logging.info("--- 🚀 高忠実度CNN変換開始 ---")

@@ -20,11 +20,17 @@
 #
 # 修正 (v2):
 # - mypy [syntax] error: Unmatched '}' を解消。 (327行目)
+#
+# 修正 (v3):
+# - mypy [name-defined] (Union) エラーを解消するため、Unionをインポート。
+# - mypy [no-redef] (layer) エラーを解消するため、変数名を layer_to_set に変更。
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Tuple, Dict, Any, Type, Optional, List, cast
+# --- ▼ 修正: Union をインポート ▼ ---
+from typing import Tuple, Dict, Any, Type, Optional, List, cast, Union
+# --- ▲ 修正 ▲ ---
 import math
 
 # SNNのコアコンポーネントをインポート
@@ -270,10 +276,12 @@ class SpikingSSM(BaseModel):
         
         # (SpikingJellyの流儀に従い、LIFは外部でT_seqループを回す)
         
+        # --- ▼ 修正: mypy [no-redef] (変数名を layer_to_set に変更) ▼ ---
         # 各レイヤーのLIFをStatefulに設定
         for layer_module in self.layers:
-            layer: S4DLIFBlock = cast(S4DLIFBlock, layer_module)
-            layer.set_stateful(True)
+            layer_to_set: S4DLIFBlock = cast(S4DLIFBlock, layer_module)
+            layer_to_set.set_stateful(True)
+        # --- ▲ 修正 ▲ ---
 
         outputs: List[torch.Tensor] = []
         
@@ -301,10 +309,12 @@ class SpikingSSM(BaseModel):
             
             outputs.append(x_t_layer) # 最終層の出力
         
+        # --- ▼ 修正: mypy [no-redef] (変数名を layer_to_set に変更) ▼ ---
         # 各レイヤーのLIFをStatelessに戻す
         for layer_module in self.layers:
-            layer: S4DLIFBlock = cast(S4DLIFBlock, layer_module)
-            layer.set_stateful(False)
+            layer_to_set: S4DLIFBlock = cast(S4DLIFBlock, layer_module)
+            layer_to_set.set_stateful(False)
+        # --- ▲ 修正 ▲ ---
 
         # (B, T_seq, D_model)
         x_final_seq: torch.Tensor = torch.stack(outputs, dim=1)
@@ -320,9 +330,6 @@ class SpikingSSM(BaseModel):
             logits: torch.Tensor = self.output_projection(x_norm_final)
             output = logits
         
-        # --- ▼ 修正: 327行目の余分な '}' を削除 ▼ ---
-        # --- ▲ 修正 ▲ ---
-
         # --- 互換性のため (logits, avg_spikes, mem) を返す ---
         # (T_snn ではなく T_seq で割る)
         avg_spikes_val: float = self.get_total_spikes() / (B * T_seq) if return_spikes and T_seq > 0 else 0.0

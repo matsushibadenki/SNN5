@@ -21,6 +21,11 @@
 # - mypy [assignment] (final_model) エラーを解消するため、
 #   `final_model_wrapped.model` の行(304) と `final_model = final_model_wrapped` の行(306) に
 #   `type: ignore[assignment]` を追加。
+#
+# 修正 (v11):
+# - SNN5改善レポート (セクション4.1, 4.2) に基づき、
+#   `apply_spatio_temporal_pruning` と `apply_spquant_quantization` を
+#   最終モデル処理ステップに追加。
 
 import argparse
 import os
@@ -41,7 +46,9 @@ from app.containers import TrainingContainer
 from snn_research.data.datasets import get_dataset_class, DistillationDataset, DataFormat, SNNBaseDataset
 from snn_research.training.trainers import BreakthroughTrainer, ParticleFilterTrainer
 from snn_research.training.bio_trainer import BioRLTrainer
-from snn_research.training.quantization import apply_qat, convert_to_quantized_model
+# --- ▼ 修正 (SpQuant量子化をインポート) ▼ ---
+from snn_research.training.quantization import apply_qat, convert_to_quantized_model, apply_spquant_quantization
+# --- ▲ 修正 ▲ ---
 # --- ▼ 修正 (SBCと時空間プルーニングをインポート) ▼ ---
 from snn_research.training.pruning import apply_sbc_pruning, apply_spatio_temporal_pruning
 # --- ▲ 修正 ▲ ---
@@ -216,15 +223,25 @@ def train( # type: ignore[no-untyped-def]
         train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
 
         # --- ▼ 修正 ▼ ---
-        train_sampler: Optional[Sampler] = DistributedSampler(train_dataset) if is_distributed else None
+        train_sampler: Optional[Sampler[int]] = DistributedSampler(train_dataset) if is_distributed else None # Sampler[int] に修正
         # --- ▲ 修正 ▲ ---
         train_loader = DataLoader(train_dataset, batch_size=config.training.batch_size, shuffle=(train_sampler is None), sampler=train_sampler, collate_fn=collate_fn(tokenizer, is_distillation), num_workers=0)
         val_loader = DataLoader(val_dataset, batch_size=config.training.batch_size, shuffle=False, collate_fn=collate_fn(tokenizer, is_distillation), num_workers=0)
 
         snn_model: nn.Module = container.snn_model(backend=args.backend)
 
-        if config.training.quantization.enabled:
+        # --- ▼ 修正: SNN5改善レポート 4.2 (SpQuant) を QAT より先に適用 ▼ ---
+        # SNN固有の量子化 (SpQuant) を先に試みる
+        if OmegaConf.select(config, "training.quantization.spquant.enabled", default=False):
+             logger.info("Applying SpQuant-SNN (Membrane Quantization)...")
+             snn_model = apply_spquant_quantization(snn_model.to('cpu')) # SpQuantはinplace変更を想定
+        
+        # PyTorch標準のQAT (SpQuantと併用は通常しないが、設定上は可能)
+        elif config.training.quantization.enabled:
+            logger.info("Applying PyTorch QAT preparation...")
             snn_model = apply_qat(snn_model.to('cpu'))
+        # --- ▲ 修正 ▲ ---
+            
         snn_model.to(device)
 
         if is_distributed:
@@ -292,7 +309,7 @@ def train( # type: ignore[no-untyped-def]
             trainer._compute_ewc_fisher_matrix(train_loader, args.task_name)
 
         # 最終モデルの処理 (量子化、プルーニング)
-        # --- ▼ 修正 (SNN5改善レポート 4.3 対応): プルーニングと量子化の順序を変更 ▼ ---
+        # --- ▼ 修正 (SNN5改善レポート 4.1, 4.2, 4.3 対応): プルーニングと量子化の順序変更・新機能追加 ▼ ---
         # --- ▼ 修正 (mypy [assignment]): `type: ignore` を追加 ▼ ---
         if rank in [-1, 0]:
             final_model_wrapped = trainer.model.module if is_distributed else trainer.model
@@ -308,12 +325,33 @@ def train( # type: ignore[no-untyped-def]
             if isinstance(final_model, nn.Module):
                 model_to_process = final_model # 処理対象のモデル
                 
-                # 1. プルーニング (SBC) を先に実行
-                if config.training.pruning.enabled:
-                    pruning_amount = config.training.pruning.amount
-                    logger.info("Applying SBC Pruning to the final best model...")
+                # --- 1a. 時空間プルーニング (SNN5改善レポート 4.1) ---
+                if OmegaConf.select(config, "training.pruning.spatio_temporal.enabled", default=False):
+                    logger.info("Applying Spatio-Temporal Pruning to the final best model...")
                     
-                    # SBCはヘッセ行列計算のためにデータローダーと損失関数を必要とする
+                    st_amount: float = OmegaConf.select(config, "training.pruning.spatio_temporal.spatial_amount", default=0.2)
+                    st_kl_thresh: float = OmegaConf.select(config, "training.pruning.spatio_temporal.kl_threshold", default=0.01)
+                    
+                    # (BaseModelからtime_stepsを取得)
+                    snn_time_steps: int = cast(int, getattr(model_to_process, 'time_steps', 16))
+
+                    st_pruned_model = apply_spatio_temporal_pruning(
+                        model_to_process,
+                        dataloader=val_loader, # スタブとして検証ローダーを渡す
+                        time_steps=snn_time_steps,
+                        spatial_amount=st_amount,
+                        kl_threshold=st_kl_thresh
+                    )
+                    st_pruned_path = os.path.join(config.training.log_dir, 'pruned_spatio_temporal_best_model.pth')
+                    torch.save(st_pruned_model.state_dict(), st_pruned_path)
+                    logger.info(f"✅ Spatio-Temporal Pruned model saved to {st_pruned_path}")
+                    model_to_process = st_pruned_model # 次のステップのため、処理済みモデルを更新
+
+                # --- 1b. SBC プルーニング (SNN5改善レポート 4.3 順序) ---
+                if OmegaConf.select(config, "training.pruning.sbc.enabled", default=False): # 'enabled' -> 'sbc.enabled'
+                    pruning_amount: float = OmegaConf.select(config, "training.pruning.sbc.amount", default=0.2)
+                    logger.info("Applying SBC Pruning to the final model (post ST-pruning if enabled)...")
+                    
                     pruned_model = apply_sbc_pruning(
                         model_to_process, 
                         amount=pruning_amount,
@@ -322,21 +360,25 @@ def train( # type: ignore[no-untyped-def]
                     )
                     pruned_path = os.path.join(config.training.log_dir, 'pruned_sbc_best_model.pth')
                     torch.save(pruned_model.state_dict(), pruned_path)
-                    logger.info(f"✅ Pruned model saved to {pruned_path}")
+                    logger.info(f"✅ SBC Pruned model saved to {pruned_path}")
                     model_to_process = pruned_model # 次のステップのため、処理済みモデルを更新
                 
-                # 2. 量子化 (QAT) を後に実行
-                if config.training.quantization.enabled:
-                    logger.info("Applying QAT conversion to the final model (post-pruning if enabled)...")
-                    # 量子化はプルーニング済みモデル (または元のモデル) に適用
-                    # QATは `prepare_qat` 済みのモデルに対して `convert` を行う
-                    # （このスクリプトでは `apply_qat` が `prepare_qat` を呼んでいる）
-                    # （厳密には `apply_qat` は訓練開始前に行うべきだが、
-                    #   ここでは訓練後のモデルを変換する `convert_to_quantized_model` を使用）
+                # --- 2a. SNN固有量子化 (SpQuant) (SNN5改善レポート 4.2) ---
+                if OmegaConf.select(config, "training.quantization.spquant.enabled", default=False):
+                    logger.info("Applying SpQuant-SNN (Membrane Quantization) to the final model (post-pruning if enabled)...")
+                    # (SpQuantは訓練前に行うのがQATだが、ここでは訓練後のモデルに適用するスタブ)
+                    spquant_model = apply_spquant_quantization(model_to_process.to('cpu'))
+                    spquant_path = os.path.join(config.training.log_dir, 'quantized_spquant_best_model.pth')
+                    torch.save(spquant_model.state_dict(), spquant_path)
+                    logger.info(f"✅ SpQuant (Stub) model saved to {spquant_path}")
+                
+                # --- 2b. 標準QAT (SNN5改善レポート 4.3 順序) ---
+                elif config.training.quantization.enabled:
+                    logger.info("Applying PyTorch QAT conversion to the final model (post-pruning if enabled)...")
                     quantized_model = convert_to_quantized_model(model_to_process.to('cpu'))
-                    quantized_path = os.path.join(config.training.log_dir, 'quantized_best_model.pth')
+                    quantized_path = os.path.join(config.training.log_dir, 'quantized_qat_best_model.pth')
                     torch.save(quantized_model.state_dict(), quantized_path)
-                    logger.info(f"✅ Quantized model saved to {quantized_path}")
+                    logger.info(f"✅ QAT Quantized model saved to {quantized_path}")
         # --- ▲ 修正 ▲ ---
         # --- ▲ 修正 ▲ ---
             

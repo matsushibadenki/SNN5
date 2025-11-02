@@ -1,4 +1,4 @@
-# ファイルパス: snn_research/conversion/ann_to_snn_converter.py
+# matsushibadenki/snn_research/conversion/ann_to_snn_converter.py
 # (更新)
 # GGUF/Safetensors形式のANNモデルからSNNへの変換・蒸留を行うコンバータ
 #
@@ -12,6 +12,8 @@
 #   インポートと、`convert_cnn_weights` でECL関連コンポーネント
 #   (LearnableClippingLayer, DualThresholdNeuron) の使用を
 #   考慮するロジック（スタブ）を追加。
+#
+# 修正 (v5): mypy [name-defined] エラーを修正。
 
 import torch
 import torch.nn as nn
@@ -20,7 +22,7 @@ import torch.nn.functional as F
 from safetensors.torch import load_file
 from tqdm import tqdm
 # --- ▼ 修正 ▼ ---
-from typing import Dict, Any, Optional, cast, Type
+from typing import Dict, Any, Optional, cast, Type, List
 # --- ▲ 修正 ▲ ---
 import logging
 from transformers import AutoModelForCausalLM

@@ -19,7 +19,8 @@
 #
 # 修正 (v10):
 # - mypy [assignment] (final_model) エラーを解消するため、
-#   `final_model_wrapped.model` の行に `type: ignore[assignment]` を追加。
+#   `final_model_wrapped.model` の行(304) と `final_model = final_model_wrapped` の行(306) に
+#   `type: ignore[assignment]` を追加。
 
 import argparse
 import os
@@ -302,7 +303,7 @@ def train( # type: ignore[no-untyped-def]
                 final_model = final_model_wrapped.model # type: ignore[assignment]
             else:
                 # DDP や他のラッパーが SNNCore をラップしていない場合
-                final_model = final_model_wrapped
+                final_model = final_model_wrapped # type: ignore[assignment]
             
             if isinstance(final_model, nn.Module):
                 model_to_process = final_model # 処理対象のモデル

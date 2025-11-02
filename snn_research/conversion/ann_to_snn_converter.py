@@ -1,4 +1,4 @@
-# matsushibadenki/snn_research/conversion/ann_to_snn_converter.py
+# ファイルパス: snn_research/conversion/ann_to_snn_converter.py
 # (更新)
 # GGUF/Safetensors形式のANNモデルからSNNへの変換・蒸留を行うコンバータ
 #
@@ -6,6 +6,12 @@
 # - [改善 v3] 堅牢な変換パイプラインを実装。BatchNorm Folding, 安全な重みコピー,
 #   パーセンタイルベースの閾値キャリブレーション、ロギングを導入。
 # - [改善 v3] LLM変換の非現実性を明確化し、ハイブリッドアプローチの重要性を強調。
+#
+# 修正 (v4):
+# - SNN5改善レポート (セクション3.1) に基づき、ECLコンポーネントの
+#   インポートと、`convert_cnn_weights` でECL関連コンポーネント
+#   (LearnableClippingLayer, DualThresholdNeuron) の使用を
+#   考慮するロジック（スタブ）を追加。
 
 import torch
 import torch.nn as nn
@@ -13,13 +19,20 @@ import torch.optim as optim
 import torch.nn.functional as F
 from safetensors.torch import load_file
 from tqdm import tqdm
-from typing import Dict, Any, Optional
+# --- ▼ 修正 ▼ ---
+from typing import Dict, Any, Optional, cast, Type
+# --- ▲ 修正 ▲ ---
 import logging
 from transformers import AutoModelForCausalLM
 
+# --- ▼ 修正 ▼ ---
 from snn_research.core.snn_core import AdaptiveLIFNeuron
+from snn_research.core.neurons import DualThresholdNeuron # ECL用ニューロン
 from .conversion_utils import safe_copy_weights, calibrate_thresholds_by_percentile
 from .fold_bn import fold_all_batchnorms
+from .ecl_components import LearnableClippingLayer # ECL用クリッピングレイヤー
+# --- ▲ 修正 ▲ ---
+
 
 # GGUFの依存関係をオプションにする
 try:
@@ -75,7 +88,10 @@ class AnnToSnnConverter:
         self,
         ann_model_name_or_path: str,
         output_path: str,
-        calibration_loader: Optional[Any] = None
+        calibration_loader: Optional[Any] = None,
+        # --- ▼ 追加 ▼ ---
+        use_ecl: bool = False # ECL (エラー補償学習) を試みるか
+        # --- ▲ 追加 ▲ ---
     ) -> None:
         """
         Hugging FaceのLLMをロードし、正規化と高度なマッピングを行ってSNNに変換する。
@@ -99,6 +115,16 @@ class AnnToSnnConverter:
         #
         # このメソッドでは、主に互換性のある線形層の安全な重みコピーに焦点を当てます。
         logging.warning("LLMの完全なSNN化は実験的です。ハイブリッドアプローチを推奨します。")
+        
+        # --- ▼ 追加: ECL (スタブ) ▼ ---
+        if use_ecl:
+            logging.info("ECL (エラー補償学習) モードが有効です (スタブ)。")
+            # (スタブ: 実際にはここでANNモデルのReLUをLearnableClippingLayerに置き換える前処理が必要)
+            # (スタブ: SNNモデルがDualThresholdNeuronを使用していることを確認)
+            is_dual_threshold = any(isinstance(m, DualThresholdNeuron) for m in self.snn_model.modules())
+            if not is_dual_threshold:
+                logging.warning("ECLが有効ですが、SNNモデルにDualThresholdNeuronが見つかりません。")
+        # --- ▲ 追加 ▲ ---
 
         # 2. 重みコピー
         ann_state_dict = ann_model.state_dict()
@@ -125,12 +151,25 @@ class AnnToSnnConverter:
         self,
         ann_model: nn.Module,
         output_path: str,
-        calibration_loader: Any
+        calibration_loader: Any,
+        # --- ▼ 追加 ▼ ---
+        use_ecl: bool = False
+        # --- ▲ 追加 ▲ ---
     ):
         """CNNモデルの高忠実度変換を実行する。"""
         logging.info("--- 🚀 高忠実度CNN変換開始 ---")
         ann_model.to(self.device)
         ann_model.eval()
+
+        # --- ▼ 追加: ECL (スタブ) ▼ ---
+        if use_ecl:
+            logging.info("ECL (エラー補償学習) モードが有効です (スタブ)。")
+            # (スタブ: 実際にはここでANNモデルのReLUをLearnableClippingLayerに置き換える)
+            # (スタブ: SNNモデルがDualThresholdNeuronを使用していることを確認)
+            is_dual_threshold = any(isinstance(m, DualThresholdNeuron) for m in self.snn_model.modules())
+            if not is_dual_threshold:
+                logging.warning("ECLが有効ですが、SNNモデルにDualThresholdNeuronが見つかりません。")
+        # --- ▲ 追加 ▲ ---
 
         # 1. BatchNorm Folding
         logging.info("BatchNorm Foldingを実行中...")
@@ -141,13 +180,27 @@ class AnnToSnnConverter:
         thresholds = calibrate_thresholds_by_percentile(folded_model, calibration_loader, device=self.device)
         
         # SNNモデルの対応するLIF層に閾値を設定
-        lif_layers = [m for m in self.snn_model.modules() if isinstance(m, AdaptiveLIFNeuron)]
-        if len(lif_layers) == len(thresholds):
-            for lif, (name, thr) in zip(lif_layers, thresholds.items()):
-                lif.base_threshold.data.fill_(thr)
-                logging.info(f"SNNレイヤーの閾値を {thr:.4f} に設定しました。")
+        # --- ▼ 修正: ECLニューロンも対象にする ▼ ---
+        snn_neuron_layers: List[nn.Module] = [
+            m for m in self.snn_model.modules() 
+            if isinstance(m, (AdaptiveLIFNeuron, DualThresholdNeuron))
+        ]
+        
+        if len(snn_neuron_layers) == len(thresholds):
+            for lif, (name, thr) in zip(snn_neuron_layers, thresholds.items()):
+                # AdaptiveLIFかDualThresholdかによって設定するパラメータを変える
+                if isinstance(lif, DualThresholdNeuron):
+                    # ECLニューロンの場合、T_h (threshold_high) を設定
+                    lif.threshold_high.data.fill_(thr)
+                    # T_l も連動して設定 (例: T_h の半分)
+                    lif.threshold_low.data.fill_(thr * 0.5)
+                    logging.info(f"SNN ECL Neuron (T_h, T_l) を設定: ({thr:.4f}, {thr*0.5:.4f})")
+                elif isinstance(lif, AdaptiveLIFNeuron):
+                    lif.base_threshold.data.fill_(thr)
+                    logging.info(f"SNN LIF Neuron (base_threshold) を {thr:.4f} に設定しました。")
+        # --- ▲ 修正 ▲ ---
         else:
-            logging.warning("ANNとSNNのReLU/LIF層の数が一致しません。閾値設定をスキップします。")
+            logging.warning(f"ANNとSNNのアクティベーション/ニューロン層の数が一致しません (ANN: {len(thresholds)}, SNN: {len(snn_neuron_layers)})。閾値設定をスキップします。")
             
         # 3. 安全な重みコピー
         logging.info("安全な重みコピーを実行中...")

@@ -5,6 +5,8 @@
 # 順序を変更。
 #
 # 修正 (v2): GLIFNeuron を __all__ に追加。
+#
+# 追加 (v3): SNN5改善レポートに基づき、TC_LIF, DualThresholdNeuron, ScaleAndFireNeuron を追加。
 
 from .base import BaseModel
 from .sntorch_models import SpikingTransformerSnnTorch 
@@ -12,7 +14,10 @@ from .snn_core import SNNCore, BreakthroughSNN, SpikingTransformer, SimpleSNN
 from .mamba_core import SpikingMamba
 from .trm_core import TinyRecursiveModel
 # --- ▼ 修正 ▼ ---
-from .neurons import AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron
+from .neurons import (
+    AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron,
+    TC_LIF, DualThresholdNeuron, ScaleAndFireNeuron # SNN5改善レポートによる追加
+)
 # --- ▲ 修正 ▲ ---
 # from .sntorch_models import SpikingTransformerSnnTorch # <-- 元の位置
 
@@ -28,6 +33,9 @@ __all__ = [
     "IzhikevichNeuron",
     # --- ▼ 修正 ▼ ---
     "GLIFNeuron",
+    "TC_LIF", 
+    "DualThresholdNeuron", 
+    "ScaleAndFireNeuron",
     # --- ▲ 修正 ▲ ---
     "SpikingTransformerSnnTorch",
 ]

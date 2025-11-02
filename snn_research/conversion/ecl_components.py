@@ -5,10 +5,14 @@
 # SNN5改善レポート (セクション3.1, 引用[6]) に基づき、
 # ANN-SNN変換の精度を向上させるためのECLコンポーネントを定義する。
 # - LearnableClippingFunction: 学習可能なしきい値を持つクリッピング関数
+#
+# 修正 (v2): mypy [name-defined], [assignment] エラーを修正。
 
 import torch
 import torch.nn as nn
-from typing import Dict, Any, List
+# --- ▼ 修正: Dict, Any, List, Tuple, Optional をインポート ▼ ---
+from typing import Dict, Any, List, Tuple, Optional
+# --- ▲ 修正 ▲ ---
 
 class LearnableClippingFunction(torch.autograd.Function):
     """
@@ -79,12 +83,16 @@ class LearnableClippingLayer(nn.Module):
             
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # 形状を合わせる (例: (B, C, H, W) と (C,))
-        threshold = self.threshold
+        
+        # --- ▼ 修正: [assignment] エラーを修正 (nn.Parameter を上書きしない) ▼ ---
+        threshold_expanded: torch.Tensor = self.threshold # デフォルト
+        
         if x.dim() == 4 and self.threshold.dim() == 1 and x.shape[1] == self.threshold.shape[0]:
             # (C,) -> (1, C, 1, 1)
-            threshold = self.threshold.view(1, -1, 1, 1)
+            threshold_expanded = self.threshold.view(1, -1, 1, 1)
         elif x.dim() == 2 and self.threshold.dim() == 1 and x.shape[1] == self.threshold.shape[0]:
             # (B, C) と (C,)
-            threshold = self.threshold.view(1, -1)
+            threshold_expanded = self.threshold.view(1, -1)
         
-        return LearnableClippingFunction.apply(x, threshold)
+        return LearnableClippingFunction.apply(x, threshold_expanded)
+        # --- ▲ 修正 ▲ ---

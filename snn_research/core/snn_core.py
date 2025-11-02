@@ -21,6 +21,9 @@
 #
 # 追加 (v21):
 # - SNN5改善レポート (セクション6.2) に基づき、TSkipsSNN をモデルマップに追加。
+#
+# 修正 (v22):
+# - mypy [name-defined] エラー (neuron_type_str) を修正。
 
 import torch
 import torch.nn as nn
@@ -36,7 +39,7 @@ from .base import BaseModel, SNNLayerNorm
 # --- ▼ 修正: SNN5改善レポートで追加したニューロンをインポート ▼ ---
 from .neurons import (
     AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron,
-    TC_LIF, DualThresholdNeuron, ScaleAndFireNeuron
+    TC_LIF, DualThresholdNeuron, ScaleAndFireNeuron # SNN5改善レポートによる追加
 )
 # --- ▲ 修正 ▲ ---
 from .mamba_core import SpikingMamba
@@ -435,6 +438,7 @@ class SpikingTransformer(BaseModel):
         self.d_model = d_model
         self.all_mems_history = []
 
+        # --- ▼ 修正: [name-defined] エラー (neuron_type_str -> neuron_type) ▼ ---
         neuron_type: str = neuron_config.get("type", "lif")
         neuron_params: Dict[str, Any] = neuron_config.copy()
         neuron_params.pop('type', None)
@@ -442,11 +446,13 @@ class SpikingTransformer(BaseModel):
         
         filtered_params: Dict[str, Any]
         if neuron_type == 'lif':
+        # --- ▲ 修正 ▲ ---
             neuron_class = AdaptiveLIFNeuron
             filtered_params = {
                 k: v for k, v in neuron_params.items() 
                 if k in ['features', 'tau_mem', 'base_threshold', 'adaptation_strength', 'target_spike_rate', 'noise_intensity', 'threshold_decay', 'threshold_step']
             }
+        # --- ▼ 修正: [name-defined] エラー (neuron_type_str -> neuron_type) ▼ ---
         elif neuron_type == 'izhikevich':
             neuron_class = IzhikevichNeuron
             filtered_params = {
@@ -460,14 +466,13 @@ class SpikingTransformer(BaseModel):
                 k: v for k, v in neuron_params.items() 
                 if k in ['features', 'base_threshold', 'gate_input_features']
             }
-        # --- ▼ SNN5改善レポートで追加したニューロンをサポート ▼ ---
-        elif neuron_type_str == 'tc_lif':
+        elif neuron_type == 'tc_lif':
+        # --- ▲ 修正 ▲ ---
             neuron_class = TC_LIF # type: ignore[assignment]
             filtered_params = {
                 k: v for k, v in neuron_params.items() 
                 if k in ['features', 'tau_s_init', 'tau_d_init', 'w_ds_init', 'w_sd_init', 'base_threshold', 'v_reset']
             }
-        # --- ▲ SNN5改善レポートで追加したニューロンをサポート ▲ ---
         else:
              raise ValueError(f"Unknown neuron type for SpikingTransformer: {neuron_type}")
         
@@ -577,6 +582,7 @@ class SimpleSNN(BaseModel):
         self.embedding = nn.Embedding(vocab_size, d_model)
         self.fc1 = nn.Linear(d_model, hidden_size)
         
+        # --- ▼ 修正: [name-defined] エラー (neuron_type_str -> neuron_type) ▼ ---
         neuron_type: str = neuron_config.get("type", "lif")
         neuron_params: Dict[str, Any] = neuron_config.copy()
         neuron_params.pop('type', None)
@@ -584,11 +590,13 @@ class SimpleSNN(BaseModel):
         
         filtered_params: Dict[str, Any]
         if neuron_type == 'lif':
+        # --- ▲ 修正 ▲ ---
             neuron_class = AdaptiveLIFNeuron
             filtered_params = {
                 k: v for k, v in neuron_params.items() 
                 if k in ['features', 'tau_mem', 'base_threshold', 'adaptation_strength', 'target_spike_rate', 'noise_intensity', 'threshold_decay', 'threshold_step']
             }
+        # --- ▼ 修正: [name-defined] エラー (neuron_type_str -> neuron_type) ▼ ---
         elif neuron_type == 'izhikevich':
             neuron_class = IzhikevichNeuron
             filtered_params = {
@@ -602,14 +610,13 @@ class SimpleSNN(BaseModel):
                 k: v for k, v in neuron_params.items() 
                 if k in ['features', 'base_threshold', 'gate_input_features']
             }
-        # --- ▼ SNN5改善レポートで追加したニューロンをサポート ▼ ---
-        elif neuron_type_str == 'tc_lif':
+        elif neuron_type == 'tc_lif':
+        # --- ▲ 修正 ▲ ---
             neuron_class = TC_LIF # type: ignore[assignment]
             filtered_params = {
                 k: v for k, v in neuron_params.items() 
                 if k in ['features', 'tau_s_init', 'tau_d_init', 'w_ds_init', 'w_sd_init', 'base_threshold', 'v_reset']
             }
-        # --- ▲ SNN5改善レポートで追加したニューロンをサポート ▲ ---
         else:
              raise ValueError(f"Unknown neuron type for SimpleSNN: {neuron_type}")
         

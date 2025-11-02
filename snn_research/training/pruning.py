@@ -1,25 +1,17 @@
 # ファイルパス: snn_research/training/pruning.py
-# (改修: SBC プルーニング実装)
-# Title: 構造的プルーニング (SBC - Spiking Brain Compression)
+# (改修: SBC プルーニング実装 + 時空間プルーニング追加)
+# Title: 構造的プルーニング (SBC & Spatio-Temporal)
 # Description:
-# doc/SNN開発：基本設計思想.md (セクション4.4, 引用[15]) に基づき、
-# 高コストな反復プルーニングではなく、ヘッセ行列（損失の二次微分）を利用した
-# ワンショット・プルーニング（SBC）を実装する。
-#
-# 実装概要 (スタブ):
-# 1. (apply_sbc_pruning): プルーニング対象の層を特定する。
-# 2. (_compute_hessian_diag): 損失の二次微分（ヘッセ行列の対角成分）を計算する。(ダミー実装)
-# 3. (_compute_saliency): ヘッセ行列に基づき、各重みの重要度（Saliency）を計算する。
-# 4. (prune_and_update_weights): 重要度が低い重みを削除（プルーニング）し、
-#    残った重みを補正（Update）して損失の増加を最小限に抑える。
-#
-# 追加 (v2):
+# - doc/SNN開発：基本設計思想.md (セクション4.4, 引用[15]) に基づき、
+#   ワンショット・プルーニング（SBC）を実装する。
 # - SNN5改善レポート (セクション4.1, 引用[19]) に基づき、
 #   時空間プルーニング (Spatio-Temporal Pruning) のスタブを追加。
 #
 # 改善 (SNN5改善レポート 4.1 対応):
 # - _calculate_temporal_redundancy のダミー実装を、KLダイバージェンスに
 #   基づく飽和判定ロジック（のスタブ）に改善。
+#
+# mypy --strict 準拠。
 
 import torch
 import torch.nn as nn

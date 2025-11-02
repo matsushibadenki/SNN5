@@ -12,6 +12,10 @@
 # 3. (_compute_saliency): ヘッセ行列に基づき、各重みの重要度（Saliency）を計算する。
 # 4. (prune_and_update_weights): 重要度が低い重みを削除（プルーニング）し、
 #    残った重みを補正（Update）して損失の増加を最小限に抑える。
+#
+# 追加 (v2):
+# - SNN5改善レポート (セクション4.1, 引用[19]) に基づき、
+#   時空間プルーニング (Spatio-Temporal Pruning) のスタブを追加。
 
 import torch
 import torch.nn as nn
@@ -156,4 +160,98 @@ def apply_sbc_pruning(
     else:
         logger.error("--- ❌ SBC 失敗: 対象パラメータが0でした ---")
 
+    return model
+
+# --- ▼▼▼ SNN5改善レポートに基づく追加実装 ▼▼▼ ---
+
+@torch.no_grad()
+def _calculate_temporal_redundancy(
+    model: nn.Module, 
+    dataloader: Any, 
+    time_steps: int
+) -> Dict[str, int]:
+    """
+    (スタブ) SNN5改善レポート (セクション4.1, 引用[19]) に基づく。
+    KLダイバージェンスを監視し、情報が飽和した冗長なタイムステップを特定する。
+    
+    Returns:
+        Dict[str, int]: レイヤー名と、そのレイヤーで削減可能なタイムステップ数の辞書 (スタブ)。
+    """
+    logger.info("Calculating temporal redundancy (Stub)...")
+    # (ダミー実装: 実際にはモデルをデータローダーで実行し、
+    #  各層のスパイク出力の時系列分布(KLダイバージェンス)を計算する)
+    
+    # ダミーとして、モデルの20%のタイムステップを冗長とみなす
+    redundant_steps = int(time_steps * 0.2)
+    
+    redundancy_report: Dict[str, int] = {}
+    for name, module in model.named_modules():
+        if isinstance(module, (nn.Linear, nn.Conv2d)): # プルーニング対象層
+            redundancy_report[name] = redundant_steps
+
+    logger.info(f"Temporal redundancy calculated (dummy). Proposing {redundant_steps} steps reduction.")
+    return redundancy_report
+
+@torch.no_grad()
+def apply_spatio_temporal_pruning(
+    model: nn.Module,
+    dataloader: Any,
+    time_steps: int,
+    spatial_amount: float # 空間プルーニングの割合
+) -> nn.Module:
+    """
+    SNN5改善レポート (セクション4.1, 引用[19]) に基づく、
+    時空間プルーニング (Spatio-Temporal Pruning) を適用する (スタブ)。
+
+    Args:
+        model (nn.Module): プルーニング対象のSNNモデル。
+        dataloader (Any): KLダイバージェンス計算用のデータローダー (スタブ)。
+        time_steps (int): 元のタイムステップ数。
+        spatial_amount (float): 空間プルーニング（重み削除）の割合。
+
+    Returns:
+        nn.Module: プルーニングが適用されたモデル。
+    """
+    logger.info(f"--- ⚡️ Spatio-Temporal Pruning 開始 (Spatial Amount: {spatial_amount:.1%}) ---")
+    
+    # --- 1. 時間プルーニング (Temporal Pruning) ---
+    # 引用[19]に基づき、冗長なタイムステップを特定する
+    redundancy_report = _calculate_temporal_redundancy(model, dataloader, time_steps)
+    
+    # (スタブ: 実際には、特定されたステップ数だけ、モデルの time_steps パラメータを
+    #  変更し、以降の推論を高速化する。ここではログ出力のみ)
+    avg_redundant_steps = int(sum(redundancy_report.values()) / len(redundancy_report)) if redundancy_report else 0
+    new_time_steps = time_steps - avg_redundant_steps
+    
+    logger.info(f"  [Temporal Pruning (Stub)]: 推定削減可能ステップ数: {avg_redundant_steps}. (T={time_steps} -> T={new_time_steps})")
+    
+    # --- 2. 空間プルーニング (Spatial Pruning) ---
+    # 引用[19]のLAMPSベース、または単純なMagnitudeプルーニング
+    logger.info("  [Spatial Pruning (Magnitude Stub)]: 重みの空間プルーニングを実行中...")
+    
+    total_pruned = 0
+    total_params = 0
+    
+    for module in model.modules():
+        if isinstance(module, (nn.Linear, nn.Conv2d)):
+            param: torch.Tensor = module.weight
+            
+            num_to_prune = int(param.numel() * spatial_amount)
+            if num_to_prune == 0:
+                continue
+            
+            # 単純な Magnitude Pruning (スタブ)
+            threshold = torch.kthvalue(param.data.abs().view(-1), k=num_to_prune).values
+            mask = param.data.abs() > threshold
+            param.data *= mask.float()
+            
+            pruned_count = param.numel() - mask.sum().item()
+            total_pruned += int(pruned_count)
+            total_params += param.numel()
+
+    if total_params > 0:
+        actual_sparsity = total_pruned / total_params
+        logger.info(f"  [Spatial Pruning]: {actual_sparsity:.2%} ({total_pruned} / {total_params}) の重みをプルーニングしました。")
+    
+    logger.info("--- ✅ Spatio-Temporal Pruning 完了 (Stub) ---")
     return model

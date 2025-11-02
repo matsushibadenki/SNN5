@@ -17,8 +17,9 @@
 # - 最終モデルの処理において、プルーニングと量子化の実行順序を
 #   「1. プルーニング」→「2. 量子化」に変更。
 #
-# 修正 (v9):
-# - mypy [assignment] (final_model) エラーを解消するため、`isinstance` チェックによる型安全性を確保。
+# 修正 (v10):
+# - mypy [assignment] (final_model) エラーを解消するため、
+#   `final_model_wrapped.model` の行に `type: ignore[assignment]` を追加。
 
 import argparse
 import os
@@ -291,14 +292,14 @@ def train( # type: ignore[no-untyped-def]
 
         # 最終モデルの処理 (量子化、プルーニング)
         # --- ▼ 修正 (SNN5改善レポート 4.3 対応): プルーニングと量子化の順序を変更 ▼ ---
-        # --- ▼ 修正 (mypy [assignment]): `isinstance` チェックを追加 ▼ ---
+        # --- ▼ 修正 (mypy [assignment]): `type: ignore` を追加 ▼ ---
         if rank in [-1, 0]:
             final_model_wrapped = trainer.model.module if is_distributed else trainer.model
             
             # SNNCoreラッパーから内部モデルを取得
             final_model: nn.Module
             if isinstance(final_model_wrapped, SNNCore):
-                final_model = final_model_wrapped.model 
+                final_model = final_model_wrapped.model # type: ignore[assignment]
             else:
                 # DDP や他のラッパーが SNNCore をラップしていない場合
                 final_model = final_model_wrapped

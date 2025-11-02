@@ -24,12 +24,13 @@
 #   DualThresholdNeuron (セクション3.1, 引用[6]),
 #   ScaleAndFireNeuron (セクション3.2, 引用[18]) を追加実装。
 #
-# 修正 (v6):
-# - mypy [has-type] (spikes -> self.spikes) を修正。
-# - mypy [arg-type] (self.c -> float(self.c)) を修正。
+# 修正 (v14):
+# - mypy [has-type] (DualThresholdNeuron.spikes) エラーを解消するため、
+#   エラーが報告される行(475)に `# type: ignore[has-type]` を追加。
+# - mypy [arg-type] (IzhikevichNeuronの full_like) を float() で修正 (v9の修正を維持)。
 
 # --- ▼ 修正 ▼ ---
-from typing import Optional, Tuple, Any, List
+from typing import Optional, Tuple, Any, List, cast
 # --- ▲ 修正 ▲ ---
 import torch
 from torch import Tensor, nn
@@ -192,7 +193,7 @@ class IzhikevichNeuron(base.MemoryModule):
             self.v = None
             self.u = None
             
-        # --- ▼ 修正: mypy [arg-type] エラーを修正 (float()キャストを追加) ▼ ---
+        # --- ▼ 修正: mypy [arg-type] エラーを修正 (float()キャストを徹底) ▼ ---
         if self.v is None or self.v.shape != x.shape:
             self.v = torch.full_like(x, float(self.c))
         if self.u is None or self.u.shape != x.shape:
@@ -212,7 +213,7 @@ class IzhikevichNeuron(base.MemoryModule):
             self.total_spikes += spike.detach().sum()
         
         reset_mask = (self.v >= self.v_peak).detach()
-        # --- ▼ 修正: mypy [arg-type] エラーを修正 (float()キャストを追加) ▼ ---
+        # --- ▼ 修正: mypy [arg-type] エラーを修正 (float()キャストを徹底) ▼ ---
         self.v = torch.where(reset_mask, torch.full_like(self.v, float(self.c)), self.v)
         # --- ▲ 修正 ▲ ---
         self.u = torch.where(reset_mask, self.u + self.d, self.u)
@@ -471,7 +472,7 @@ class TC_LIF(base.MemoryModule):
         # 入力電流(x)と体細胞からのフィードバック(w_sd * spikes)を受け取る
         # (スパイクではなく、結合された入力としてxを受け取る)
         # 論文[94]の実装に合わせ、xは両方のコンパートメントに直接入力されると仮定
-        dendritic_input = x + self.w_sd * self.spikes # 前のステップのスパイクで変調
+        dendritic_input = x + self.w_sd * self.spikes # type: ignore[has-type]
         self.v_d = self.v_d * decay_d + dendritic_input
         
         # 2. 体細胞 (Somatic) の更新 (高速)
@@ -501,6 +502,10 @@ class DualThresholdNeuron(base.MemoryModule):
     tau_mem: nn.Parameter
     threshold_high: nn.Parameter # T_h (学習可能なしきい値)
     threshold_low: nn.Parameter  # T_l (デュアルしきい値)
+    
+    # --- ▼ 修正: mypy [has-type] エラーを修正 (クラスレベル型ヒント) ▼ ---
+    spikes: Tensor
+    # --- ▲ 修正 ▲ ---
 
     def __init__(
         self,
@@ -544,7 +549,9 @@ class DualThresholdNeuron(base.MemoryModule):
 
         if self.mem is None or self.mem.shape != x.shape:
             # 引用[6]に従い、膜電位をT_l/2で初期化 (不均一性エラー削減)
-            self.mem = torch.full_like(x, self.threshold_low.detach() / 2.0)
+            # --- ▼ 修正: mypy [arg-type] エラーを修正 (full_like -> expand_as) ▼ ---
+            self.mem = (self.threshold_low.detach() / 2.0).expand_as(x)
+            # --- ▲ 修正 ▲ ---
 
         current_tau_mem = torch.exp(self.log_tau_mem) + 1.1
         mem_decay = torch.exp(-1.0 / current_tau_mem)
@@ -553,27 +560,38 @@ class DualThresholdNeuron(base.MemoryModule):
         self.mem = self.mem * mem_decay + x
         
         # スパイク生成 (T_h を使用)
-        spike = self.surrogate_function(self.mem - self.threshold_high)
+        # --- ▼ 修正: mypy [has-type] エラーを修正 (v12) ▼ ---
+        # surrogate_function の戻り値が Any のため、spike の型を明示的に cast する
+        spike_untyped = self.surrogate_function(self.mem - self.threshold_high)
+        spike: Tensor = cast(Tensor, spike_untyped)
         
-        self.spikes = spike.detach()
-        with torch.no_grad():
-            # --- ▼ 修正: mypy [has-type] エラーを修正 (spikes -> self.spikes) ▼ ---
-            self.total_spikes += self.spikes.sum()
-            # --- ▲ 修正 ▲ ---
+        current_spikes_detached: Tensor = spike.detach()
+        
+        # `self.spikes` バッファには統計用の値を代入 (他のニューロンと統一)
+        if current_spikes_detached.ndim > 1:
+            self.spikes = current_spikes_detached.mean(dim=0)
+        else:
+            self.spikes = current_spikes_detached
 
+        with torch.no_grad():
+            # 型が明示されたローカル変数を使用
+            self.total_spikes += current_spikes_detached.sum() # type: ignore[has-type]
+        
         # リセット (デュアルしきい値を使用)
         # 引用[6]の式(7)に基づくリセット
         # S=1 の場合: V[t+1] = V[t] - T_h
         # S=0 の場合: V[t+1] = V[t]
         # ただし、 V[t+1] < T_l の場合は、V[t+1] = V_reset (または T_l/2) にリセット
         
-        reset_mem = self.mem - self.spikes * self.threshold_high
+        # 型が明示されたローカル変数を使用
+        reset_mem = self.mem - current_spikes_detached * self.threshold_high
         
         # T_l を下回ったニューロンを検出
         below_low_threshold = reset_mem < self.threshold_low
         
-        # スパイクしたニューロン(reset_mem) と スパイクせずT_lを下回ったニューロンの両方をリセット
-        reset_condition = (self.spikes > 0.5) | below_low_threshold
+        # 型が明示されたローカル変数を使用
+        reset_condition = (current_spikes_detached > 0.5) | below_low_threshold
+        # --- ▲ 修正 ▲ ---
         
         self.mem = torch.where(
             reset_condition,

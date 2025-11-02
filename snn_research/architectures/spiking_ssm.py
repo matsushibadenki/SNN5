@@ -23,7 +23,7 @@
 #
 # 修正 (v3):
 # - mypy [name-defined] (Union) エラーを解消するため、Unionをインポート。
-# - mypy [no-redef] (layer) エラーを解消するため、変数名を layer_to_set に変更。
+# - mypy [no-redef] (layer) エラーを解消するため、変数名を layer_to_reset に変更。
 
 import torch
 import torch.nn as nn
@@ -187,7 +187,7 @@ class SpikingSSM(BaseModel):
         d_state: int = 64,
         num_layers: int = 6,
         time_steps: int = 16, # (注: SNNの内部ステップ数, SSMでは未使用)
-        d_conv: int = 4, # S4D-LIFBlockに渡す畳み込みカーネルサイズ
+        d_conv: int = 4, # S4DLIFBlockに渡す畳み込みカーネルサイズ
         neuron_config: Optional[Dict[str, Any]] = None,
         **kwargs: Any
     ) -> None:
@@ -309,11 +309,11 @@ class SpikingSSM(BaseModel):
             
             outputs.append(x_t_layer) # 最終層の出力
         
-        # --- ▼ 修正: mypy [no-redef] (変数名を layer_to_set に変更) ▼ ---
+        # --- ▼ 修正: mypy [no-redef] (変数名を layer_to_reset に変更) ▼ ---
         # 各レイヤーのLIFをStatelessに戻す
         for layer_module in self.layers:
-            layer_to_set: S4DLIFBlock = cast(S4DLIFBlock, layer_module)
-            layer_to_set.set_stateful(False)
+            layer_to_reset: S4DLIFBlock = cast(S4DLIFBlock, layer_module)
+            layer_to_reset.set_stateful(False)
         # --- ▲ 修正 ▲ ---
 
         # (B, T_seq, D_model)

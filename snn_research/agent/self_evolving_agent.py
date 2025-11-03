@@ -11,6 +11,7 @@
 # 修正 (v5): HSEO機能のコメントアウトを解除し、構文エラーを修正
 # 修正 (v6): mypy [misc] (All conditional function variants must have identical signatures) エラーを修正
 # 修正 (v7): mypy [syntax] error: Unmatched '}' を修正 (538行目付近の不要な '}' を削除)
+# 修正 (v8): 538行目の不要な '}' を削除 (mypy [syntax] error)
 
 from typing import Dict, Any, Optional, List, Tuple, cast, Callable, Collection
 import os
@@ -535,9 +536,9 @@ class SelfEvolvingAgentMaster(AutonomousAgent):
                     scores[i] = score
                 return scores
             
-            # --- ▼ 修正: 538行目付近の不要な '}' を削除 ▼ ---
+            # --- ▼ 修正 (v8): 538行目付近の不要な '}' を削除 ▼ ---
             # (この行にあった '}' を削除)
-            # --- ▲ 修正 ▲ ---
+            # --- ▲ 修正 (v8) ▲ ---
     
             best_params_np, best_score = optimize_with_hseo(
                 objective_function=objective_function,
@@ -583,3 +584,5 @@ class SelfEvolvingAgentMaster(AutonomousAgent):
             logging.info(f"📉 Perf ({current_perf:.2f}) < threshold ({self.evolution_threshold})."); evo_result = self.evolve(perf, state)
             logging.info(f"✨ {evo_result}")
         else: logging.info(f"✅ Perf ({current_perf:.2f}) sufficient.")
+
+}

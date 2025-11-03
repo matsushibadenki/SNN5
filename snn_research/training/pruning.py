@@ -16,6 +16,9 @@
 # 改善 (v2):
 # - SBC (引用[15]) の核心であるヘッセ行列の計算と重み補正の
 #   「ダミー実装」を「近似実装 (Optimal Brain Damage)」に改善。
+#
+# 修正 (v3):
+# - mypy [name-defined] エラーを解消するため、SNNCore をインポート。
 
 import torch
 import torch.nn as nn
@@ -27,6 +30,9 @@ import logging
 from snn_research.core.neurons import AdaptiveLIFNeuron, IzhikevichNeuron
 import torch.nn.functional as F
 # --- ▲ 修正 ▲ ---
+# --- ▼ 修正 (v3): [name-defined] エラー解消 ▼ ---
+from snn_research.core.snn_core import SNNCore
+# --- ▲ 修正 (v3) ▲ ---
 
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -35,8 +41,14 @@ logger = logging.getLogger(__name__)
 # --- ▼▼▼ 改善 (v2): SBC ダミー実装の解消 ▼▼▼ ---
 def _get_model_input_keys(model: nn.Module) -> List[str]:
     """モデルのアーキテクチャタイプから入力キーを推測する (簡易版)"""
-    if hasattr(model, 'config') and hasattr(model.config, 'architecture_type'):
-        arch_type = model.config.architecture_type
+    config_model: Any = None
+    if isinstance(model, SNNCore):
+        config_model = model.config
+    elif hasattr(model, 'config'):
+        config_model = model.config # type: ignore[attr-defined]
+
+    if config_model is not None and hasattr(config_model, 'architecture_type'):
+        arch_type = config_model.architecture_type
         if arch_type in ["spiking_cnn", "sew_resnet", "hybrid_cnn_snn"]:
             return ["input_images"]
         if arch_type == "tskips_snn":
@@ -126,7 +138,7 @@ def _compute_hessian_diag(
                     loss = loss_fn(logits, sample_label)
 
                 # --- 1次勾配 (dL/dw) を計算 ---
-                first_grads: Tuple[torch.Tensor, ...] = torch.autograd.grad(
+                first_grads: Tuple[Optional[torch.Tensor], ...] = torch.autograd.grad( # type: ignore[assignment]
                     loss, params_to_compute, create_graph=True
                 )
                 
@@ -146,7 +158,7 @@ def _compute_hessian_diag(
                     #  多くの実装では計算の容易さからFisherの対角で代用する)
                     
                     # (サンプルごとの勾配の二乗を加算)
-                    hessian_diag_avg[name] += (first_grads[j] ** 2)
+                    hessian_diag_avg[name] += (first_grads[j] ** 2) # type: ignore[operator]
 
                 samples_processed += 1
                 
@@ -260,7 +272,9 @@ def apply_sbc_pruning(
     
     # (SNNCoreラッパーを考慮し、内部モデルを取得)
     model_to_prune: nn.Module = model
+    # --- ▼ 修正 (v3): [name-defined] エラー解消 ▼ ---
     if isinstance(model, SNNCore) and hasattr(model, 'model'):
+    # --- ▲ 修正 (v3) ▲ ---
         model_to_prune = model.model
     
     for module in model_to_prune.modules():

@@ -12,11 +12,15 @@
 #   基づく飽和判定ロジック（のスタブ）に改善。
 #
 # mypy --strict 準拠。
+#
+# 改善 (v2):
+# - SBC (引用[15]) の核心であるヘッセ行列の計算と重み補正の
+#   「ダミー実装」を「近似実装 (Optimal Brain Damage)」に改善。
 
 import torch
 import torch.nn as nn
 # --- ▼ 修正: 必要な型をインポート ▼ ---
-from typing import List, Tuple, Dict, Any, cast, Optional, Type
+from typing import List, Tuple, Dict, Any, cast, Optional, Type, Iterator
 import logging 
 # --- ▲ 修正 ▲ ---
 # --- ▼ 修正: SNN5改善レポート 4.1 対応 ▼ ---
@@ -28,27 +32,145 @@ import torch.nn.functional as F
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-def _compute_hessian_diag(model: nn.Module, loss_fn: nn.Module, dataloader: Any) -> Dict[str, torch.Tensor]:
+# --- ▼▼▼ 改善 (v2): SBC ダミー実装の解消 ▼▼▼ ---
+def _get_model_input_keys(model: nn.Module) -> List[str]:
+    """モデルのアーキテクチャタイプから入力キーを推測する (簡易版)"""
+    if hasattr(model, 'config') and hasattr(model.config, 'architecture_type'):
+        arch_type = model.config.architecture_type
+        if arch_type in ["spiking_cnn", "sew_resnet", "hybrid_cnn_snn"]:
+            return ["input_images"]
+        if arch_type == "tskips_snn":
+            return ["input_sequence"]
+    # デフォルト (Transformer, SSM, RWKV など)
+    return ["input_ids"]
+
+def _compute_hessian_diag(
+    model: nn.Module, 
+    loss_fn: nn.Module, 
+    dataloader: Any,
+    max_samples: int = 64 # ヘッセ行列の計算に使用するサンプル数
+) -> Dict[str, torch.Tensor]:
     """
-    ヘッセ行列の対角成分を計算する (スタブ)。
-    実際には、データローダーからの少量のサンプルを使い、
-    バックプロパゲーションを2回行うなどの手法（例: L-BFGS）が必要。
+    (改善 v2) ヘッセ行列の対角成分 (H_ii = d^2 L / d w_i^2) を近似計算する。
+    SBC (引用[15]) に基づく。
     """
-    logger.info("Computing Hessian matrix diagonal (Stub)...")
-    hessian_diag: Dict[str, torch.Tensor] = {}
+    logger.info("Computing Hessian matrix diagonal (Approximate)...")
     
-    # --- ダミー実装 ---
-    # 実際にはここでデータローダーを数バッチ回し、
-    # 各パラメータの (d^2 L / d w^2) を計算する。
+    # 1. 計算対象のパラメータ (重み) を特定
+    params_to_compute: List[nn.Parameter] = []
+    param_names: List[str] = []
     for name, param in model.named_parameters():
         if "weight" in name and param.requires_grad and param.dim() > 1:
-            # 対角成分はパラメータと同じ形状を持つ
-            # ダミーとして、パラメータの大きさに応じたランダムな正の値を設定
-            hessian_diag[name] = torch.rand_like(param) * 0.1 + (param.data.abs() * 0.5) + 1e-6
-    # --- ダミー実装終了 ---
+            params_to_compute.append(param)
+            param_names.append(name)
+            
+    if not params_to_compute:
+        logger.warning("No parameters found for Hessian computation.")
+        return {}
+
+    # 2. 損失の勾配 (dL/dw) を計算 (autograd.grad を使うため)
     
-    logger.info(f"Hessian diagonal computed (dummy) for {len(hessian_diag)} layers.")
-    return hessian_diag
+    # (SNNCoreラッパーを想定)
+    input_keys: List[str] = _get_model_input_keys(model)
+    
+    # 3. データローダーから少数のサンプルを取得
+    data_iterator: Iterator = iter(dataloader)
+    hessian_diag_avg: Dict[str, torch.Tensor] = {
+        name: torch.zeros_like(param, device=param.device) 
+        for name, param in zip(param_names, params_to_compute)
+    }
+    samples_processed: int = 0
+    device: torch.device = next(model.parameters()).device
+
+    while samples_processed < max_samples:
+        try:
+            batch: Any = next(data_iterator)
+            
+            # (SNN/ANNベンチマークのcollate_fn出力を想定)
+            if not isinstance(batch, dict) or "labels" not in batch:
+                logger.warning("Skipping batch: Invalid data format for Hessian computation.")
+                continue
+                
+            labels: torch.Tensor = batch["labels"].to(device)
+            inputs: Dict[str, torch.Tensor] = {
+                k: v.to(device) for k, v in batch.items() if k in input_keys
+            }
+
+            if not inputs:
+                logger.warning("Skipping batch: No valid input keys found.")
+                continue
+
+            # (バッチサイズがHessian計算に影響しないよう、サンプルごとに計算)
+            current_batch_size: int = labels.shape[0]
+            
+            for i in range(current_batch_size):
+                if samples_processed >= max_samples:
+                    break
+                
+                # サンプル i のみ抽出
+                sample_inputs: Dict[str, torch.Tensor] = {
+                    k: v[i].unsqueeze(0) for k, v in inputs.items()
+                }
+                sample_label: torch.Tensor = labels[i].unsqueeze(0)
+
+                # --- 損失 L を計算 ---
+                model.zero_grad()
+                outputs: Tuple[torch.Tensor, ...] = model(**sample_inputs)
+                logits: torch.Tensor = outputs[0] if isinstance(outputs, tuple) else outputs
+                
+                loss: torch.Tensor
+                # (SNN/ANNベンチマークの損失を想定)
+                if logits.dim() == 3: # (B, S, V)
+                    loss = loss_fn(logits.view(-1, logits.size(-1)), sample_label.view(-1))
+                else: # (B, V)
+                    loss = loss_fn(logits, sample_label)
+
+                # --- 1次勾配 (dL/dw) を計算 ---
+                first_grads: Tuple[torch.Tensor, ...] = torch.autograd.grad(
+                    loss, params_to_compute, create_graph=True
+                )
+                
+                # --- 2次勾配 (H_ii) を計算 ---
+                # (Hessian-vector product (H*v) の v を (1, 1, ...) に設定し、
+                #  dL/dw (first_grads) との内積を取ることで対角成分を近似)
+                #
+                #  (より単純な方法: d(dL/dw)/dw を計算)
+                
+                for j, (name, param) in enumerate(zip(param_names, params_to_compute)):
+                    if first_grads[j] is None:
+                        continue
+                        
+                    # (dL/dw)^2 を H_ii の近似として使用 (Fisher情報行列の対角の近似)
+                    # H_ii ≈ E[(dL/dw_i)^2]
+                    # (SBC (引用[15]) はヘッセ行列 (d^2 L / dw^2) を要求するが、
+                    #  多くの実装では計算の容易さからFisherの対角で代用する)
+                    
+                    # (サンプルごとの勾配の二乗を加算)
+                    hessian_diag_avg[name] += (first_grads[j] ** 2)
+
+                samples_processed += 1
+                
+        except StopIteration:
+            break # データローダー終了
+        except Exception as e:
+            logger.error(f"Error during Hessian computation: {e}", exc_info=True)
+            break # エラー停止
+
+    if samples_processed == 0:
+        logger.error("Hessian computation failed: No samples processed.")
+        return {}
+
+    # サンプル数で平均
+    for name in hessian_diag_avg:
+        hessian_diag_avg[name] /= samples_processed
+        # (SBCは d^2 L / dw^2 が負になることも許容するが、
+        #  Fisher近似 (dL/dw)^2 は常に正。ここでは 1e-8 を加えて安定化)
+        hessian_diag_avg[name] += 1e-8 
+
+    logger.info(f"Hessian diagonal (Fisher approx.) computed for {len(hessian_diag_avg)} layers (using {samples_processed} samples).")
+    return hessian_diag_avg
+
+# --- ▲▲▲ 改善 (v2): SBC ダミー実装の解消 ▲▲▲ ---
 
 def _compute_saliency(param: torch.Tensor, hessian_diag: torch.Tensor) -> torch.Tensor:
     """
@@ -62,10 +184,16 @@ def _prune_and_update_weights(
     module: nn.Module,
     param_name: str,
     saliency: torch.Tensor,
+    hessian_diag: torch.Tensor, # 改善 v2: ヘッセ行列を受け取る
     amount: float
 ) -> Tuple[int, int]:
     """
-    指定されたモジュールのパラメータをプルーニングし、重みを補正する (スタブ)。
+    指定されたモジュールのパラメータをプルーニングする。
+    (改善 v2): Optimal Brain Compression (OBC) の重み補正はオフダイアゴナル項 H_ij が
+               必要であり、この実装（対角項 H_ii のみ）では不可能。
+               ここでは、SBC論文 (引用[15]) の Saliency (重要度) に基づき
+               重みを削除する「Optimal Brain Damage (OBD)」相当の処理を行う。
+               重み補正 (Update) は行わない。
     """
     param: torch.Tensor = getattr(module, param_name)
     
@@ -74,19 +202,15 @@ def _prune_and_update_weights(
     if num_to_prune == 0:
         return 0, param.numel()
         
+    # Saliency が *最小* のものをプルーニング対象とする
     threshold = torch.kthvalue(saliency.view(-1), k=num_to_prune).values
+    
+    # Saliency > threshold の重みを *残す* (マスク)
     mask = saliency > threshold
     
-    # 2. 重み補正 (SBCの核心部 - ダミー実装)
-    # 実際には、SBCは削除する重み (w_j) が残りの重み (w_i) に
-    # どのような影響を与えるか (H_ij) を考慮して w_i を更新する。
-    # delta_w_i = - (H_ii)^-1 * H_ij * w_j
-    # ここでは簡易的に、残った重みをスケーリングする（ダミー）
-    
-    # 簡易補正: 削除される重みの総和を残りの重みで割った値を、
-    # 学習率でスケールして加算する（生物学的可塑性に近いダミー補正）
-    # update_factor = (param.data * ~mask).sum() / (param.data * mask).sum().clamp(min=1e-6)
-    # param.data[mask] += param.data[mask] * update_factor * 0.01 # 1%補正
+    # --- 改善 v2: 重み補正 (Update) のロジックを削除 ---
+    # (ダミー実装の補正ロジックは不正確であり、OBD (対角項のみ) では
+    #  重み補正は行わないのが一般的であるため)
     
     # 3. プルーニング (マスクを適用)
     param.data *= mask.float()
@@ -94,6 +218,7 @@ def _prune_and_update_weights(
     original_count = param.numel()
     pruned_count = original_count - mask.sum().item()
     return int(pruned_count), original_count
+# --- ▲▲▲ 改善 (v2): SBC ダミー実装の解消 ▲▲▲ ---
 
 def apply_sbc_pruning(
     model: nn.Module,
@@ -103,12 +228,13 @@ def apply_sbc_pruning(
 ) -> nn.Module:
     """
     指定されたモデルに、SBC (Spiking Brain Compression) ワンショット・プルーニングを適用する。
+    (改善 v2: 実装は OBD (Optimal Brain Damage) 相当)
 
     Args:
         model (nn.Module): プルーニングを適用するモデル。
         amount (float): プルーニングする重みの割合 (0.0から1.0の間)。
-        dataloader_stub (Any): ヘッセ行列計算用のデータローダー (現在は未使用)。
-        loss_fn_stub (nn.Module): 損失関数 (現在は未使用)。
+        dataloader_stub (Any): ヘッセ行列計算用のデータローダー。
+        loss_fn_stub (nn.Module): 損失関数。
 
     Returns:
         nn.Module: プルーニングが適用されたモデル。
@@ -117,20 +243,30 @@ def apply_sbc_pruning(
         logger.warning(f"プルーニング量が無効です ({amount})。0.0から1.0の間の値を指定してください。プルーニングをスキップします。")
         return model
 
-    logger.info(f"--- 🧠 Spiking Brain Compression (SBC) 開始 (Amount: {amount:.1%}) ---")
+    logger.info(f"--- 🧠 Spiking Brain Compression (SBC/OBD) 開始 (Amount: {amount:.1%}) ---")
 
-    # 1. ヘッセ行列（対角成分）を計算 (スタブ)
+    # 1. ヘッセ行列（対角成分）を計算 (改善 v2)
     hessian_diagonals = _compute_hessian_diag(model, loss_fn_stub, dataloader_stub)
+    
+    if not hessian_diagonals:
+        logger.error("--- ❌ SBC 失敗: ヘッセ行列の計算に失敗しました ---")
+        return model
     
     total_pruned = 0
     total_params = 0
 
-    # 2. 各レイヤーの重要度を計算し、プルーニングと重み補正を実行
-    # (グローバルプルーニングではなく、レイヤーごとに指定された割合をプルーニング)
+    # 2. 各レイヤーの重要度を計算し、プルーニングを実行
     target_modules: List[Tuple[nn.Module, str]] = []
-    for module in model.modules():
+    
+    # (SNNCoreラッパーを考慮し、内部モデルを取得)
+    model_to_prune: nn.Module = model
+    if isinstance(model, SNNCore) and hasattr(model, 'model'):
+        model_to_prune = model.model
+    
+    for module in model_to_prune.modules():
         if isinstance(module, (nn.Linear, nn.Conv1d, nn.Conv2d)):
-            target_modules.append((module, 'weight'))
+            if hasattr(module, 'weight'): # weight があるか確認
+                target_modules.append((module, 'weight'))
 
     if not target_modules:
         logger.warning("プルーニング対象のパラメータが見つかりませんでした。")
@@ -141,13 +277,13 @@ def apply_sbc_pruning(
     for module, param_name in target_modules:
         # モジュール名を取得 (mypy互換のためループを使用)
         full_param_name: str = ""
-        for name, mod in model.named_modules():
+        for name, mod in model_to_prune.named_modules(): # model_to_prune を探索
              if mod is module:
                  full_param_name = f"{name}.{param_name}"
                  break
         
         if not full_param_name:
-             logger.warning(f"  - モジュール名が見つかりません。スキップします。")
+             logger.warning(f"  - モジュール名が見つかりません。スキップします。 (Module: {type(module)})")
              continue
 
         if full_param_name in hessian_diagonals:
@@ -157,17 +293,19 @@ def apply_sbc_pruning(
             # 3. 重要度を計算
             saliency = _compute_saliency(param, hessian_diag)
             
-            # 4. プルーニングと重み補正 (スタブ)
-            pruned, total = _prune_and_update_weights(module, param_name, saliency, amount)
+            # 4. プルーニング (重み補正なし) (改善 v2)
+            pruned, total = _prune_and_update_weights(
+                module, param_name, saliency, hessian_diag, amount
+            )
             total_pruned += pruned
             total_params += total
-            logger.info(f"  - レイヤー '{full_param_name}': {pruned}/{total} の重みをプルーニング (補正実行済スタブ)。")
+            logger.info(f"  - レイヤー '{full_param_name}': {pruned}/{total} の重みをプルーニング (OBDベース)。")
         else:
             logger.warning(f"  - レイヤー '{full_param_name}': ヘッセ行列が見つからず、スキップしました。")
 
     if total_params > 0:
         actual_sparsity = total_pruned / total_params
-        logger.info(f"--- ✅ SBC 完了 ---")
+        logger.info(f"--- ✅ SBC (OBD) 完了 ---")
         logger.info(f"  - 合計プルーニング率: {actual_sparsity:.2%} ({total_pruned} / {total_params})")
     else:
         logger.error("--- ❌ SBC 失敗: 対象パラメータが0でした ---")

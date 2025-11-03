@@ -132,7 +132,21 @@ def optimize_with_hseo(
     """
     粒子群最適化 (PSO) を実行する。
     HSEO (Hybrid Swarm) の実装としてPSOを使用する。
-    (この関数のロジック自体はダミー実装ではないため、変更なし)
+
+    Args:
+        objective_function (Callable): 目的関数。パーティクル集団(N, D)を受け取り、スコア配列(N,)を返す。
+        dim (int): パラメータの次元数。
+        num_particles (int): パーティクルの数。
+        max_iterations (int): 最大イテレーション数。
+        exploration_range (List[Tuple[float, float]]): 各次元の探索範囲 [min, max] のリスト。
+        w (float): 慣性係数。
+        c1 (float): 個体最適解への引力。
+        c2 (float): 全体最適解への引力。
+        seed (Optional[int]): 乱数シード。
+        verbose (bool): ログ出力の有無。
+
+    Returns:
+        Tuple[np.ndarray, float]: (最適パラメータ, 最適スコア)
     """
     if seed is not None:
         np.random.seed(seed)
@@ -199,5 +213,3 @@ def optimize_with_hseo(
         logger.info(f"HSEO (PSO): Best parameters = {gbest_pos}")
 
     return gbest_pos, gbest_score
-
-}

@@ -6,6 +6,13 @@
 # 中核アルゴリズムとして、粒子群最適化 (Particle Swarm Optimization, PSO) を実装します。
 # また、SNNの性能を評価するための目的関数 evaluate_snn_params も実装します。
 # mypy --strict 準拠。
+#
+# 改善 (v2):
+# - HSEOの目的関数 (evaluate_snn_params) が、代理勾配ベースの train.py を
+#   呼び出すという矛盾したダミー実装を解消。
+# - 代わりに、DIコンテナ (TrainingContainer) を使用して、
+#   微分不要な BioRLTrainer を直接実行し、その報酬 (メトリクス) を
+#   返すように修正。
 
 import numpy as np
 import torch
@@ -16,6 +23,11 @@ import re
 import os
 from pathlib import Path
 from typing import List, Tuple, Callable, Dict, Any, Optional
+# --- ▼ 修正: DIコンテナとBioRLTrainer関連をインポート ▼ ---
+from omegaconf import OmegaConf, DictConfig
+from app.containers import TrainingContainer
+# --- ▲ 修正 ▲ ---
+
 
 # ロガー設定
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -28,104 +40,79 @@ if project_root not in sys.path:
 
 # --- 1. SNN評価関数 (目的関数) ---
 
+# --- ▼▼▼ 改善 (v2): HSEOダミー実装の解消 ▼▼▼ ---
 def evaluate_snn_params(
     model_config_path: str,
     base_training_config_path: str,
     params_to_override: Dict[str, Any],
-    eval_epochs: int = 1,
+    eval_epochs: int = 1, # (HSEOではエピソード数として解釈)
     device: str = "cpu",
-    task_name: str = "sst2", # 評価用のデフォルトタスク
-    metric_to_optimize: str = "loss" # "loss" または "accuracy"
+    task_name: str = "GridWorld", # (HSEOはRLタスクで評価)
+    metric_to_optimize: str = "reward" # "reward" (最大化) または "loss" (最小化)
 ) -> float:
     """
-    指定されたパラメータで SNN モデルを短期間訓練し、性能メトリクスを返す。
-    run_hpo.py と同様に、train.py をサブプロセスとして呼び出す。
+    (改善 v2) 指定されたパラメータで「微分不要な」SNNモデルを短期間訓練し、
+    性能メトリクス（報酬）を返す。
+    BioRLTrainer (GridWorld) を直接実行する。
 
     Args:
-        model_config_path (str): モデル設定ファイルのパス。
+        model_config_path (str): モデル設定ファイルのパス (BioSNN用ではないが互換性のため)。
         base_training_config_path (str): 基本訓練設定ファイルのパス。
-        params_to_override (Dict[str, Any]): 上書きするパラメータ (例: {"training.gradient_based.learning_rate": 0.001})。
-        eval_epochs (int): 評価のために実行するエポック数。
-        device (str): 使用するデバイス ('cpu' or 'cuda')。
-        task_name (str): 評価に使用するタスク名 (データパスの代わり)。
-        metric_to_optimize (str): 最適化対象のメトリクス ("loss" または "accuracy")。
+        params_to_override (Dict[str, Any]): 上書きするパラメータ (例: {"training.biologically_plausible.causal_trace.learning_rate": 0.01})。
+        eval_epochs (int): 評価のために実行するエピソード数。
+        metric_to_optimize (str): "reward" (最大化) または "loss" (最小化)。
 
     Returns:
-        float: 評価スコア (最適化対象メトリクス)。
-               Optunaと同様に、損失(loss)はそのまま、精度(accuracy)は負の値を返す。
+        float: 評価スコア。
+               (Optuna/HSEOは最小化を目指すため、reward の場合は -reward を返す)
     """
     
-    # --- 1. 設定の上書き ---
-    overrides: List[str] = []
-    for key, value in params_to_override.items():
-        overrides.append(f"{key}={value}")
-    
-    # 評価用のエポック数とタスク名で上書き
-    overrides.append(f"training.epochs={eval_epochs}")
-    overrides.append(f"task_name={task_name}") # train.py が task_name からデータをロードすることを期待
-    
-    # ログディレクトリを一時的な場所にする (HSEOではログは不要)
-    # (ただし、train.py がログディレクトリに依存する場合は指定が必要)
-    # overrides.append("training.log_dir=/tmp/hseo_eval") 
+    logger.info(f"HSEO: Evaluating BioRL parameters (Episodes: {eval_epochs})...")
+    logger.info(f"HSEO: Overrides: {params_to_override}")
 
-    # --- 2. 学習スクリプトの実行コマンド構築 ---
-    command: List[str] = [
-        sys.executable, # 現在のPythonインタプリタ
-        os.path.join(project_root, "train.py"),
-        "--config", base_training_config_path,
-        "--model_config", model_config_path,
-        # train.py が --task_name に応じてデータパスを内部で処理すると仮定
-        # もし --data_path が必須なら、task_nameに応じて設定する必要がある
-    ]
-    
-    for override in overrides:
-        command.extend(["--override_config", override])
-
-    logger.info(f"HSEO: Evaluating parameters with command: {' '.join(command)}")
-
-    # --- 3. サブプロセス実行と結果のパース ---
     try:
-        result = subprocess.run(command, check=True, capture_output=True, text=True, encoding='utf-8')
+        # --- 1. DIコンテナと設定のロード ---
+        container = TrainingContainer()
+        container.config.from_yaml(base_training_config_path)
+        # (BioSNNはモデルコンフィグを使わないが、念のためロード)
+        if model_config_path and os.path.exists(model_config_path):
+            container.config.from_yaml(model_config_path)
         
-        # 標準出力から最後の検証メトリクスをパース
-        metric_value: Optional[float] = None
+        # --- 2. パラメータの上書き ---
+        cfg: DictConfig = container.config()
+        for key, value in params_to_override.items():
+            OmegaConf.update(cfg, key, value, merge=True)
+            
+        # HSEOは生物学的学習則のパラメータを最適化すると仮定
+        cfg.training.paradigm.from_value("bio-causal-sparse") # 仮にCausalTraceを使用
         
-        if metric_to_optimize == "accuracy":
-            # 精度をパース (例: "Validation Results: ..., accuracy: 0.65")
-            # 精度は最大化を目指すので、負の値を返す
-            for line in reversed(result.stdout.strip().split('\n')):
-                if "accuracy:" in line and "Validation Results" in line:
-                    match = re.search(r"accuracy:\s*([0-9\.]+)", line)
-                    if match:
-                        metric_value = -float(match.group(1)) # 精度を最大化 = 負の精度を最小化
-                        break
-            if metric_value is None: metric_value = 0.0 # 精度が見つからなければ 0 (負なので最悪値)
+        # --- 3. BioRLTrainer の実行 ---
+        # (DIコンテナが設定に基づき、CausalTrace V2 などの学習則を持つ
+        #  エージェントとトレーナーを構築する)
+        trainer = container.bio_rl_trainer()
+        
+        # 訓練（評価）の実行
+        results: Dict[str, float] = trainer.train(num_episodes=eval_epochs)
+        
+        final_reward: float = results.get('final_average_reward', 0.0)
+        
+        # --- 4. メトリクスの返却 ---
+        metric_value: float
+        if metric_to_optimize == "reward":
+            # 報酬は最大化を目指すので、最小化のために負の値を返す
+            metric_value = -final_reward
+        else:
+            # (もし損失を返すロジックがあれば)
+            metric_value = results.get('final_loss', float('inf'))
 
-        else: # "loss" (デフォルト)
-            # 損失をパース (例: "Validation Results: total: 2.5, ...")
-            # 損失は最小化を目指す
-            for line in reversed(result.stdout.strip().split('\n')):
-                if "total:" in line and "Validation Results" in line:
-                    match = re.search(r"total:\s*([0-9\.]+)", line)
-                    if match:
-                        metric_value = float(match.group(1))
-                        break
-            if metric_value is None: metric_value = float('inf') # 損失が見つからなければ無限大
-
-        logger.info(f"HSEO: Evaluation complete. Metric ({metric_to_optimize}): {metric_value}")
+        logger.info(f"HSEO: Evaluation complete. Reward: {final_reward:.4f}, Metric ({-final_reward:.4f})")
         return metric_value
 
-    except subprocess.CalledProcessError as e:
-        logger.error(f"HSEO: Parameter evaluation failed!")
-        logger.error(f"Command: {' '.join(e.cmd)}")
-        logger.error(f"Return Code: {e.returncode}")
-        logger.error(f"Output:\n{e.stdout}")
-        logger.error(f"Stderr:\n{e.stderr}")
-        # 失敗した試行には非常に悪いスコアを返す
-        return float('inf') # 最小化の場合
     except Exception as e:
-        logger.error(f"HSEO: An unexpected error occurred during evaluation: {e}", exc_info=True)
-        return float('inf')
+        logger.error(f"HSEO: BioRLTrainer evaluation failed: {e}", exc_info=True)
+        return float('inf') # 失敗時は最悪のスコア（無限大）を返す
+
+# --- ▲▲▲ 改善 (v2): HSEOダミー実装の解消 ▲▲▲ ---
 
 
 # --- 2. HSEO (PSO) コアアルゴリズム ---
@@ -145,21 +132,7 @@ def optimize_with_hseo(
     """
     粒子群最適化 (PSO) を実行する。
     HSEO (Hybrid Swarm) の実装としてPSOを使用する。
-
-    Args:
-        objective_function (Callable): 目的関数。パーティクル集団(N, D)を受け取り、スコア配列(N,)を返す。
-        dim (int): パラメータの次元数。
-        num_particles (int): パーティクルの数。
-        max_iterations (int): 最大イテレーション数。
-        exploration_range (List[Tuple[float, float]]): 各次元の探索範囲 [min, max] のリスト。
-        w (float): 慣性係数。
-        c1 (float): 個体最適解への引力。
-        c2 (float): 全体最適解への引力。
-        seed (Optional[int]): 乱数シード。
-        verbose (bool): ログ出力の有無。
-
-    Returns:
-        Tuple[np.ndarray, float]: (最適パラメータ, 最適スコア)
+    (この関数のロジック自体はダミー実装ではないため、変更なし)
     """
     if seed is not None:
         np.random.seed(seed)
@@ -226,3 +199,5 @@ def optimize_with_hseo(
         logger.info(f"HSEO (PSO): Best parameters = {gbest_pos}")
 
     return gbest_pos, gbest_score
+
+}

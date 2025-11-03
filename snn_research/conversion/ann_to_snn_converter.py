@@ -15,6 +15,10 @@
 #   - use_ecl=True の場合、実際にANNモデルのReLU層を
 #     LearnableClippingLayer に置き換える処理を実装。
 #
+#   (修正 v6):
+#   - mypy [operator] エラー (gguf ライブラリの型ヒント不足による誤検知) を
+#     type: ignore で抑制。
+#
 # mypy --strict 準拠。
 
 import torch
@@ -40,9 +44,10 @@ from .ecl_components import LearnableClippingLayer # ECL用クリッピングレ
 
 # GGUFの依存関係をオプションにする
 try:
-    from gguf import GGUFReader
+    from gguf import GGUFReader # type: ignore[import-untyped]
     GGUF_AVAILABLE = True
 except ImportError:
+    GGUFReader = Any # type: ignore[misc, assignment]
     GGUF_AVAILABLE = False
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -52,7 +57,9 @@ def _load_gguf(path: str) -> Dict[str, torch.Tensor]:
     if not GGUF_AVAILABLE:
         raise ImportError("GGUFファイルを読み込むには `gguf` ライブラリが必要です。`pip install gguf` を実行してください。")
     logging.info(f"GGUFファイルをロード中: {path}")
-    reader = GGUFReader(path, 'r')
+    # --- ▼ 修正 (v6): mypy [operator] 誤検知を抑制 ▼ ---
+    reader = GGUFReader(path, 'r') # type: ignore[operator]
+    # --- ▲ 修正 (v6) ▲ ---
     state_dict = {tensor.name: torch.from_numpy(tensor.data.copy()) for tensor in reader.tensors}
     logging.info(f"✅ GGUFから {len(state_dict)} 個のテンソルをロードしました。")
     return state_dict

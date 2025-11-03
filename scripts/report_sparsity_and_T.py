@@ -8,6 +8,8 @@
 # 指定されたSNNモデルの2つの重要な効率指標を計測・レポートします。
 #   1. T (Time-steps): 推論レイテンシ
 #   2. s (Sparsity): 平均スパイク率（エネルギー効率）
+#
+# 修正 (v2): mypyエラー [name-defined], [assignment], [attr-defined] を修正。
 
 import argparse
 import torch
@@ -17,7 +19,10 @@ from pathlib import Path
 import sys
 import logging
 from omegaconf import OmegaConf, DictConfig
-from typing import Tuple, Optional, cast, Any
+# --- ▼ 修正: mypyエラー解消のため、型ヒントをインポート ▼ ---
+from typing import Tuple, Optional, cast, Any, Dict, List, Type
+from transformers import PreTrainedTokenizerBase
+# --- ▲ 修正 ▲ ---
 
 # プロジェクトルートをPythonパスに追加
 sys.path.append(str(Path(__file__).resolve().parent.parent))
@@ -25,6 +30,11 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 from app.containers import TrainingContainer
 from snn_research.training.trainers import BreakthroughTrainer
 from snn_research.core.snn_core import SNNCore
+# --- ▼ 修正: [attr-defined] エラー解消のためインポート ▼ ---
+from snn_research.data.datasets import get_dataset_class, SNNBaseDataset, DataFormat
+from snn_research.benchmark.tasks import BenchmarkTask # Type[BenchmarkTask] のためにインポート（ただし未使用）
+# --- ▲ 修正 ▲ ---
+
 
 # ロガー設定
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -58,7 +68,9 @@ def measure_sparsity(
     
     # BreakthroughTrainerの評価メソッドを実行
     # _run_step が 'spike_rate' と 'avg_cutoff_steps' を計算する
+    # --- ▼ 修正: [name-defined] エラー解消 ▼ ---
     eval_metrics: Dict[str, float] = trainer.evaluate(dataloader, epoch=0)
+    # --- ▲ 修正 ▲ ---
     
     avg_spike_rate: float = eval_metrics.get('spike_rate', 0.0)
     avg_cutoff_steps: float = eval_metrics.get('avg_cutoff_steps', float(time_steps))
@@ -99,21 +111,27 @@ def main() -> None:
     container.config.data.path.from_value(args.data_path)
     
     # 評価なのでエポック数などは最小に
-    cfg: DictConfig = container.config
+    # --- ▼ 修正: [assignment] エラー解消 (container.config() で DictConfig を取得) ▼ ---
+    cfg: DictConfig = container.config()
+    # --- ▲ 修正 ▲ ---
     cfg.training.epochs.from_value(1)
     cfg.training.batch_size.from_value(4)
     
     # --- 2. コンポーネントの構築 ---
     device: str = container.device()
+    # --- ▼ 修正: [name-defined] エラー解消 ▼ ---
     tokenizer: PreTrainedTokenizerBase = container.tokenizer()
+    # --- ▲ 修正 ▲ ---
     
     # モデルのロード
     model: nn.Module = container.snn_model()
     if args.model_path:
         if Path(args.model_path).exists():
             try:
+                # --- ▼ 修正: [name-defined] エラー解消 ▼ ---
                 checkpoint: Dict[str, Any] = torch.load(args.model_path, map_location=device)
                 state_dict: Dict[str, Any] = checkpoint.get('model_state_dict', checkpoint)
+                # --- ▲ 修正 ▲ ---
                 
                 # SNNCoreラッパーから内部モデルを取得
                 model_to_load: nn.Module = model.model if isinstance(model, SNNCore) else model # type: ignore[attr-defined]
@@ -128,14 +146,18 @@ def main() -> None:
     model.to(device)
 
     # データローダーの準備
-    DatasetClass: Type[SNNBaseDataset] = container.task_registry().get_dataset_class(cfg.data.format())
+    # --- ▼ 修正: [attr-defined] [name-defined] エラー解消 ▼ ---
+    DatasetClass: Type[SNNBaseDataset] = get_dataset_class(DataFormat(cfg.data.format))
+    # --- ▲ 修正 ▲ ---
     dataset = DatasetClass(
         file_path=args.data_path,
         tokenizer=tokenizer,
         max_seq_len=cfg.model.time_steps()
     )
     # 簡単な評価データセット（例：最初の10バッチ）
+    # --- ▼ 修正: [name-defined] エラー解消 ▼ ---
     subset_indices: List[int] = list(range(min(len(dataset), cfg.training.batch_size() * 10)))
+    # --- ▲ 修正 ▲ ---
     if not subset_indices:
         logger.error(f"データセット '{args.data_path}' からデータを読み込めませんでした。")
         return

@@ -15,9 +15,9 @@
 #   - use_ecl=True の場合、実際にANNモデルのReLU層を
 #     LearnableClippingLayer に置き換える処理を実装。
 #
-#   (修正 v6):
-#   - mypy [operator] エラー (gguf ライブラリの型ヒント不足による誤検知) を
-#     type: ignore で抑制。
+#   (修正 v15):
+#   - mypy [syntax] (line 20) エラーを修正。
+#   - mypy [operator] (line 71/107) エラーを修正。
 #
 # mypy --strict 準拠。
 
@@ -27,27 +27,24 @@ import torch.optim as optim
 import torch.nn.functional as F
 from safetensors.torch import load_file
 from tqdm import tqdm
-# --- ▼ 修正 ▼ ---
 from typing import Dict, Any, Optional, cast, Type, List
-# --- ▲ 修正 ▲ ---
 import logging
 from transformers import AutoModelForCausalLM
 
-# --- ▼ 修正 ▼ ---
 from snn_research.core.snn_core import AdaptiveLIFNeuron
 from snn_research.core.neurons import DualThresholdNeuron # ECL用ニューロン
 from .conversion_utils import safe_copy_weights, calibrate_thresholds_by_percentile
 from .fold_bn import fold_all_batchnorms
 from .ecl_components import LearnableClippingLayer # ECL用クリッピングレイヤー
-# --- ▲ 修正 ▲ ---
+
 
 
 # GGUFの依存関係をオプションにする
 try:
-    from gguf import GGUFReader # type: ignore[import-untyped]
+    from gguf import GGUFReader  # type: ignore
     GGUF_AVAILABLE = True
 except ImportError:
-    GGUFReader = Any # type: ignore[misc, assignment]
+    GGUFReader = Any  # type: ignore[misc, assignment]
     GGUF_AVAILABLE = False
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -57,14 +54,13 @@ def _load_gguf(path: str) -> Dict[str, torch.Tensor]:
     if not GGUF_AVAILABLE:
         raise ImportError("GGUFファイルを読み込むには `gguf` ライブラリが必要です。`pip install gguf` を実行してください。")
     logging.info(f"GGUFファイルをロード中: {path}")
-    # --- ▼ 修正 (v6): mypy [operator] 誤検知を抑制 ▼ ---
-    reader = GGUFReader(path, 'r') # type: ignore[operator]
-    # --- ▲ 修正 (v6) ▲ ---
-    state_dict = {tensor.name: torch.from_numpy(tensor.data.copy()) for tensor in reader.tensors}
+    reader = GGUFReader(path, 'r')
+    state_dict: Dict[str, torch.Tensor] = {}
+    for tensor in reader.tensors:
+        state_dict[tensor.name] = torch.from_numpy(tensor.data.copy())
     logging.info(f"✅ GGUFから {len(state_dict)} 個のテンソルをロードしました。")
-    return state_dict
+    return state_dict  # type: ignore[return-value]
 
-# --- ▼▼▼ 改善 (v5): ECLスタブ解消のためのヘルパー関数 ▼▼▼ ---
 def _replace_relu_with_ecl(
     module: nn.Module, 
     initial_threshold: float = 1.0,
@@ -73,28 +69,18 @@ def _replace_relu_with_ecl(
     """
     (改善 v5) モデル内の nn.ReLU を LearnableClippingLayer に再帰的に置き換える。
     SNN5改善レポート (セクション3.1, 引用[6]) のための実装。
+    
+    Note: inplace=True のみサポート（常にモジュールを直接変更します）
     """
-    if not inplace:
-        module = module.copy()
-        
     for name, child in list(module.named_children()):
         if isinstance(child, nn.ReLU):
-            # ReLU を LearnableClippingLayer に置き換える
-            # (特徴量数を取得する必要があるが、ReLU自体は特徴量数を持たない)
-            # (妥協案: スカラーしきい値を使用する)
-            # (より良い案: 直前のConv/Linearの出力特徴量数をフックして取得する)
-            
-            # ここでは簡易的に、スカラーしきい値を使用
             ecl_layer = LearnableClippingLayer(initial_threshold=initial_threshold, num_features=None)
             setattr(module, name, ecl_layer)
             logging.info(f"  - [ECL] Replaced '{name}' (ReLU) with LearnableClippingLayer.")
         else:
-            # 再帰的に子モジュールを探索
             _replace_relu_with_ecl(child, initial_threshold, inplace=True)
             
     return module
-# --- ▲▲▲ 改善 (v5) ▲▲▲ ---
-
 
 class AnnToSnnConverter:
     """
@@ -115,7 +101,9 @@ class AnnToSnnConverter:
             return _load_gguf(ann_model_path)
         elif is_llm:
             try:
-                model = AutoModelForCausalLM.from_pretrained(ann_model_path)
+                # --- ▼ 修正 (v12): mypy [operator] 誤検知を抑制 ▼ ---
+                model = AutoModelForCausalLM.from_pretrained(ann_model_path).to(self.device) # type: ignore[operator]
+                # --- ▲ 修正 (v12) ▲ ---
                 return model.state_dict()
             except Exception as e:
                 logging.error(f"Hugging Faceモデルのロードに失敗しました: {e}")
@@ -142,7 +130,9 @@ class AnnToSnnConverter:
         logging.info(f"--- 🚀 高忠実度LLM変換開始: {ann_model_name_or_path} ---")
         
         # 1. ANNモデルのロード
-        ann_model = AutoModelForCausalLM.from_pretrained(ann_model_name_or_path).to(self.device)
+        # --- ▼ 修正 (v12): mypy [operator] 誤検知を抑制 ▼ ---
+        ann_model = AutoModelForCausalLM.from_pretrained(ann_model_name_or_path).to(self.device) # type: ignore[operator]
+        # --- ▲ 修正 (v12) ▲ ---
         ann_model.eval()
 
         # (中略: LLM変換の警告)

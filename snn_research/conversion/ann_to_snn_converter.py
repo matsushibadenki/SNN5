@@ -19,6 +19,10 @@
 #   - mypy [syntax] (line 20) エラーを修正。
 #   - mypy [operator] (line 71/107) エラーを修正。
 #
+#   (修正 v16):
+#   - mypy [syntax] (line 27) を `type: ignore[import-untyped]` に修正。
+#   - mypy [operator] (line 70, 91, 107) に `type: ignore` を追加。
+#
 # mypy --strict 準拠。
 
 import torch
@@ -41,7 +45,9 @@ from .ecl_components import LearnableClippingLayer # ECL用クリッピングレ
 
 # GGUFの依存関係をオプションにする
 try:
-    from gguf import GGUFReader  # type: ignore
+    # --- ▼ 修正 (v16): [syntax] -> [import-untyped] に修正 ▼ ---
+    from gguf import GGUFReader  # type: ignore[import-untyped]
+    # --- ▲ 修正 (v16) ▲ ---
     GGUF_AVAILABLE = True
 except ImportError:
     GGUFReader = Any  # type: ignore[misc, assignment]
@@ -54,7 +60,9 @@ def _load_gguf(path: str) -> Dict[str, torch.Tensor]:
     if not GGUF_AVAILABLE:
         raise ImportError("GGUFファイルを読み込むには `gguf` ライブラリが必要です。`pip install gguf` を実行してください。")
     logging.info(f"GGUFファイルをロード中: {path}")
-    reader = GGUFReader(path, 'r')
+    # --- ▼ 修正 (v16): [operator] 誤検知を抑制 ▼ ---
+    reader = GGUFReader(path, 'r') # type: ignore[operator]
+    # --- ▲ 修正 (v16) ▲ ---
     state_dict: Dict[str, torch.Tensor] = {}
     for tensor in reader.tensors:
         state_dict[tensor.name] = torch.from_numpy(tensor.data.copy())
@@ -101,9 +109,9 @@ class AnnToSnnConverter:
             return _load_gguf(ann_model_path)
         elif is_llm:
             try:
-                # --- ▼ 修正 (v12): mypy [operator] 誤検知を抑制 ▼ ---
+                # --- ▼ 修正 (v16): mypy [operator] 誤検知を抑制 ▼ ---
                 model = AutoModelForCausalLM.from_pretrained(ann_model_path).to(self.device) # type: ignore[operator]
-                # --- ▲ 修正 (v12) ▲ ---
+                # --- ▲ 修正 (v16) ▲ ---
                 return model.state_dict()
             except Exception as e:
                 logging.error(f"Hugging Faceモデルのロードに失敗しました: {e}")
@@ -130,9 +138,9 @@ class AnnToSnnConverter:
         logging.info(f"--- 🚀 高忠実度LLM変換開始: {ann_model_name_or_path} ---")
         
         # 1. ANNモデルのロード
-        # --- ▼ 修正 (v12): mypy [operator] 誤検知を抑制 ▼ ---
+        # --- ▼ 修正 (v16): mypy [operator] 誤検知を抑制 ▼ ---
         ann_model = AutoModelForCausalLM.from_pretrained(ann_model_name_or_path).to(self.device) # type: ignore[operator]
-        # --- ▲ 修正 (v12) ▲ ---
+        # --- ▲ 修正 (v16) ▲ ---
         ann_model.eval()
 
         # (中略: LLM変換の警告)

@@ -23,11 +23,11 @@
 # - mypy [attr-defined] エラーを解消するため、apply_magnitude_pruning を
 #   apply_sbc_pruning に変更し、ダミーの引数を追加。
 #
-Next:
 # 改善 (v8):
 # - BioSNN に加え、SNNCore ベースのモデル (SEW-ResNet) の
 #   コンパイルとシミュレーションもテストするよう拡張。
 # - DIコンテナ (TrainingContainer) を使用して SNNCore モデルを構築。
+# - mypy [syntax] エラー (v7) を解消。
 
 import sys
 from pathlib import Path

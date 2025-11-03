@@ -8,6 +8,10 @@
 #   ニューロモーフィック・データセット (CIFAR10-DVS) を扱う
 #   CIFAR10DVSTask を SpikingJelly を利用して追加。
 # - mypy [name-defined] [import-untyped] エラーを修正。
+#
+# 改善 (v4):
+# - doc/SNN開発：SNN5プロジェクト改善のための情報収集.md (セクション6.1, 6.2) に基づき、
+#   SHD (Spiking Heidelberg Digits) タスクを SpikingJelly を利用して追加。
 
 import os
 from abc import ABC, abstractmethod
@@ -22,7 +26,7 @@ from omegaconf import OmegaConf
 from torchvision import datasets, transforms # type: ignore[import-untyped]
 # --- ▼ 修正 ▼ ---
 from spikingjelly.activation_based import functional as SJ_F # type: ignore[import-untyped]
-from spikingjelly.datasets import cifar10_dvs # type: ignore[import-untyped]
+from spikingjelly.datasets import cifar10_dvs, shd # type: ignore[import-untyped]
 # --- ▲ 修正 ▲ ---
 
 from snn_research.core.snn_core import BreakthroughSNN, SNNCore
@@ -326,13 +330,6 @@ class CIFAR10DVSTask(BenchmarkTask):
             # SpikingCNNは (B, C, H, W) を期待し、内部でT回ループする
             # だが、DVSデータは (B, T, C, H, W) の時系列データそのもの
             
-            # --- SpikingCNN (snn_core.py) の forward ロジック修正 ---
-            # SpikingCNNのforwardが (B, C, H, W) を受け取り、
-            # 内部で T 回同じ画像を入力する (レートコーディング) のは静止画用。
-            # DVSデータ (B, T, C, H, W) を処理するには、
-            # SpikingCNNのforwardを (B, T, C, H, W) を受け取れるように
-            # 修正する必要がある (今回は未実施)。
-            
             # --- 回避策: SpikingCNNの入力 (B, C, H, W) に合わせる ---
             # (B, T, C, H, W) の時間軸を平均化して (B, C, H, W) にする
             images = frames.mean(dim=1) # (B, C, H, W)
@@ -404,3 +401,148 @@ class CIFAR10DVSTask(BenchmarkTask):
             "estimated_energy_j": energy_j,
         }
 # --- ▲ 修正 ▲ ---
+
+# --- ▼ 改善 (v4): SHDTask を追加 ▼ ---
+class SHDTask(BenchmarkTask):
+    """
+    SHD (Spiking Heidelberg Digits) オーディオ分類タスク。
+    doc/SNN開発：SNN5プロジェクト改善のための情報収集.md (セクション6.1) に基づく。
+    TSkipsSNN や SpikingSSM の評価に最適。
+    """
+    def __init__(self, tokenizer: PreTrainedTokenizerBase, device: str, hardware_profile: Dict[str, Any], time_steps: int = 100):
+        super().__init__(tokenizer, device, hardware_profile)
+        self.time_steps = time_steps # SHDのデータは可変長だが、ここでは固定長にリサンプル
+        self.num_classes = 20 # SHDは20クラス (0-9のドイツ語読み)
+        self.input_features = 700 # SHDの入力特徴量
+
+    def prepare_data(self, data_dir: str = "data") -> Tuple[Dataset, Dataset]:
+        
+        # 時間的な前処理 (固定長 T に変換)
+        def temporal_transform(x: torch.Tensor) -> torch.Tensor:
+            # x は (T_orig, C=700)
+            T_orig = x.shape[0]
+            if T_orig > self.time_steps:
+                indices = torch.linspace(0, T_orig - 1, self.time_steps).long()
+                x = x[indices]
+            elif T_orig < self.time_steps:
+                padding = torch.zeros(self.time_steps - T_orig, *x.shape[1:], dtype=x.dtype)
+                x = torch.cat([x, padding], dim=0)
+            return x # (T, C=700)
+
+        # SpikingJellyのSHDデータセット
+        train_dataset = shd.SHD(
+            root=data_dir,
+            train=True,
+            data_type='frame',
+            frames_number=self.time_steps, # フレーム数 (T)
+            split_by='number',
+            transform=temporal_transform, # 時間軸の変形のみ
+            target_transform=None
+        )
+        val_dataset = shd.SHD(
+            root=data_dir,
+            train=False,
+            data_type='frame',
+            frames_number=self.time_steps,
+            split_by='number',
+            transform=temporal_transform,
+            target_transform=None
+        )
+        return train_dataset, val_dataset
+
+    def get_collate_fn(self) -> Callable:
+        def collate_fn(batch: List[Tuple[torch.Tensor, int]]):
+            # batch[i][0] は (T, C=700)
+            # モデル (例: TSkipsSNN) は (B, T, F_in) を期待する
+            frames = torch.stack([item[0] for item in batch]) # (B, T, C=700)
+            targets = torch.tensor([item[1] for item in batch], dtype=torch.long)
+            
+            # TSkipsSNNが期待するキー 'input_sequence' で返す
+            return {"input_sequence": frames, "labels": targets}
+        return collate_fn
+
+    def build_model(self, model_type: str, vocab_size: int) -> nn.Module:
+        # vocab_size は num_classes で上書き
+        num_classes = self.num_classes
+        
+        if model_type == 'SNN':
+            # SHDタスクには TSkipsSNN や SpikingSSM が適している
+            # ここでは tskips_snn をデフォルトとして構築
+            snn_config_dict = {
+                "architecture_type": "tskips_snn",
+                "input_features": self.input_features,
+                "hidden_features": 256,
+                "num_layers": 3,
+                "time_steps": self.time_steps,
+                "forward_delays_per_layer": [[1, 2], [1, 2], [1, 2]],
+                "backward_delays_per_layer": [[1], [1, 2], [1, 2]],
+                "neuron": {"type": "lif"}
+            }
+            snn_config = OmegaConf.create({"model": snn_config_dict})
+            return SNNCore(config=snn_config.model, vocab_size=num_classes)
+        else: # ANN
+            # ANNベースライン (例: LSTM or GRU)
+            class ANN_RNN_Baseline(nn.Module):
+                def __init__(self, input_dim, hidden_dim, num_layers, num_classes):
+                    super().__init__()
+                    self.rnn = nn.LSTM(input_size=input_dim, hidden_size=hidden_dim, num_layers=num_layers, batch_first=True)
+                    self.fc = nn.Linear(hidden_dim, num_classes)
+                
+                def forward(self, input_sequence, **kwargs):
+                    # input_sequence: (B, T, F_in)
+                    rnn_out, _ = self.rnn(input_sequence)
+                    # 最後のタイムステップの出力をプーリング
+                    pooled = rnn_out[:, -1, :]
+                    logits = self.fc(pooled)
+                    return logits, None, None # SNN互換のタプル
+            
+            return ANN_RNN_Baseline(
+                input_dim=self.input_features,
+                hidden_dim=256,
+                num_layers=3,
+                num_classes=self.num_classes
+            )
+
+    def evaluate(self, model: nn.Module, loader: DataLoader) -> Dict[str, Any]:
+        # (CIFAR10Taskの評価ロジックとほぼ同じだが、入力キーが異なる)
+        model.eval()
+        true_labels: List[int] = []
+        pred_labels: List[int] = []
+        total_spikes = 0.0
+        num_neurons: int = cast(int, sum(p.numel() for p in model.parameters()))
+        
+        SJ_F.reset_net(model) # 時系列モデルのためリセット
+
+        with torch.no_grad():
+            for batch in tqdm(loader, desc="Evaluating SHD"):
+                inputs = {k: v.to(self.device) for k, v in batch.items()}
+                targets = inputs.pop("labels")
+                
+                # inputs['input_sequence'] は (B, T, C=700)
+                outputs = model(**inputs) # TSkipsSNNが内部で T ループ
+                
+                logits = outputs[0] if isinstance(outputs, tuple) else outputs
+                spikes = outputs[1] if isinstance(outputs, tuple) and len(outputs) > 1 and outputs[1] is not None else torch.tensor(0.0)
+
+                total_spikes += spikes.sum().item()
+                preds = torch.argmax(logits, dim=1)
+                pred_labels.extend(preds.cpu().numpy())
+                true_labels.extend(targets.cpu().numpy())
+        
+        dataset_size = len(cast(Sized, loader.dataset))
+        # avg_spikes は (総スパイク数 / (サンプル数 * T)) ではなく、
+        # モデルが内部Tステップで処理した「サンプルあたりの総スパイク数」
+        avg_spikes = total_spikes / dataset_size if total_spikes > 0 else 0.0
+        
+        energy_j = EnergyMetrics.calculate_energy_consumption(
+            avg_spikes_per_sample=avg_spikes, # サンプルあたりの総スパイク数
+            num_neurons=num_neurons,
+            energy_per_synop=self.hardware_profile.get("energy_per_synop", 0.0)
+        )
+
+        return {
+            "accuracy": calculate_accuracy(true_labels, pred_labels),
+            "avg_spikes": avg_spikes,
+            "estimated_energy_j": energy_j,
+        }
+# --- ▲ 改善 (v4) ▲ ---

@@ -11,6 +11,12 @@
 # - DualThresholdNeuron (SNN5改善): ANN-SNN変換のエラー補償学習(ECL)用ニューロン (セクション3.1)。
 # - ScaleAndFireNeuron (SNN5改善): T=1でのANN-SNN変換を実現する空間的マルチ閾値ニューロン (セクション3.2)。
 #
+# 改善 (v2):
+# - doc/ROADMAP.md (セクション3.1, PLIF) および
+#   doc/SNN開発：SNN5プロジェクト改善のための情報収集.md (セクション3.1) に基づき、
+#   AdaptiveLIFNeuron, ProbabilisticLIFNeuron, DualThresholdNeuron の
+#   膜時定数 (tau_mem) を固定値から学習可能なパラメータ (nn.Parameter) に変更。
+#
 # mypy --strict 準拠。
 
 # --- ▼ 修正 ▼ ---
@@ -29,7 +35,9 @@ class AdaptiveLIFNeuron(base.MemoryModule):
     
     v2: Implements PLIF (Parametric LIF) by making tau_mem a learnable parameter.
     """
-    tau_mem: nn.Parameter
+    # --- ▼ 修正: tau_mem を学習可能なパラメータに変更 ▼ ---
+    log_tau_mem: nn.Parameter
+    # --- ▲ 修正 ▲ ---
 
     def __init__(
         self,
@@ -46,8 +54,13 @@ class AdaptiveLIFNeuron(base.MemoryModule):
         super().__init__()
         self.features = features
         
+        # --- ▼ 修正: tau_mem を学習可能なパラメータに変更 ▼ ---
+        # tau_mem を nn.Parameter として初期化
+        # tau = log(exp(tau) - 1.1) + 1.1 の逆変換に近い形で初期化
+        # 勾配が安定するように対数空間で学習 (exp(log_tau) + 1.1 が実際のtau)
         initial_log_tau = torch.full((features,), math.log(max(1.1, tau_mem - 1.1)))
         self.log_tau_mem = nn.Parameter(initial_log_tau)
+        # --- ▲ 修正 ▲ ---
         
         self.base_threshold = nn.Parameter(torch.full((features,), base_threshold))
         self.adaptation_strength = adaptation_strength
@@ -88,8 +101,11 @@ class AdaptiveLIFNeuron(base.MemoryModule):
         if self.adaptive_threshold is None or self.adaptive_threshold.shape != x.shape:
             self.adaptive_threshold = torch.zeros_like(x)
 
+        # --- ▼ 修正: tau_mem を学習可能なパラメータに変更 ▼ ---
+        # 学習可能なパラメータから現在の時定数を計算
         current_tau_mem = torch.exp(self.log_tau_mem) + 1.1
         mem_decay = torch.exp(-1.0 / current_tau_mem)
+        # --- ▲ 修正 ▲ ---
         
         self.mem = self.mem * mem_decay + x
         
@@ -209,8 +225,11 @@ class ProbabilisticLIFNeuron(base.MemoryModule):
     """
     確率的にスパイクを生成する Leaky Integrate-and-Fire (LIF) ニューロン。
     論文 arXiv:2509.26507v1 のアイデアに基づく。
+    v2: Implements PLIF by making tau_mem a learnable parameter.
     """
+    # --- ▼ 修正: tau_mem を学習可能なパラメータに変更 ▼ ---
     log_tau_mem: nn.Parameter
+    # --- ▲ 修正 ▲ ---
     
     def __init__(
         self,
@@ -223,8 +242,10 @@ class ProbabilisticLIFNeuron(base.MemoryModule):
         super().__init__()
         self.features = features
         
+        # --- ▼ 修正: tau_mem を学習可能なパラメータに変更 ▼ ---
         initial_log_tau = torch.full((features,), math.log(max(1.1, tau_mem - 1.1)))
         self.log_tau_mem = nn.Parameter(initial_log_tau)
+        # --- ▲ 修正 ▲ ---
         
         self.threshold = threshold
         self.temperature = temperature # 確率計算の温度パラメータ
@@ -256,8 +277,10 @@ class ProbabilisticLIFNeuron(base.MemoryModule):
         if self.mem is None or self.mem.shape != x.shape:
             self.mem = torch.zeros_like(x)
 
+        # --- ▼ 修正: tau_mem を学習可能なパラメータに変更 ▼ ---
         current_tau_mem = torch.exp(self.log_tau_mem) + 1.1
         mem_decay = torch.exp(-1.0 / current_tau_mem)
+        # --- ▲ 修正 ▲ ---
         
         self.mem = self.mem * mem_decay + x
 
@@ -481,8 +504,11 @@ class DualThresholdNeuron(base.MemoryModule):
     Dual Threshold Neuron (エラー補償学習用)。
     SNN5改善レポート (セクション3.1, 引用[6]) に基づく実装。
     量子化エラーと不均一性エラーを削減する。
+    v2: Implements PLIF by making tau_mem a learnable parameter.
     """
-    tau_mem: nn.Parameter
+    # --- ▼ 修正: tau_mem を学習可能なパラメータに変更 ▼ ---
+    log_tau_mem: nn.Parameter
+    # --- ▲ 修正 ▲ ---
     threshold_high: nn.Parameter # T_h (学習可能なしきい値)
     threshold_low: nn.Parameter  # T_l (デュアルしきい値)
     
@@ -500,7 +526,9 @@ class DualThresholdNeuron(base.MemoryModule):
     ):
         super().__init__()
         self.features = features
+        # --- ▼ 修正: tau_mem を学習可能なパラメータに変更 ▼ ---
         self.log_tau_mem = nn.Parameter(torch.full((features,), math.log(max(1.1, tau_mem - 1.1))))
+        # --- ▲ 修正 ▲ ---
         
         # 引用[6]に基づき、2つのしきい値を学習可能パラメータとする
         self.threshold_high = nn.Parameter(torch.full((features,), threshold_high_init))
@@ -536,8 +564,10 @@ class DualThresholdNeuron(base.MemoryModule):
             self.mem = (self.threshold_low.detach() / 2.0).expand_as(x)
             # --- ▲ 修正 ▲ ---
 
+        # --- ▼ 修正: tau_mem を学習可能なパラメータに変更 ▼ ---
         current_tau_mem = torch.exp(self.log_tau_mem) + 1.1
         mem_decay = torch.exp(-1.0 / current_tau_mem)
+        # --- ▲ 修正 ▲ ---
         
         # 膜電位の更新
         self.mem = self.mem * mem_decay + x

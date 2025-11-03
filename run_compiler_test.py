@@ -27,7 +27,10 @@
 # - BioSNN に加え、SNNCore ベースのモデル (SEW-ResNet) の
 #   コンパイルとシミュレーションもテストするよう拡張。
 # - DIコンテナ (TrainingContainer) を使用して SNNCore モデルを構築。
-# - mypy [syntax] エラー (v7) を解消。
+#
+# 修正 (v9):
+# - mypy [misc], [union-attr] エラーを解消するため、
+#   pruned_model と snn_core_model を cast するよう修正。
 
 import sys
 from pathlib import Path
@@ -38,7 +41,7 @@ from torch.utils.data import DataLoader, TensorDataset
 import yaml
 import copy
 # --- ▼ 修正: 必要な型ヒントを追加 ▼ ---
-from typing import Dict, Any
+from typing import Dict, Any, cast
 from omegaconf import OmegaConf
 # --- ▲ 修正 ▲ ---
 
@@ -48,8 +51,9 @@ from snn_research.bio_models.simple_network import BioSNN
 from snn_research.learning_rules.causal_trace import CausalTraceCreditAssignmentEnhancedV2
 from snn_research.hardware.compiler import NeuromorphicCompiler
 from snn_research.training.pruning import apply_sbc_pruning
-# --- ▼ 修正: SNNCoreモデル構築のために DIコンテナをインポート ▼ ---
+# --- ▼ 修正: SNNCoreモデル構築のために DIコンテナとSNNCoreをインポート ▼ ---
 from app.containers import TrainingContainer
+from snn_research.core.snn_core import SNNCore
 # --- ▲ 修正 ▲ ---
 
 
@@ -70,21 +74,20 @@ def test_biosnn_compilation(compiler: NeuromorphicCompiler, output_dir: str) -> 
     )
     print("✅ ダミーのBioSNNモデルを構築しました。")
 
-    original_connections = sum(torch.sum(w > 0).item() for w in model.weights)
-    pruning_amount = 0.3
-    
-    dummy_dataset = TensorDataset(torch.randn(10, 10), torch.randn(10, 5))
-    dummy_loader = DataLoader(dummy_dataset, batch_size=2)
-    dummy_loss = nn.MSELoss()
-
-    pruned_model = apply_sbc_pruning(
+    # --- ▼ 修正: mypy [misc], [union-attr] エラー解消 (L87) ▼ ---
+    # apply_sbc_pruning は nn.Module を返すため、BioSNN にキャストする
+    pruned_model_uncast: nn.Module = apply_sbc_pruning(
         copy.deepcopy(model), 
-        amount=pruning_amount,
-        dataloader_stub=dummy_loader,
-        loss_fn_stub=dummy_loss
+        amount=0.3,
+        dataloader_stub=DataLoader(TensorDataset(torch.randn(10, 10), torch.randn(10, 5)), batch_size=2),
+        loss_fn_stub=nn.MSELoss()
     )
+    pruned_model: BioSNN = cast(BioSNN, pruned_model_uncast)
     
+    original_connections = sum(torch.sum(w > 0).item() for w in model.weights)
     pruned_connections = sum(torch.sum(w > 0).item() for w in pruned_model.weights)
+    # --- ▲ 修正 ▲ ---
+    
     print(f"🔪 モデルをプルーニングしました: {original_connections} -> {pruned_connections} connections")
     assert pruned_connections < original_connections
 
@@ -118,22 +121,23 @@ def test_biosnn_compilation(compiler: NeuromorphicCompiler, output_dir: str) -> 
         print(f"\n❌ BioSNNテスト失敗: 設定ファイルが生成されませんでした。")
         raise AssertionError("BioSNNコンパイルテスト失敗")
 
-# --- ▼ 修正: SNNCoreモデルをテストする関数を追加 ▼ ---
 def test_snncore_compilation(compiler: NeuromorphicCompiler, output_dir: str) -> None:
     """SNNCore (SEW-ResNet) モデルのコンパイルをテストする。"""
     print("\n--- 2. SNNCore (SEW-ResNet) モデルのコンパイルテスト開始 ---")
 
     try:
         container = TrainingContainer()
-        # SEW-ResNet用の設定をロード (CIFAR10用を流用)
         container.config.from_yaml("configs/base_config.yaml")
         container.config.from_yaml("configs/cifar10_spikingcnn_config.yaml")
-        # アーキテクチャを 'sew_resnet' に上書き
         container.config.model.architecture_type.from_value("sew_resnet")
         
-        # vocab_size=10 (num_classes) を渡してモデルを構築
-        snn_core_model: nn.Module = container.snn_model(vocab_size=10)
-        snn_core_model.eval() # 評価モードに設定
+        # --- ▼ 修正: mypy [union-attr] エラー解消 (L137) ▼ ---
+        # container.snn_model() が nn.Module を返す可能性があるため、SNNCore にキャストする
+        snn_core_model_uncast: nn.Module = container.snn_model(vocab_size=10)
+        snn_core_model: SNNCore = cast(SNNCore, snn_core_model_uncast)
+        # --- ▲ 修正 ▲ ---
+        
+        snn_core_model.eval()
         print(f"✅ ダミーのSNNCoreモデル ({snn_core_model.config.architecture_type}) を構築しました。")
 
     except Exception as e:
@@ -155,14 +159,11 @@ def test_snncore_compilation(compiler: NeuromorphicCompiler, output_dir: str) ->
         assert summary["total_connections"] > 0
         print(f"  - 検証: ネットワーク概要: Neurons={summary['total_neurons']}, Connections={summary['total_connections']}")
         
-        # SNNCoreモデルはBioSNNとは異なり、外部の学習則を持たない
         assert "learning_rule_config" in config
         assert config["learning_rule_config"]["rule_name"] == "None"
         print("  - 検証: 学習則 (None) のコンパイル結果は正常です。")
 
-        # ダミーデータ (CIFAR10風) でスパイク数を推定
-        # (実際のシミュレーションは時間がかかるため、ここでは固定値を使用)
-        estimated_spikes = 500000 # SEW-ResNetのダミーの総スパイク数
+        estimated_spikes = 500000
         time_steps = container.config.model.time_steps()
 
         simulation_report = compiler.simulate_on_hardware(
@@ -176,7 +177,6 @@ def test_snncore_compilation(compiler: NeuromorphicCompiler, output_dir: str) ->
     else:
         print(f"\n❌ SNNCoreテスト失敗: 設定ファイルが生成されませんでした。")
         raise AssertionError("SNNCoreコンパイルテスト失敗")
-# --- ▲ 修正 ▲ ---
 
 def main():
     """

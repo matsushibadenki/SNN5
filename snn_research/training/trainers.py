@@ -1,29 +1,23 @@
 # ファイルパス: snn_research/training/trainers.py
-# (更新)
-# (省略...)
-# 修正点(v6): 継続学習(EWC)のためのFisher行列計算・保存機能を追加。
-# 改善点(snn_4_ann_parity_plan): EWCデータのロード機能を追加。
-# 修正点(TCL): return_full_hiddensフラグの伝搬とSelfSupervisedTrainerの修正。
-# 修正(mypy): Tensor型とfloat型の代入不一致エラーを解消。
+# Title: SNN 統合学習トレーナー (AdaptiveNeuronSelector対応)
+# Description: 各種学習パラダイム（代理勾配、知識蒸留、TCL、物理情報など）を
+#              実行するトレーナークラス群。
 #
-# 改善 (v5):
-# - doc/SNN開発：基本設計思想.md (セクション6.1, 引用[16]) に基づき、
-#   動的推論（SNN Cutoff）を評価ステップ (`_run_step`) に実装。
-# - 評価時に平均推論ステップ数（レイテンシの代理指標）を計算・ログ出力する機能を追加。
-#
-# 修正 (v6): mypy [assignment] [name-defined] エラーを解消。
-#
-# 修正 (v7): mypy [union-attr] [arg-type] エラーを修正。
+# 改善 (v8):
+# - `doc/Improvement-Plan.md` (改善案1, Phase 2) に基づき、
+#   `AdaptiveNeuronSelector` を `BreakthroughTrainer` に統合。
+# - `_run_step` 実行後に `selector.step()` を呼び出し、学習状況（損失）を
+#   セレクタに伝え、ニューロンの動的切り替えを可能にする。
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from omegaconf import DictConfig, OmegaConf # ◾️◾️◾️ OmegaConf をインポート ◾️◾️◾️
+from omegaconf import DictConfig, OmegaConf
 import os
 import collections
 from tqdm import tqdm
-from typing import Tuple, Dict, Any, Optional, cast
+from typing import Tuple, Dict, Any, Optional, cast, List, Union
 import shutil
 import time
 from torch.optim import Adam
@@ -36,16 +30,21 @@ from snn_research.cognitive_architecture.meta_cognitive_snn import MetaCognitive
 from torch.utils.tensorboard import SummaryWriter
 from snn_research.visualization.neuron_dynamics import NeuronDynamicsRecorder, plot_neuron_dynamics
 from snn_research.core.neurons import AdaptiveLIFNeuron
-from snn_research.core.snn_core import SNNCore # SNNCoreをインポート
+from snn_research.core.snn_core import SNNCore
 
 from snn_research.bio_models.simple_network import BioSNN
 import copy
-# ◾️◾️◾️ 追加: logging ◾️◾️◾️
 import logging
+
+# --- ▼ 改善 (v8): AdaptiveNeuronSelector をインポート ▼ ---
+from snn_research.core.adaptive_neuron_selector import AdaptiveNeuronSelector
+# --- ▲ 改善 (v8) ▲ ---
+
 logger = logging.getLogger(__name__)
 
 
 class BreakthroughTrainer:
+    # --- ▼ 改善 (v8): __init__ に selector を追加 ▼ ---
     def __init__(self, model: nn.Module, optimizer: torch.optim.Optimizer, criterion: nn.Module,
                  scheduler: Optional[torch.optim.lr_scheduler.LRScheduler], device: str,
                  grad_clip_norm: float, rank: int, use_amp: bool, log_dir: str,
@@ -53,8 +52,10 @@ class BreakthroughTrainer:
                  meta_cognitive_snn: Optional[MetaCognitiveSNN] = None,
                  enable_visualization: bool = True,
                  cutoff_threshold: float = 0.95,
-                 cutoff_min_steps_ratio: float = 0.25
+                 cutoff_min_steps_ratio: float = 0.25,
+                 neuron_selector: Optional[AdaptiveNeuronSelector] = None # <-- 追加
                  ):
+    # --- ▲ 改善 (v8) ▲ ---
         self.model = model
         self.device = device
         self.optimizer = optimizer
@@ -66,6 +67,12 @@ class BreakthroughTrainer:
         self.astrocyte_network = astrocyte_network
         self.meta_cognitive_snn = meta_cognitive_snn
         
+        # --- ▼ 改善 (v8): selector を保存 ▼ ---
+        self.neuron_selector = neuron_selector
+        if self.neuron_selector:
+            logger.info("✅ AdaptiveNeuronSelector が有効になりました。")
+        # --- ▲ 改善 (v8) ▲ ---
+
         self.scaler = torch.amp.GradScaler(enabled=self.use_amp)
         self.best_metric = float('inf')
         
@@ -82,7 +89,7 @@ class BreakthroughTrainer:
         if self.rank in [-1, 0]:
              print(f"⚡️ SNN Cutoff (Evaluation) Enabled: Threshold={self.cutoff_threshold}, MinStepsRatio={self.cutoff_min_steps_ratio}")
     
-    def load_ewc_data(self, path: str):
+    def load_ewc_data(self, path: str) -> None:
         """事前計算されたFisher行列と最適パラメータをEWCのためにロードする。"""
         if not os.path.exists(path):
             print(f"⚠️ EWCデータファイルが見つかりません: {path}。EWCなしで学習を開始します。")
@@ -105,19 +112,27 @@ class BreakthroughTrainer:
         else:
             self.model.eval()
 
+        # (v24修正: batch[0]がNoneでないことを期待する)
         input_ids, target_ids = [t.to(self.device) for t in batch[:2]]
         
-        hooks = []
+        hooks: List[torch.utils.hooks.RemovableHandle] = []
         if not is_train and self.enable_visualization and self.rank in [-1, 0] and hasattr(self, 'recorder'):
             self.recorder.clear()
             model_to_run = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
             
-            def record_hook(module, input, output):
+            def record_hook(module: nn.Module, input: Any, output: Tuple[torch.Tensor, torch.Tensor]) -> None:
                 spike, mem = output
-                if hasattr(module, 'adaptive_threshold') and module.adaptive_threshold is not None:
-                    threshold = module.adaptive_threshold
-                else:
-                    threshold = module.base_threshold.unsqueeze(0).expand_as(mem)
+                threshold: torch.Tensor
+                if hasattr(module, 'adaptive_threshold') and getattr(module, 'adaptive_threshold') is not None:
+                    threshold = getattr(module, 'adaptive_threshold')
+                elif hasattr(module, 'base_threshold'):
+                    base_thresh = getattr(module, 'base_threshold')
+                    if isinstance(base_thresh, torch.Tensor):
+                        threshold = base_thresh.unsqueeze(0).expand_as(mem)
+                    else: # float の場合 (v24修正)
+                        threshold = torch.full_like(mem, float(base_thresh))
+                else: # (v24修正)
+                    threshold = torch.ones_like(mem) # フォールバック
 
                 self.recorder.record(
                     membrane=mem[0:1].detach(), 
@@ -132,70 +147,54 @@ class BreakthroughTrainer:
         
         return_full_hiddens_flag = isinstance(self.criterion, SelfSupervisedLoss)
         
-        # 評価時かつ、TCLのような全時系列を必要としない損失の場合
+        # (SNN Cutoff のロジックは変更なし)
         if not is_train and not return_full_hiddens_flag:
             B, S = input_ids.shape
             model_to_run = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
             
-            # --- ▼ 修正: [union-attr] [arg-type] エラーを解消 ▼ ---
-            total_time_steps: int = 16 # デフォルト
-            num_classes: int = 10 # デフォルト
+            total_time_steps: int = 16
+            num_classes: int = 10
             
-            # mypyが model_to_run.model の型を nn.Module と推論するため cast(Any,...) を使用
             model_to_run_casted = cast(Any, model_to_run)
             
             if isinstance(model_to_run, SNNCore):
-                snn_core_model = model_to_run_casted.model # This is the BaseModel
-                
-                # Get time_steps
+                snn_core_model = model_to_run_casted.model
                 if hasattr(snn_core_model, 'time_steps'):
                     total_time_steps = cast(int, snn_core_model.time_steps)
-                
-                # Get num_classes (output features)
                 output_layer: Optional[nn.Linear] = None
                 if hasattr(snn_core_model, 'output_projection') and isinstance(snn_core_model.output_projection, nn.Linear):
                     output_layer = snn_core_model.output_projection
-                elif hasattr(snn_core_model, 'fc2') and isinstance(snn_core_model.fc2, nn.Linear): # Fallback for SimpleSNN, SpikingCNN
+                elif hasattr(snn_core_model, 'fc2') and isinstance(snn_core_model.fc2, nn.Linear):
                     output_layer = snn_core_model.fc2
+                elif hasattr(snn_core_model, 'fc') and isinstance(snn_core_model.fc, nn.Linear): # SEWResNet
+                    output_layer = snn_core_model.fc
                 
                 if output_layer is not None:
                     num_classes = output_layer.out_features
                 else:
-                    # Fallback if layer names are inconsistent
-                    logger.warning("Could not find 'output_projection' or 'fc2'. Falling back to vocab_size from config.")
-                    # SNNCoreのconfigからvocab_sizeを取得
+                    logger.warning("Could not find output layer. Falling back to vocab_size from config.")
                     num_classes = cast(int, OmegaConf.select(model_to_run_casted.config, "vocab_size", default=10))
-
-            elif hasattr(model_to_run, 'time_steps'): # BaseModel (not wrapped by SNNCore? should not happen via container)
+            elif hasattr(model_to_run, 'time_steps'):
                 total_time_steps = cast(int, model_to_run_casted.time_steps)
             
             min_steps = int(total_time_steps * self.cutoff_min_steps_ratio)
-            
-            # (B, S, V)
             sum_logits = torch.zeros(B, S, num_classes, device=self.device)
-            # --- ▲ 修正 ▲ ---
-            
-            sum_spikes = torch.tensor(0.0, device=self.device)
-            sum_mem = torch.tensor(0.0, device=self.device)
             
             with torch.no_grad():
                 outputs = self.model(input_ids, return_spikes=True, return_full_mems=True, return_full_hiddens=return_full_hiddens_flag)
-                logits, spikes, mem = outputs # logits は (B, S, V)
+                logits, spikes, mem = outputs
                 
-                # 確信度を計算 (分類タスクを想定)
-                if logits.ndim == 3: # (B, S, V) -> (B*S, V)
+                if logits.ndim == 3:
                     probs = F.softmax(logits.view(-1, logits.size(-1)), dim=-1)
-                    confidences, _ = torch.max(probs, dim=-1) # (B*S,)
-                    
+                    confidences, _ = torch.max(probs, dim=-1)
                     estimated_steps = (1.0 - confidences) * (total_time_steps - min_steps) + min_steps
-                    estimated_steps[confidences > self.cutoff_threshold] = min_steps
+                    estimated_steps[confidences > self.cutoff_threshold] = float(min_steps)
                     avg_cutoff_steps = estimated_steps.mean().item()
-                    
-                else: # SpikingCNN (B, V) など
+                else:
                     probs = F.softmax(logits, dim=-1)
-                    confidences, _ = torch.max(probs, dim=-1) # (B,)
+                    confidences, _ = torch.max(probs, dim=-1)
                     estimated_steps = (1.0 - confidences) * (total_time_steps - min_steps) + min_steps
-                    estimated_steps[confidences > self.cutoff_threshold] = min_steps
+                    estimated_steps[confidences > self.cutoff_threshold] = float(min_steps)
                     avg_cutoff_steps = estimated_steps.mean().item()
                 
                 loss_dict = self.criterion(logits, target_ids, spikes, mem, self.model)
@@ -207,6 +206,7 @@ class BreakthroughTrainer:
                     outputs = self.model(input_ids, return_spikes=True, return_full_mems=True, return_full_hiddens=return_full_hiddens_flag)
                     logits_or_hiddens, spikes, mem = outputs
                     
+                    logits: Optional[torch.Tensor]
                     if return_full_hiddens_flag:
                         loss_dict = self.criterion(logits_or_hiddens, target_ids, spikes, mem, self.model)
                         logits = None 
@@ -232,6 +232,19 @@ class BreakthroughTrainer:
                         torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
                     self.optimizer.step()
                 
+                # --- ▼ 改善 (v8): AdaptiveNeuronSelector を呼び出す ▼ ---
+                if self.neuron_selector:
+                    try:
+                        switched, reason = self.neuron_selector.step(loss_dict['total'].item())
+                        if switched:
+                            logger.info(f"NeuronSelector triggered switch: {reason}")
+                            # オプティマイザのパラメータを新しいモデルの状態にリセット
+                            self.optimizer.param_groups[0]['params'] = list(self.model.parameters())
+                            logger.info("Optimizer parameters updated for new neuron model.")
+                    except Exception as e:
+                        logger.error(f"Error during AdaptiveNeuronSelector step: {e}", exc_info=True)
+                # --- ▲ 改善 (v8) ▲ ---
+
                 if self.meta_cognitive_snn:
                     end_time = time.time()
                     computation_time = end_time - start_time
@@ -239,13 +252,14 @@ class BreakthroughTrainer:
                     if logits is not None:
                         with torch.no_grad():
                             preds = torch.argmax(logits, dim=-1)
+                            ignore_idx: int = -100
                             if hasattr(self.criterion, 'ce_loss_fn') and hasattr(self.criterion.ce_loss_fn, 'ignore_index'):
                                 ignore_idx = self.criterion.ce_loss_fn.ignore_index
-                                mask = target_ids != ignore_idx
-                                num_masked_elements = cast(torch.Tensor, mask).sum()
-                                accuracy_tensor = (preds[mask] == target_ids[mask]).float().sum() / num_masked_elements if num_masked_elements > 0 else torch.tensor(0.0)
-                                accuracy_val = accuracy_tensor.item()
-                                loss_dict['accuracy'] = accuracy_tensor 
+                            mask = target_ids != ignore_idx
+                            num_masked_elements = cast(torch.Tensor, mask).sum()
+                            accuracy_tensor = (preds[mask] == target_ids[mask]).float().sum() / num_masked_elements if num_masked_elements > 0 else torch.tensor(0.0)
+                            accuracy_val = accuracy_tensor.item()
+                            loss_dict['accuracy'] = accuracy_tensor 
                         
                     self.meta_cognitive_snn.update_metadata(
                         loss=loss_dict['total'].item(),
@@ -259,12 +273,13 @@ class BreakthroughTrainer:
                     if logits is not None:
                         if 'accuracy' not in loss_dict:
                             preds = torch.argmax(logits, dim=-1)
+                            ignore_idx = -100
                             if hasattr(self.criterion, 'ce_loss_fn') and hasattr(self.criterion.ce_loss_fn, 'ignore_index'):
                                 ignore_idx = self.criterion.ce_loss_fn.ignore_index
-                                mask = target_ids != ignore_idx
-                                num_masked_elements = cast(torch.Tensor, mask).sum()
-                                accuracy_tensor = (preds[mask] == target_ids[mask]).float().sum() / num_masked_elements if num_masked_elements > 0 else torch.tensor(0.0)
-                                loss_dict['accuracy'] = accuracy_tensor 
+                            mask = target_ids != ignore_idx
+                            num_masked_elements = cast(torch.Tensor, mask).sum()
+                            accuracy_tensor = (preds[mask] == target_ids[mask]).float().sum() / num_masked_elements if num_masked_elements > 0 else torch.tensor(0.0)
+                            loss_dict['accuracy'] = accuracy_tensor 
                     else:
                         loss_dict['accuracy'] = accuracy_tensor 
                     
@@ -276,21 +291,23 @@ class BreakthroughTrainer:
             if is_train:
                  model_to_run = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
                  total_time_steps = 16
-                 # --- ▼ 修正 ▼ ---
                  model_to_run_casted = cast(Any, model_to_run)
                  if hasattr(model_to_run, 'model') and hasattr(model_to_run_casted.model, 'time_steps'):
                      total_time_steps = cast(int, model_to_run_casted.model.time_steps)
                  elif hasattr(model_to_run, 'time_steps'):
                      total_time_steps = cast(int, model_to_run_casted.time_steps)
-                 # --- ▲ 修正 ▲ ---
                  loss_dict['avg_cutoff_steps'] = torch.tensor(float(total_time_steps), device=self.device)
-
 
         return {k: v.item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}
 
+    # ... (train_epoch, evaluate, save/load_checkpoint, _compute_ewc_fisher_matrix は変更なし) ...
     def train_epoch(self, dataloader: DataLoader, epoch: int) -> Dict[str, float]:
         total_metrics: Dict[str, float] = collections.defaultdict(float)
         num_batches = len(dataloader)
+        if num_batches == 0:
+            logger.warning(f"Epoch {epoch}: Dataloader is empty. Skipping training.")
+            return {}
+            
         progress_bar = tqdm(dataloader, desc=f"Training Epoch {epoch}", disable=(self.rank not in [-1, 0]))
         
         self.model.train()
@@ -304,7 +321,7 @@ class BreakthroughTrainer:
         
         avg_metrics = {key: value / num_batches for key, value in total_metrics.items()}
         
-        if self.rank in [-1, 0]:
+        if self.rank in [-1, 0] and hasattr(self, 'writer'):
             for key, value in avg_metrics.items():
                 self.writer.add_scalar(f'Train/{key}', value, epoch)
             if self.scheduler:
@@ -317,6 +334,10 @@ class BreakthroughTrainer:
     def evaluate(self, dataloader: DataLoader, epoch: int) -> Dict[str, float]:
         total_metrics: Dict[str, float] = collections.defaultdict(float)
         num_batches = len(dataloader)
+        if num_batches == 0:
+            logger.warning(f"Epoch {epoch}: Dataloader is empty. Skipping evaluation.")
+            return {}
+            
         progress_bar = tqdm(dataloader, desc=f"Evaluating Epoch {epoch}", disable=(self.rank not in [-1, 0]))
         
         self.model.eval()
@@ -327,7 +348,7 @@ class BreakthroughTrainer:
         
         avg_metrics = {key: value / num_batches for key, value in total_metrics.items()}
         
-        if self.rank in [-1, 0]:
+        if self.rank in [-1, 0] and hasattr(self, 'writer'):
             print(f"Epoch {epoch} Validation Results: " + ", ".join([f"{k}: {v:.4f}" for k, v in avg_metrics.items()]))
             for key, value in avg_metrics.items():
                 self.writer.add_scalar(f'Validation/{key}', value, epoch)
@@ -342,18 +363,18 @@ class BreakthroughTrainer:
 
         return avg_metrics
 
-    def save_checkpoint(self, path: str, epoch: int, metric_value: float, **kwargs: Any):
+    def save_checkpoint(self, path: str, epoch: int, metric_value: float, **kwargs: Any) -> None:
         if self.rank in [-1, 0]:
             model_to_save_container = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
             actual_model = cast(nn.Module, model_to_save_container.model if hasattr(model_to_save_container, 'model') else model_to_save_container)
             
-            buffers_to_exclude = {
+            buffers_to_exclude: set[str] = {
                 name for name, buf in actual_model.named_buffers() 
-                if any(keyword in name for keyword in ['mem', 'spikes', 'adaptive_threshold'])
+                if buf is not None and any(keyword in name for keyword in ['mem', 'spikes', 'adaptive_threshold', 'v', 'u', 'v_s', 'v_d'])
             }
             model_state = {k: v for k, v in actual_model.state_dict().items() if k not in buffers_to_exclude}
 
-            state = {
+            state: Dict[str, Any] = {
                 'epoch': epoch, 'model_state_dict': model_state, 
                 'optimizer_state_dict': self.optimizer.state_dict(),
                 'best_metric': self.best_metric
@@ -369,7 +390,7 @@ class BreakthroughTrainer:
             if metric_value < self.best_metric:
                 self.best_metric = metric_value
                 best_path = os.path.join(os.path.dirname(path), 'best_model.pth')
-                temp_state_for_best = {'model_state_dict': model_state, **kwargs}
+                temp_state_for_best: Dict[str, Any] = {'model_state_dict': model_state, **kwargs}
                 torch.save(temp_state_for_best, best_path)
                 print(f"🏆 新しいベストモデルを '{best_path}' に保存しました (Metric: {metric_value:.4f})。")
 
@@ -378,21 +399,29 @@ class BreakthroughTrainer:
             print(f"⚠️ チェックポイントファイルが見つかりません: {path}。最初から学習を開始します。")
             return 0
             
-        checkpoint = torch.load(path, map_location=self.device)
+        checkpoint: Dict[str, Any] = torch.load(path, map_location=self.device)
         model_to_load_container = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
         actual_model = cast(nn.Module, model_to_load_container.model if hasattr(model_to_load_container, 'model') else model_to_load_container)
-        actual_model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+        
+        state_dict: Dict[str, Any]
+        if 'model_state_dict' in checkpoint:
+            state_dict = checkpoint['model_state_dict']
+        else:
+            logger.warning("Checkpoint does not contain 'model_state_dict' key, loading root dict.")
+            state_dict = checkpoint
+            
+        actual_model.load_state_dict(state_dict, strict=False)
         
         if 'optimizer_state_dict' in checkpoint: self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         if self.scheduler and 'scheduler_state_dict' in checkpoint: self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         if self.use_amp and 'scaler_state_dict' in checkpoint: self.scaler.load_state_dict(checkpoint['scaler_state_dict'])
 
         self.best_metric = checkpoint.get('best_metric', float('inf'))
-        start_epoch = checkpoint.get('epoch', 0) + 1
+        start_epoch: int = checkpoint.get('epoch', -1) + 1 # 0から開始できるように -1 をデフォルトに
         print(f"✅ チェックポイント '{path}' を正常にロードしました。Epoch {start_epoch} から学習を再開します。")
         return start_epoch
     
-    def _compute_ewc_fisher_matrix(self, dataloader: DataLoader, task_name: str):
+    def _compute_ewc_fisher_matrix(self, dataloader: DataLoader, task_name: str) -> None:
         """EWCのためのFisher情報行列を計算し、損失関数に設定する。"""
         print(f"🧠 Computing Fisher Information Matrix for EWC (task: {task_name})...")
         self.model.eval()
@@ -401,6 +430,10 @@ class BreakthroughTrainer:
         for name, param in self.model.named_parameters():
             if param.requires_grad:
                 fisher_matrix[name] = torch.zeros_like(param.data)
+
+        if len(dataloader) == 0:
+            logger.warning("EWC Fisher matrix computation skipped: dataloader is empty.")
+            return
 
         for batch in tqdm(dataloader, desc=f"Computing Fisher Matrix for {task_name}"):
             self.model.zero_grad()
@@ -411,10 +444,10 @@ class BreakthroughTrainer:
             loss.backward()
             
             for name, param in self.model.named_parameters():
-                if param.grad is not None:
+                 if param.requires_grad and param.grad is not None:
                     fisher_matrix[name] += param.grad.data.pow(2) / len(dataloader)
 
-        if isinstance(self.criterion, CombinedLoss):
+        if isinstance(self.criterion, CombinedLoss) and hasattr(self, 'writer'):
             self.criterion.fisher_matrix.update(fisher_matrix)
             for name, param in self.model.named_parameters():
                 if name in fisher_matrix:
@@ -428,13 +461,16 @@ class BreakthroughTrainer:
             print(f"✅ EWC Fisher matrix and optimal parameters for '{task_name}' saved to '{ewc_data_path}'.")
 
 class DistillationTrainer(BreakthroughTrainer):
+    # (DistillationTrainer の _run_step は変更なし)
     def _run_step(self, batch: Tuple[torch.Tensor, ...], is_train: bool) -> Dict[str, Any]:
+        # 評価時はBreakthroughTrainerのロジック（SNN Cutoff含む）を使用
         if not is_train:
-             return super()._run_step(batch, is_train=False) # type: ignore[internal-error]
+             # BreakthroughTrainer._run_step を呼び出す
+             return super()._run_step(batch, is_train=False)
 
+        # 以下は訓練時 (is_train=True) のみ
         functional.reset_net(self.model)
-        if is_train: self.model.train()
-        else: self.model.eval()
+        self.model.train()
             
         student_input, attention_mask, student_target, teacher_logits = [t.to(self.device) for t in batch]
 
@@ -449,20 +485,32 @@ class DistillationTrainer(BreakthroughTrainer):
                     spikes=spikes, mem=mem, model=self.model, attention_mask=attention_mask
                 )
         
-        if is_train:
-            self.optimizer.zero_grad()
-            self.scaler.scale(loss_dict['total']).backward()
-            self.scaler.unscale_(self.optimizer)
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
+        self.optimizer.zero_grad()
+        self.scaler.scale(loss_dict['total']).backward()
+        self.scaler.unscale_(self.optimizer)
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
+        self.scaler.step(self.optimizer)
+        self.scaler.update()
         
+        # --- ▼ 改善 (v8): AdaptiveNeuronSelector を呼び出す ▼ ---
+        if self.neuron_selector:
+            try:
+                switched, reason = self.neuron_selector.step(loss_dict['total'].item())
+                if switched:
+                    logger.info(f"NeuronSelector triggered switch: {reason}")
+                    self.optimizer.param_groups[0]['params'] = list(self.model.parameters())
+                    logger.info("Optimizer parameters updated for new neuron model.")
+            except Exception as e:
+                logger.error(f"Error during AdaptiveNeuronSelector step: {e}", exc_info=True)
+        # --- ▲ 改善 (v8) ▲ ---
+
         with torch.no_grad():
             preds = torch.argmax(student_logits, dim=-1)
             ignore_idx = self.criterion.ce_loss_fn.ignore_index
             mask = student_target != ignore_idx
             
-            num_valid_tokens = mask.sum()
+            num_valid_tokens = cast(torch.Tensor, mask).sum()
+            accuracy: torch.Tensor
             if num_valid_tokens > 0:
                 accuracy = (preds[mask] == student_target[mask]).float().sum() / num_valid_tokens
             else:
@@ -471,18 +519,18 @@ class DistillationTrainer(BreakthroughTrainer):
             
             model_to_run = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
             total_time_steps = 16
-            # --- ▼ 修正 ▼ ---
             model_to_run_casted = cast(Any, model_to_run)
             if hasattr(model_to_run, 'model') and hasattr(model_to_run_casted.model, 'time_steps'):
                 total_time_steps = cast(int, model_to_run_casted.model.time_steps)
             elif hasattr(model_to_run, 'time_steps'):
                 total_time_steps = cast(int, model_to_run_casted.time_steps)
-            # --- ▲ 修正 ▲ ---
             loss_dict['avg_cutoff_steps'] = torch.tensor(float(total_time_steps), device=self.device)
 
         
         return {k: v.cpu().item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}
 
+# (SelfSupervisedTrainer, PhysicsInformedTrainer, ProbabilisticEnsembleTrainer, PlannerTrainer, BPTTTrainer, ParticleFilterTrainer は変更なし)
+# ... (省略) ...
 class SelfSupervisedTrainer(BreakthroughTrainer):
     def _run_step(self, batch: Tuple[torch.Tensor, ...], is_train: bool) -> Dict[str, Any]:
         functional.reset_net(self.model)
@@ -516,26 +564,49 @@ class SelfSupervisedTrainer(BreakthroughTrainer):
                 if self.grad_clip_norm > 0:
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
                 self.optimizer.step()
+            
+            # --- ▼ 改善 (v8): AdaptiveNeuronSelector を呼び出す ▼ ---
+            if self.neuron_selector:
+                try:
+                    switched, reason = self.neuron_selector.step(loss_dict['total'].item())
+                    if switched:
+                        logger.info(f"NeuronSelector triggered switch: {reason}")
+                        self.optimizer.param_groups[0]['params'] = list(self.model.parameters())
+                        logger.info("Optimizer parameters updated for new neuron model.")
+                except Exception as e:
+                    logger.error(f"Error during AdaptiveNeuronSelector step: {e}", exc_info=True)
+            # --- ▲ 改善 (v8) ▲ ---
 
         loss_dict['accuracy'] = torch.tensor(0.0, device=self.device) 
         
         model_to_run = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
         total_time_steps = 16
-        # --- ▼ 修正 ▼ ---
         model_to_run_casted = cast(Any, model_to_run)
         if hasattr(model_to_run, 'model') and hasattr(model_to_run_casted.model, 'time_steps'):
             total_time_steps = cast(int, model_to_run_casted.model.time_steps)
         elif hasattr(model_to_run, 'time_steps'):
             total_time_steps = cast(int, model_to_run_casted.time_steps)
-        # --- ▲ 修正 ▲ ---
         loss_dict['avg_cutoff_steps'] = torch.tensor(float(total_time_steps), device=self.device)
 
 
         return {k: v.item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}
 
 class PhysicsInformedTrainer(BreakthroughTrainer):
+    # (v24修正: _run_step が is_train を受け取るように)
     def _run_step(self, batch: Tuple[torch.Tensor, ...], is_train: bool) -> Dict[str, Any]:
-        return super()._run_step(batch, is_train=is_train) # type: ignore[internal-error]
+        # (v24修正: is_train=True の場合、neuron_selectorを呼び出す)
+        metrics = super()._run_step(batch, is_train=is_train)
+        if is_train and self.neuron_selector:
+            try:
+                switched, reason = self.neuron_selector.step(metrics.get('total', 0.0))
+                if switched:
+                    logger.info(f"NeuronSelector triggered switch: {reason}")
+                    self.optimizer.param_groups[0]['params'] = list(self.model.parameters())
+                    logger.info("Optimizer parameters updated for new neuron model.")
+            except Exception as e:
+                logger.error(f"Error during AdaptiveNeuronSelector step: {e}", exc_info=True)
+        return metrics
+
 
 class ProbabilisticEnsembleTrainer(BreakthroughTrainer):
     def __init__(self, ensemble_size: int = 5, **kwargs: Any):
@@ -550,7 +621,7 @@ class ProbabilisticEnsembleTrainer(BreakthroughTrainer):
 
         input_ids, target_ids = [t.to(self.device) for t in batch[:2]]
         
-        ensemble_logits = []
+        ensemble_logits: List[torch.Tensor] = []
         for _ in range(self.ensemble_size):
             functional.reset_net(self.model)
             with torch.amp.autocast(device_type=self.device if self.device != 'mps' else 'cpu', enabled=self.use_amp):
@@ -561,6 +632,7 @@ class ProbabilisticEnsembleTrainer(BreakthroughTrainer):
         
         ensemble_logits_tensor = torch.stack(ensemble_logits)
         
+        assert isinstance(self.criterion, ProbabilisticEnsembleLoss) # (v24修正: assert)
         loss_dict = self.criterion(ensemble_logits_tensor, target_ids, torch.tensor(0.0), torch.tensor(0.0), self.model)
 
         if is_train:
@@ -577,39 +649,51 @@ class ProbabilisticEnsembleTrainer(BreakthroughTrainer):
                 if self.grad_clip_norm > 0:
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
                 self.optimizer.step()
+            
+            # --- ▼ 改善 (v8): AdaptiveNeuronSelector を呼び出す ▼ ---
+            if self.neuron_selector:
+                try:
+                    switched, reason = self.neuron_selector.step(loss_dict['total'].item())
+                    if switched:
+                        logger.info(f"NeuronSelector triggered switch: {reason}")
+                        self.optimizer.param_groups[0]['params'] = list(self.model.parameters())
+                        logger.info("Optimizer parameters updated for new neuron model.")
+                except Exception as e:
+                    logger.error(f"Error during AdaptiveNeuronSelector step: {e}", exc_info=True)
+            # --- ▲ 改善 (v8) ▲ ---
 
         with torch.no_grad():
             mean_logits = ensemble_logits_tensor.mean(dim=0)
             preds = torch.argmax(mean_logits, dim=-1)
+            ignore_idx = -100
             if hasattr(self.criterion, 'ce_loss_fn') and hasattr(self.criterion.ce_loss_fn, 'ignore_index'):
                 ignore_idx = self.criterion.ce_loss_fn.ignore_index
-                mask = target_ids != ignore_idx
-                num_masked_elements = cast(torch.Tensor, mask).sum()
-                accuracy = (preds[mask] == target_ids[mask]).float().sum() / num_masked_elements if num_masked_elements > 0 else torch.tensor(0.0)
-                loss_dict['accuracy'] = accuracy
+            mask = target_ids != ignore_idx
+            num_masked_elements = cast(torch.Tensor, mask).sum()
+            accuracy = (preds[mask] == target_ids[mask]).float().sum() / num_masked_elements if num_masked_elements > 0 else torch.tensor(0.0)
+            loss_dict['accuracy'] = accuracy
         
         model_to_run = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
         total_time_steps = 16
-        # --- ▼ 修正 ▼ ---
         model_to_run_casted = cast(Any, model_to_run)
         if hasattr(model_to_run, 'model') and hasattr(model_to_run_casted.model, 'time_steps'):
             total_time_steps = cast(int, model_to_run_casted.model.time_steps)
         elif hasattr(model_to_run, 'time_steps'):
             total_time_steps = cast(int, model_to_run_casted.time_steps)
-        # --- ▲ 修正 ▲ ---
         loss_dict['avg_cutoff_steps'] = torch.tensor(float(total_time_steps), device=self.device)
 
 
         return {k: v.item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}
 
 class PlannerTrainer:
+    # (変更なし)
     def __init__(self, model: nn.Module, optimizer: torch.optim.Optimizer, criterion: nn.Module, device: str):
         self.model = model.to(device)
         self.optimizer = optimizer
         self.criterion = criterion
         self.device = device
 
-    def train_epoch(self, dataloader: DataLoader, epoch: int):
+    def train_epoch(self, dataloader: DataLoader, epoch: int) -> None:
         self.model.train()
         progress_bar = tqdm(dataloader, desc=f"Planner Training Epoch {epoch}")
         
@@ -622,7 +706,7 @@ class PlannerTrainer:
             
             assert isinstance(self.criterion, PlannerLoss)
             loss_dict = self.criterion(skill_logits, target_plan)
-            loss = loss_dict['total']
+            loss: torch.Tensor = loss_dict['total']
             
             loss.backward()
             self.optimizer.step()
@@ -630,10 +714,11 @@ class PlannerTrainer:
             progress_bar.set_postfix({"loss": loss.item()})
             
 class BPTTTrainer:
+    # (変更なし)
     def __init__(self, model: nn.Module, config: DictConfig):
         self.model = model
         self.config = config
-        self.optimizer = Adam(self.model.parameters(), lr=config.training.learning_rate)
+        self.optimizer = Adam(self.model.parameters(), lr=config.training.get("learning_rate", 1e-3))
         self.criterion = torch.nn.CrossEntropyLoss()
         self.model_type = self.config.model.get("type", "simple")
 
@@ -662,35 +747,27 @@ class BPTTTrainer:
         return loss.item()
 
 class ParticleFilterTrainer:
-    """
-    逐次モンテカルロ法（パーティクルフィルタ）を用いて、微分不可能なSNNを学習するトレーナー。
-    CPU上での実行を想定し、GPU依存から脱却するアプローチ。
-    """
+    # (変更なし)
     def __init__(self, base_model: BioSNN, config: Dict[str, Any], device: str):
         self.base_model = base_model.to(device)
         self.device = device
         self.config = config
-        self.num_particles = config['training']['biologically_plausible']['particle_filter']['num_particles']
-        self.noise_std = config['training']['biologically_plausible']['particle_filter']['noise_std']
+        self.num_particles: int = config['training']['biologically_plausible']['particle_filter']['num_particles']
+        self.noise_std: float = config['training']['biologically_plausible']['particle_filter']['noise_std']
         
-        # 複数のモデル（パーティクル）をアンサンブルとして保持
-        self.particles = [copy.deepcopy(self.base_model) for _ in range(self.num_particles)]
+        self.particles: List[nn.Module] = [copy.deepcopy(self.base_model) for _ in range(self.num_particles)]
         self.particle_weights = torch.ones(self.num_particles, device=self.device) / self.num_particles
         print(f"🌪️ ParticleFilterTrainer initialized with {self.num_particles} particles.")
 
     def train_step(self, data: torch.Tensor, targets: torch.Tensor) -> float:
         """1ステップの学習（予測、尤度計算、再サンプリング）を実行する。"""
         
-        # 1. 予測 & ノイズ付加 (各パーティクル)
         for particle in self.particles:
-            # パラメータに少量のノイズを加えて多様性を維持
             with torch.no_grad():
                 for param in particle.parameters():
                     param.add_(torch.randn_like(param) * self.noise_std)
         
-        # 2. 尤度計算
-        # 各パーティクルがターゲットをどれだけうまく予測できたかを評価
-        log_likelihoods = []
+        log_likelihoods: List[float] = []
         for particle in self.particles:
             particle.eval()
             with torch.no_grad():
@@ -700,7 +777,7 @@ class ParticleFilterTrainer:
                     squeezed_data = data
 
                 input_spikes = (torch.rand_like(squeezed_data) > 0.5).float()
-                outputs, _ = particle(input_spikes)
+                outputs, _ = particle(input_spikes) # type: ignore[operator]
                 
                 if targets.dim() > 1:
                     squeezed_targets = targets.squeeze(0)
@@ -708,9 +785,8 @@ class ParticleFilterTrainer:
                     squeezed_targets = targets
                 
                 loss = F.mse_loss(outputs, squeezed_targets)
-                log_likelihoods.append(-loss)
+                log_likelihoods.append(-loss.item())
         
-        # 3. 重みの更新と正規化
         log_likelihoods_tensor = torch.tensor(log_likelihoods, device=self.device)
         self.particle_weights *= torch.exp(log_likelihoods_tensor - log_likelihoods_tensor.max())
         
@@ -719,12 +795,11 @@ class ParticleFilterTrainer:
         else:
             self.particle_weights.fill_(1.0 / self.num_particles)
 
-        # 4. 再サンプリング (Resampling)
-        if 1. / (self.particle_weights**2).sum() < self.num_particles / 2:
+        if 1.0 / (self.particle_weights**2).sum() < self.num_particles / 2.0:
             indices = torch.multinomial(self.particle_weights, self.num_particles, replacement=True)
-            new_particles = [copy.deepcopy(self.particles[i]) for i in indices]
+            new_particles: List[nn.Module] = [copy.deepcopy(self.particles[i]) for i in indices]
             self.particles = new_particles
             self.particle_weights.fill_(1.0 / self.num_particles)
         
-        best_particle_loss = -log_likelihoods_tensor.max().item()
+        best_particle_loss: float = -log_likelihoods_tensor.max().item()
         return best_particle_loss

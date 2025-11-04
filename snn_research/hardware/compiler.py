@@ -1,7 +1,7 @@
 # ファイルパス: snn_research/hardware/compiler.py
 # (更新)
 #
-# Title: ニューロモーフィック・コンパイラ（ハードウェア協調設計 改修版）
+# Title: ニューロモーフィック・コンパイラ（Lava/SpiNNakerエクスポートスタブ追加 v9）
 #
 # Description:
 # - mypyエラーを解消するため、typing.castを使用してモジュールの型を明示的に指定。
@@ -15,6 +15,10 @@
 # 修正 (v8): 【技術指令】指令1「ハードウェア協調設計」に基づき、
 #             ハードウェアプロファイルから物理的制約（量子化ビット数、スパース性）を
 #             読み込み、コンパイル設定に出力する機能を追加。
+#
+# 改善 (v9):
+# - ロードマップ P4.2 / P4.3 に基づき、Lava および sPyNNaker への
+#   エクスポート用メソッドスタブを追加。 (「実装があまい」点の解消)
 
 from typing import Dict, Any, List, cast, Union, Optional, Type, Tuple
 import yaml
@@ -413,6 +417,82 @@ class NeuromorphicCompiler:
 
         print(f"✅ コンパイル完了。ハードウェア構成を '{output_path}' に保存しました。")
 
+    # --- ▼▼▼ 改善 (v9): P4.2 / P4.3 エクスポートスタブを追加 ▼▼▼ ---
+
+    def export_to_lava(self, model: nn.Module, output_dir: str) -> None:
+        """
+        (スタブ) SNNモデルをLavaフレームワーク用の実行可能コードにエクスポートする。
+        ロードマップ P4.2 に対応。
+        """
+        logger.info(f"--- 🌋 Lava Export (Stub) ---")
+        
+        # 1. モデル構造を解析 (compileメソッドと共通)
+        model_to_compile: nn.Module
+        if isinstance(model, SNNCore) and hasattr(model, 'model'):
+            model_to_compile = model.model
+        else:
+            model_to_compile = model
+            
+        hw_config = self._generate_hardware_config(model_to_compile, "Loihi 2")
+        
+        # 2. Lavaプロセス定義の生成 (スタブ)
+        # 実際には、hw_configをパースし、LavaのProcessライブラリを使って
+        # 各ニューロンコアと接続をPythonコードとして生成する。
+        lava_code_stub = f"""# Auto-generated Lava Export (Stub)
+# Target: {hw_config['target_hardware']}
+# Summary: {hw_config['network_summary']}
+
+from lava.magma.core.process.process import AbstractProcess
+from lava.magma.core.process.ports.ports import InPort, OutPort
+from lava.proc.lif.process import LIF
+
+# (Lavaプロセス定義がここに続く...)
+"""
+        # 3. コードの保存
+        os.makedirs(output_dir, exist_ok=True)
+        output_path = os.path.join(output_dir, "lava_model_stub.py")
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(lava_code_stub)
+            
+        logger.info(f"✅ Lavaエクスポート (スタブ) が完了しました: {output_path}")
+
+    def export_to_spinnaker(self, model: nn.Module, output_dir: str) -> None:
+        """
+        (スタブ) SNNモデルをSpiNNaker (sPyNNaker) 用の実行可能コードにエクスポートする。
+        ロードマップ P4.3 に対応。
+        """
+        logger.info(f"--- 🕷️ SpiNNaker Export (Stub) ---")
+        
+        # 1. モデル構造を解析
+        model_to_compile: nn.Module
+        if isinstance(model, SNNCore) and hasattr(model, 'model'):
+            model_to_compile = model.model
+        else:
+            model_to_compile = model
+            
+        hw_config = self._generate_hardware_config(model_to_compile, "SpiNNaker")
+
+        # 2. sPyNNaker スクリプトの生成 (スタブ)
+        # 実際には、PyNN (sPyNNaker) の API を使って
+        # Population, Projection を定義する Python コードを生成する。
+        spinnaker_code_stub = f"""# Auto-generated sPyNNaker Export (Stub)
+# Summary: {hw_config['network_summary']}
+
+import pyNN.spiNNaker as p
+from pyNN.utility.plotting import Figure, Panel
+
+# p.setup(timestep=1.0)
+"""
+        
+        # 3. コードの保存
+        os.makedirs(output_dir, exist_ok=True)
+        output_path = os.path.join(output_dir, "spinnaker_model_stub.py")
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(spinnaker_code_stub)
+            
+        logger.info(f"✅ SpiNNakerエクスポート (スタブ) が完了しました: {output_path}")
+
+    # --- ▲▲▲ 改善 (v9) ▲▲▲ ---
 
     def simulate_on_hardware(self, compiled_config_path: str, total_spikes: int, time_steps: int) -> Dict[str, float]:
         """

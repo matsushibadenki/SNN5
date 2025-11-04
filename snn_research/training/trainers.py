@@ -158,8 +158,10 @@ class BreakthroughTrainer:
             B, S = input_ids.shape
             model_to_run = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
             
-            total_time_steps: int = 16
-            num_classes: int = 10
+            # --- ▼ 修正: [no-redef] エラー解消 (変数を再定義しない) ▼ ---
+            # total_time_steps: int = 16
+            # num_classes: int = 10
+            # --- ▲ 修正 ▲ ---
             
             model_to_run_casted = cast(Any, model_to_run)
             
@@ -266,8 +268,10 @@ class BreakthroughTrainer:
                         with torch.no_grad():
                             preds = torch.argmax(logits_for_acc, dim=-1)
                             ignore_idx: int = -100
+                            # --- ▼ 修正: [assignment] エラー解消 (cast を追加) ▼ ---
                             if hasattr(self.criterion, 'ce_loss_fn') and hasattr(self.criterion.ce_loss_fn, 'ignore_index'):
-                                ignore_idx = self.criterion.ce_loss_fn.ignore_index
+                                ignore_idx = cast(int, getattr(self.criterion.ce_loss_fn, 'ignore_index'))
+                            # --- ▲ 修正 ▲ ---
                             mask = target_ids != ignore_idx
                             num_masked_elements = cast(torch.Tensor, mask).sum()
                             accuracy_tensor = (preds[mask] == target_ids[mask]).float().sum() / num_masked_elements if num_masked_elements > 0 else torch.tensor(0.0)
@@ -287,8 +291,10 @@ class BreakthroughTrainer:
                         if 'accuracy' not in loss_dict:
                             preds = torch.argmax(logits_for_acc, dim=-1)
                             ignore_idx = -100
+                            # --- ▼ 修正: [assignment] エラー解消 (cast を追加) ▼ ---
                             if hasattr(self.criterion, 'ce_loss_fn') and hasattr(self.criterion.ce_loss_fn, 'ignore_index'):
-                                ignore_idx = self.criterion.ce_loss_fn.ignore_index
+                                ignore_idx = cast(int, getattr(self.criterion.ce_loss_fn, 'ignore_index'))
+                            # --- ▲ 修正 ▲ ---
                             mask = target_ids != ignore_idx
                             num_masked_elements = cast(torch.Tensor, mask).sum()
                             accuracy_tensor = (preds[mask] == target_ids[mask]).float().sum() / num_masked_elements if num_masked_elements > 0 else torch.tensor(0.0)
@@ -822,5 +828,6 @@ class ParticleFilterTrainer:
         
         best_particle_loss: float = -log_likelihoods_tensor.max().item()
         return best_particle_loss
+
 
 

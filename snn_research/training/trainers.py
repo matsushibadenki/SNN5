@@ -268,9 +268,13 @@ class BreakthroughTrainer:
                         with torch.no_grad():
                             preds = torch.argmax(logits_for_acc, dim=-1)
                             ignore_idx: int = -100
-                            # --- ▼ 修正: [assignment] エラー解消 (cast を追加) ▼ ---
-                            if hasattr(self.criterion, 'ce_loss_fn') and hasattr(self.criterion.ce_loss_fn, 'ignore_index'):
-                                ignore_idx = cast(int, getattr(self.criterion.ce_loss_fn, 'ignore_index'))
+                            # --- ▼ 修正: [assignment] エラー解消 (型チェック強化) ▼ ---
+                            if hasattr(self.criterion, 'ce_loss_fn'):
+                                ce_loss_fn = getattr(self.criterion, 'ce_loss_fn')
+                                if hasattr(ce_loss_fn, 'ignore_index'):
+                                    ignore_idx_val = getattr(ce_loss_fn, 'ignore_index')
+                                    if isinstance(ignore_idx_val, int):
+                                        ignore_idx = ignore_idx_val
                             # --- ▲ 修正 ▲ ---
                             mask = target_ids != ignore_idx
                             num_masked_elements = cast(torch.Tensor, mask).sum()
@@ -291,9 +295,13 @@ class BreakthroughTrainer:
                         if 'accuracy' not in loss_dict:
                             preds = torch.argmax(logits_for_acc, dim=-1)
                             ignore_idx = -100
-                            # --- ▼ 修正: [assignment] エラー解消 (cast を追加) ▼ ---
-                            if hasattr(self.criterion, 'ce_loss_fn') and hasattr(self.criterion.ce_loss_fn, 'ignore_index'):
-                                ignore_idx = cast(int, getattr(self.criterion.ce_loss_fn, 'ignore_index'))
+                            # --- ▼ 修正: [assignment] エラー解消 (型チェック強化) ▼ ---
+                            if hasattr(self.criterion, 'ce_loss_fn'):
+                                ce_loss_fn = getattr(self.criterion, 'ce_loss_fn')
+                                if hasattr(ce_loss_fn, 'ignore_index'):
+                                    ignore_idx_val = getattr(ce_loss_fn, 'ignore_index')
+                                    if isinstance(ignore_idx_val, int):
+                                        ignore_idx = ignore_idx_val
                             # --- ▲ 修正 ▲ ---
                             mask = target_ids != ignore_idx
                             num_masked_elements = cast(torch.Tensor, mask).sum()
@@ -828,6 +836,7 @@ class ParticleFilterTrainer:
         
         best_particle_loss: float = -log_likelihoods_tensor.max().item()
         return best_particle_loss
+
 
 
 

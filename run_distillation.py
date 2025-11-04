@@ -10,25 +10,39 @@
 #   インスタンス化するように修正し、より管理された蒸留プロセスを実現。
 # 改善点(v2): torchvisionのモデルを教師として使用できるようにし、画像データセットに対応。
 # 改善点(v3): エポック数を増やし、学習を促進。
+#
+# 修正 (v4): HPO (run_hpo.py) から呼び出されるように、--override_config 引数を
+#             受け取れるように修正。
 
 import argparse
 import asyncio
 import torch
-import torchvision.models as models # type: ignore
+import torchvision.models as models  # type: ignore[import-untyped]
 from torch.utils.data import DataLoader
+# --- ▼ 修正: HPO連携のためインポート ▼ ---
+from omegaconf import OmegaConf, DictConfig
+from typing import Any, List, Optional
+# --- ▲ 修正 ▲ ---
 
 from app.containers import TrainingContainer
 from snn_research.distillation.knowledge_distillation_manager import KnowledgeDistillationManager
 from snn_research.benchmark import TASK_REGISTRY
 
-async def main():
+
+async def main() -> None:
     parser = argparse.ArgumentParser(description="SNN Knowledge Distillation Runner")
     parser.add_argument("--config", type=str, default="configs/base_config.yaml", help="Base config file path")
     parser.add_argument("--model_config", type=str, default="configs/cifar10_spikingcnn_config.yaml", help="SNN model architecture config file path")
     parser.add_argument("--task", type=str, default="cifar10", help="The benchmark task to distill.")
     parser.add_argument("--teacher_model", type=str, default="resnet18", help="The torchvision teacher model to use.")
-    # --- ▼ 修正 ▼ ---
-    parser.add_argument("--epochs", type=int, default=15, help="Number of distillation epochs.") # エポック数を増やす
+    parser.add_argument("--epochs", type=int, default=15, help="Number of distillation epochs.")
+    # --- ▼ 修正: HPO連携のため --override_config を追加 ▼ ---
+    parser.add_argument(
+        "--override_config",
+        type=str,
+        action='append',
+        help="Override config (e.g., 'training.epochs=5')"
+    )
     # --- ▲ 修正 ▲ ---
     args = parser.parse_args()
 
@@ -36,9 +50,35 @@ async def main():
     container = TrainingContainer()
     container.config.from_yaml(args.config)
     container.config.from_yaml(args.model_config)
-    # --- ▼ 修正 ▼ ---
+    
     # コマンドライン引数からエポック数を上書き
     container.config.training.epochs.from_value(args.epochs)
+    
+    # --- ▼ 修正: HPO連携のため --override_config を適用 ▼ ---
+    if args.override_config:
+        print(f"Applying {len(args.override_config)} overrides from command line...")
+        for override in args.override_config:
+            try:
+                keys, value_str = override.split('=', 1)
+                # 型を推論
+                value: Any
+                try:
+                    value = int(value_str)
+                except ValueError:
+                    try:
+                        value = float(value_str)
+                    except ValueError:
+                        if value_str.lower() == 'true':
+                            value = True
+                        elif value_str.lower() == 'false':
+                            value = False
+                        else:
+                            value = value_str  # 文字列として保持
+
+                OmegaConf.update(container.config(), keys, value, merge=True)
+                print(f"  - Applied: {keys} = {value}")
+            except Exception as e:
+                print(f"Error applying override '{override}': {e}")
     # --- ▲ 修正 ▲ ---
 
     # DIコンテナから必要なコンポーネントを正しい順序で取得・構築
@@ -75,7 +115,8 @@ async def main():
         trainer=distillation_trainer,
         tokenizer_name=container.config.data.tokenizer_name(), # tokenizerはCIFARタスクでは使われないがインターフェースのため渡す
         model_registry=model_registry,
-        device=device
+        device=device,
+        config=container.config() # 修正: config を渡す
     )
 
     # --- データセットの準備 ---
@@ -92,7 +133,6 @@ async def main():
         collate_fn=task.get_collate_fn(),
         batch_size=container.config.training.batch_size()
     )
-
 
     # 蒸留の実行
     await manager.run_distillation(

@@ -18,10 +18,16 @@
 # 修正 (v4):
 # - mypy [name-defined] エラーを解消するため、型ヒントとキャストを
 #   インポートエイリアス (LIFNeuron) に統一。
+#
+# 改善 (v5):
+# - ロードマップ P1.4 (DTA-SNN [10]) に基づき、
+#   DynamicTemporalAttention (DTA) モジュールを追加。
 
 import torch
 import torch.nn as nn
-from typing import Tuple, Dict, Any, Optional, cast
+# --- ▼ 改善 (v5): 必要な型ヒントを追加 ▼ ---
+from typing import Tuple, Dict, Any, Optional, cast, List
+# --- ▲ 改善 (v5) ▲ ---
 import random 
 
 # SDSAで使用するスパイクニューロン (例: LIF)
@@ -190,3 +196,151 @@ class SpikeDrivenSelfAttention(base.MemoryModule):
         self.lif_q.reset()
         self.lif_k.reset()
         self.lif_v.reset()
+
+# --- ▼▼▼ 改善 (v5): P1.4 DTA-SNN (引用[10]) の実装 ▼▼▼ ---
+
+class DynamicTemporalAttention(base.MemoryModule):
+    """
+    DTA-SNN (Dynamic Temporal Attention) の実装。
+    ロードマップ P1.4 (引用[10]) に基づく。
+    
+    Q, K, V を時間スパイク列 (B, T, N, C) として扱い、
+    時間情報に基づいたアテンションを実行する。
+    """
+    lif_q: LIFNeuron
+    lif_k: LIFNeuron
+    lif_v: LIFNeuron
+    
+    def __init__(self,
+                 dim: int,
+                 num_heads: int,
+                 time_steps: int,
+                 neuron_config: dict
+                ):
+        super().__init__()
+        assert dim % num_heads == 0, "dim must be divisible by num_heads"
+        self.dim = dim
+        self.num_heads = num_heads
+        self.head_dim = dim // num_heads
+        self.time_steps = time_steps
+
+        # 線形変換層 (入力 -> Q, K, V)
+        self.to_q = nn.Linear(dim, dim)
+        self.to_k = nn.Linear(dim, dim)
+        self.to_v = nn.Linear(dim, dim)
+
+        # スパイク生成ニューロン
+        lif_params = {k: v for k, v in neuron_config.items() if k in ['tau_mem', 'base_threshold']}
+        
+        self.lif_q = cast(LIFNeuron, LIFNeuron(features=dim, **lif_params))
+        self.lif_k = cast(LIFNeuron, LIFNeuron(features=dim, **lif_params))
+        self.lif_v = cast(LIFNeuron, LIFNeuron(features=dim, **lif_params))
+        
+        # DTA [10] の中核: 時間ダイナミクスを学習するリカレント層 (例: GRU)
+        # スパイクベースではないが、論文[10]は標準的なRNN/GRUをアテンション計算に用いる
+        self.temporal_encoder = nn.GRU(
+            input_size=self.head_dim, 
+            hidden_size=self.head_dim, 
+            batch_first=True
+        )
+
+        # 出力層
+        self.to_out = nn.Linear(dim, dim)
+        
+        logging.info("✅ DynamicTemporalAttention (DTA-SNN Stub) initialized (P1.4).")
+
+    def _generate_spikes(self, x: torch.Tensor) -> torch.Tensor:
+        """(B, N, C) -> (B, T, N, C) のスパイク時系列を生成"""
+        B, N, C = x.shape
+        x_lin_flat = x.reshape(B * N, C)
+        
+        s_list = []
+        if not self.stateful:
+            self.reset()
+            
+        # どのニューロンを使うか (例: Q)
+        neuron = self.lif_q
+        if not self.stateful:
+            neuron.reset()
+            neuron.set_stateful(True)
+
+        for _ in range(self.time_steps):
+            s_t, _ = neuron(x_lin_flat) # (B*N, C)
+            s_list.append(s_t.reshape(B, N, C))
+            
+        if not self.stateful:
+            neuron.set_stateful(False)
+            neuron.reset()
+            
+        return torch.stack(s_list, dim=1) # (B, T, N, C)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        DTA のフォワードパス。
+        
+        Args:
+            x (torch.Tensor): 入力テンソル (Batch, Num_Tokens, Dim)。
+
+        Returns:
+            torch.Tensor: アテンション適用後の出力テンソル (Batch, Num_Tokens, Dim)。
+        """
+        B, N, C = x.shape
+        
+        # 1. Q, K, V の電流を計算
+        q_lin = self.to_q(x) # (B, N, C)
+        k_lin = self.to_k(x)
+        v_lin = self.to_v(x)
+
+        # 2. スパイク時系列を生成 (B, T, N, C)
+        s_q_time = self._generate_spikes(q_lin)
+        s_k_time = self._generate_spikes(k_lin)
+        s_v_time = self._generate_spikes(v_lin)
+        
+        # 3. ヘッドに分割 (B, T, N, H, Dh) -> (B, H, N, T, Dh)
+        s_q_heads = s_q_time.view(B, self.time_steps, N, self.num_heads, self.head_dim).permute(0, 3, 2, 1, 4)
+        s_k_heads = s_k_time.view(B, self.time_steps, N, self.num_heads, self.head_dim).permute(0, 3, 2, 1, 4)
+        s_v_heads = s_v_time.view(B, self.time_steps, N, self.num_heads, self.head_dim).permute(0, 3, 2, 1, 4)
+        
+        # (B*H*N, T, Dh) にフラット化して GRU に入力
+        q_flat = s_q_heads.reshape(B * self.num_heads * N, self.time_steps, self.head_dim)
+        k_flat = s_k_heads.reshape(B * self.num_heads * N, self.time_steps, self.head_dim)
+        v_flat = s_v_heads.reshape(B * self.num_heads * N, self.time_steps, self.head_dim)
+
+        # 4. 時間ダイナミクスのエンコード (DTA [10])
+        # GRUの最後の隠れ状態 (h_n) を時間的特徴として使用
+        _, q_temporal = self.temporal_encoder(q_flat) # (1, B*H*N, Dh)
+        _, k_temporal = self.temporal_encoder(k_flat)
+        _, v_temporal = self.temporal_encoder(v_flat)
+        
+        # (B, H, N, Dh) に戻す
+        q_out = q_temporal.squeeze(0).view(B, self.num_heads, N, self.head_dim)
+        k_out = k_temporal.squeeze(0).view(B, self.num_heads, N, self.head_dim)
+        v_out = v_temporal.squeeze(0).view(B, self.num_heads, N, self.head_dim)
+
+        # 5. 標準的なアテンション計算 (時間集約された特徴量を使用)
+        # (B, H, N, Dh) @ (B, H, Dh, N) -> (B, H, N, N)
+        attn_scores = torch.matmul(q_out, k_out.transpose(-1, -2)) / (self.head_dim ** 0.5)
+        attn_weights = F.softmax(attn_scores, dim=-1)
+        
+        attention_out = torch.matmul(attn_weights, v_out) # (B, H, N, Dh)
+
+        # 6. 出力のマージ
+        attention_out = attention_out.permute(0, 2, 1, 3).contiguous().view(B, N, C)
+        out = self.to_out(attention_out)
+
+        return out
+
+    def set_stateful(self, stateful: bool):
+        super().set_stateful(stateful)
+        self.lif_q.set_stateful(stateful)
+        self.lif_k.set_stateful(stateful)
+        self.lif_v.set_stateful(stateful)
+
+    def reset(self):
+        super().reset()
+        self.lif_q.reset()
+        self.lif_k.reset()
+        self.lif_v.reset()
+        self.temporal_encoder.flatten_parameters() # GRU/LSTMの状態リセット推奨
+
+# --- ▲▲▲ 改善 (v5) ▲▲▲ ---

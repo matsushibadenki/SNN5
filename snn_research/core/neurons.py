@@ -18,10 +18,11 @@
 #   膜時定数 (tau_mem) を固定値から学習可能なパラメータ (nn.Parameter) に変更。
 #
 # mypy --strict 準拠。
+#
+# 改善 (v3):
+# - ロードマップ P2.1 (PLIF) / P2.2 (GLIF) の実装を再検証・強化。
 
-# --- ▼ 修正 ▼ ---
 from typing import Optional, Tuple, Any, List, cast
-# --- ▲ 修正 ▲ ---
 import torch
 from torch import Tensor, nn
 import torch.nn.functional as F
@@ -35,9 +36,7 @@ class AdaptiveLIFNeuron(base.MemoryModule):
     
     v2: Implements PLIF (Parametric LIF) by making tau_mem a learnable parameter.
     """
-    # --- ▼ 修正: tau_mem を学習可能なパラメータに変更 ▼ ---
     log_tau_mem: nn.Parameter
-    # --- ▲ 修正 ▲ ---
 
     def __init__(
         self,
@@ -54,9 +53,8 @@ class AdaptiveLIFNeuron(base.MemoryModule):
         super().__init__()
         self.features = features
         
-        # --- ▼ 修正: tau_mem を学習可能なパラメータに変更 ▼ ---
+        # --- ▼ 修正: tau_mem を学習可能なパラメータに変更 (P2.1 PLIF) ▼ ---
         # tau_mem を nn.Parameter として初期化
-        # tau = log(exp(tau) - 1.1) + 1.1 の逆変換に近い形で初期化
         # 勾配が安定するように対数空間で学習 (exp(log_tau) + 1.1 が実際のtau)
         initial_log_tau = torch.full((features,), math.log(max(1.1, tau_mem - 1.1)))
         self.log_tau_mem = nn.Parameter(initial_log_tau)
@@ -101,7 +99,7 @@ class AdaptiveLIFNeuron(base.MemoryModule):
         if self.adaptive_threshold is None or self.adaptive_threshold.shape != x.shape:
             self.adaptive_threshold = torch.zeros_like(x)
 
-        # --- ▼ 修正: tau_mem を学習可能なパラメータに変更 ▼ ---
+        # --- ▼ 修正: tau_mem を学習可能なパラメータに変更 (P2.1 PLIF) ▼ ---
         # 学習可能なパラメータから現在の時定数を計算
         current_tau_mem = torch.exp(self.log_tau_mem) + 1.1
         mem_decay = torch.exp(-1.0 / current_tau_mem)
@@ -192,12 +190,10 @@ class IzhikevichNeuron(base.MemoryModule):
             self.v = None
             self.u = None
             
-        # --- ▼ 修正: mypy [arg-type] エラーを修正 (float()キャストを徹底) ▼ ---
         if self.v is None or self.v.shape != x.shape:
             self.v = torch.full_like(x, float(self.c))
         if self.u is None or self.u.shape != x.shape:
             self.u = torch.full_like(x, float(self.b * self.c))
-        # --- ▲ 修正 ▲ ---
 
         dv = 0.04 * self.v**2 + 5 * self.v + 140 - self.u + x
         du = self.a * (self.b * self.v - self.u)
@@ -212,9 +208,7 @@ class IzhikevichNeuron(base.MemoryModule):
             self.total_spikes += spike.detach().sum()
         
         reset_mask = (self.v >= self.v_peak).detach()
-        # --- ▼ 修正: mypy [arg-type] エラーを修正 (float()キャストを徹底) ▼ ---
         self.v = torch.where(reset_mask, torch.full_like(self.v, float(self.c)), self.v)
-        # --- ▲ 修正 ▲ ---
         self.u = torch.where(reset_mask, self.u + self.d, self.u)
         
         self.v = torch.clamp(self.v, min=-100.0, max=50.0)
@@ -227,9 +221,7 @@ class ProbabilisticLIFNeuron(base.MemoryModule):
     論文 arXiv:2509.26507v1 のアイデアに基づく。
     v2: Implements PLIF by making tau_mem a learnable parameter.
     """
-    # --- ▼ 修正: tau_mem を学習可能なパラメータに変更 ▼ ---
     log_tau_mem: nn.Parameter
-    # --- ▲ 修正 ▲ ---
     
     def __init__(
         self,
@@ -242,10 +234,8 @@ class ProbabilisticLIFNeuron(base.MemoryModule):
         super().__init__()
         self.features = features
         
-        # --- ▼ 修正: tau_mem を学習可能なパラメータに変更 ▼ ---
         initial_log_tau = torch.full((features,), math.log(max(1.1, tau_mem - 1.1)))
         self.log_tau_mem = nn.Parameter(initial_log_tau)
-        # --- ▲ 修正 ▲ ---
         
         self.threshold = threshold
         self.temperature = temperature # 確率計算の温度パラメータ
@@ -277,10 +267,8 @@ class ProbabilisticLIFNeuron(base.MemoryModule):
         if self.mem is None or self.mem.shape != x.shape:
             self.mem = torch.zeros_like(x)
 
-        # --- ▼ 修正: tau_mem を学習可能なパラメータに変更 ▼ ---
         current_tau_mem = torch.exp(self.log_tau_mem) + 1.1
         mem_decay = torch.exp(-1.0 / current_tau_mem)
-        # --- ▲ 修正 ▲ ---
         
         self.mem = self.mem * mem_decay + x
 
@@ -306,7 +294,7 @@ class ProbabilisticLIFNeuron(base.MemoryModule):
 
 class GLIFNeuron(base.MemoryModule):
     """
-    Gated Leaky Integrate-and-Fire (GLIF) ニューロン。
+    Gated Leaky Integrate-and-Fire (GLIF) ニューロン。 (P2.2)
     設計思想.md (セクション3.1, 引用[8]) に基づき、
     膜時定数(tau)を、入力依存の「ゲート」によって
     動的に制御する学習可能なニューロンモデル。
@@ -333,7 +321,7 @@ class GLIFNeuron(base.MemoryModule):
         # (引用[8]のGLIFはリセット機構も学習可能とする)
         self.v_reset = nn.Parameter(torch.full((features,), 0.0)) # 0.0 で初期化
         
-        # 2. 膜時定数(tau)を制御するゲート
+        # 2. 膜時定数(tau)を制御するゲート (P2.2)
         # ゲートの入力次元を gate_input_features に設定
         self.gate_tau_lin = nn.Linear(gate_input_features, features)
         
@@ -363,26 +351,32 @@ class GLIFNeuron(base.MemoryModule):
         if self.mem is None or self.mem.shape != x.shape:
             self.mem = torch.zeros_like(x)
         
-        # --- 1. ゲートの計算 ---
+        # --- 1. ゲートの計算 (P2.2) ---
         # ゲート入力 (x) の次元チェック
         if x.shape[1] != self.gate_tau_lin.in_features:
              # GLIFのゲート入力次元と、ニューロンの入力次元が異なる場合
-             # (例: SimpleSNNで d_model -> hidden_size に射影された場合)
-             # gate_input_features が features (hidden_size) と同じなら x を使う
              if self.gate_tau_lin.in_features == self.features:
                  gate_input = x
              else:
-                 raise ValueError(f"GLIF gate input dim mismatch. Expected {self.gate_tau_lin.in_features} but got {x.shape[1]}")
+                 #
+                 # ゲート入力次元が異なる場合は、入力を射影するか、エラーを出す
+                 # ここでは、入力 (x) をゲート入力次元に射影する (簡易的な実装)
+                 # 本来は専用の射影層を持つべき
+                 if not hasattr(self, 'gate_input_proj'):
+                     self.gate_input_proj = nn.Linear(x.shape[1], self.gate_tau_lin.in_features).to(x.device)
+                 gate_input = self.gate_input_proj(x) # type: ignore[attr-defined]
         else:
              gate_input = x
         
         # 時定数ゲート (mem_decay) を計算
+        # Sigmoidの出力は (0, 1)。1に近いほど記憶が保持される (tau大)
         mem_decay_gate = torch.sigmoid(self.gate_tau_lin(gate_input))
         
         v_reset_gated = self.v_reset 
 
         # --- 2. 膜電位の更新 (LIFダイナミクス) ---
-        self.mem = self.mem * mem_decay_gate + x
+        # ゲートで制御された減衰
+        self.mem = self.mem * mem_decay_gate + (1.0 - mem_decay_gate) * x
         
         # --- 3. スパイク生成 ---
         spike = self.surrogate_function(self.mem - self.base_threshold)
@@ -408,8 +402,8 @@ class TC_LIF(base.MemoryModule):
     - Somatic (体細胞) コンパートメント: 高速なダイナミクス、スパイク生成
     - Dendritic (樹状突起) コンパートメント: 低速なダイナミクス、長期的な文脈の統合
     """
-    tau_s: nn.Parameter # Somatic (体細胞) 膜時定数 (学習可能)
-    tau_d: nn.Parameter # Dendritic (樹状突起) 膜時定数 (学習可能)
+    log_tau_s: nn.Parameter # Somatic (体細胞) 膜時定数 (学習可能)
+    log_tau_d: nn.Parameter # Dendritic (樹状突起) 膜時定数 (学習可能)
     w_ds: nn.Parameter # Dendritic -> Somatic 結合強度
     w_sd: nn.Parameter # Somatic -> Dendritic 結合強度 (フィードバック)
 
@@ -506,16 +500,12 @@ class DualThresholdNeuron(base.MemoryModule):
     量子化エラーと不均一性エラーを削減する。
     v2: Implements PLIF by making tau_mem a learnable parameter.
     """
-    # --- ▼ 修正: tau_mem を学習可能なパラメータに変更 ▼ ---
     log_tau_mem: nn.Parameter
-    # --- ▲ 修正 ▲ ---
     threshold_high: nn.Parameter # T_h (学習可能なしきい値)
     threshold_low: nn.Parameter  # T_l (デュアルしきい値)
     
-    # --- ▼ 修正: mypy [has-type] エラーを修正 (クラスレベル型ヒント) ▼ ---
     spikes: Tensor
-    # --- ▲ 修正 ▲ ---
-
+    
     def __init__(
         self,
         features: int,
@@ -526,9 +516,7 @@ class DualThresholdNeuron(base.MemoryModule):
     ):
         super().__init__()
         self.features = features
-        # --- ▼ 修正: tau_mem を学習可能なパラメータに変更 ▼ ---
         self.log_tau_mem = nn.Parameter(torch.full((features,), math.log(max(1.1, tau_mem - 1.1))))
-        # --- ▲ 修正 ▲ ---
         
         # 引用[6]に基づき、2つのしきい値を学習可能パラメータとする
         self.threshold_high = nn.Parameter(torch.full((features,), threshold_high_init))
@@ -560,34 +548,26 @@ class DualThresholdNeuron(base.MemoryModule):
 
         if self.mem is None or self.mem.shape != x.shape:
             # 引用[6]に従い、膜電位をT_l/2で初期化 (不均一性エラー削減)
-            # --- ▼ 修正: mypy [arg-type] エラーを修正 (full_like -> expand_as) ▼ ---
             self.mem = (self.threshold_low.detach() / 2.0).expand_as(x)
-            # --- ▲ 修正 ▲ ---
 
-        # --- ▼ 修正: tau_mem を学習可能なパラメータに変更 ▼ ---
         current_tau_mem = torch.exp(self.log_tau_mem) + 1.1
         mem_decay = torch.exp(-1.0 / current_tau_mem)
-        # --- ▲ 修正 ▲ ---
         
         # 膜電位の更新
         self.mem = self.mem * mem_decay + x
         
         # スパイク生成 (T_h を使用)
-        # --- ▼ 修正: mypy [has-type] エラーを修正 (v12) ▼ ---
-        # surrogate_function の戻り値が Any のため、spike の型を明示的に cast する
         spike_untyped = self.surrogate_function(self.mem - self.threshold_high)
         spike: Tensor = cast(Tensor, spike_untyped)
         
         current_spikes_detached: Tensor = spike.detach()
         
-        # `self.spikes` バッファには統計用の値を代入 (他のニューロンと統一)
         if current_spikes_detached.ndim > 1:
             self.spikes = current_spikes_detached.mean(dim=0)
         else:
             self.spikes = current_spikes_detached
 
         with torch.no_grad():
-            # 型が明示されたローカル変数を使用
             self.total_spikes += current_spikes_detached.sum() # type: ignore[has-type]
         
         # リセット (デュアルしきい値を使用)
@@ -596,15 +576,12 @@ class DualThresholdNeuron(base.MemoryModule):
         # S=0 の場合: V[t+1] = V[t]
         # ただし、 V[t+1] < T_l の場合は、V[t+1] = V_reset (または T_l/2) にリセット
         
-        # 型が明示されたローカル変数を使用
         reset_mem = self.mem - current_spikes_detached * self.threshold_high
         
         # T_l を下回ったニューロンを検出
         below_low_threshold = reset_mem < self.threshold_low
         
-        # 型が明示されたローカル変数を使用
         reset_condition = (current_spikes_detached > 0.5) | below_low_threshold
-        # --- ▲ 修正 ▲ ---
         
         self.mem = torch.where(
             reset_condition,

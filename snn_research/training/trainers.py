@@ -147,7 +147,7 @@ class BreakthroughTrainer:
         
         return_full_hiddens_flag = isinstance(self.criterion, SelfSupervisedLoss)
         
-        # (SNN Cutoff のロジックは変更なし)
+        # (SNN Cutoff のロジック)
         if not is_train and not return_full_hiddens_flag:
             B, S = input_ids.shape
             model_to_run = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
@@ -160,7 +160,10 @@ class BreakthroughTrainer:
             if isinstance(model_to_run, SNNCore):
                 snn_core_model = model_to_run_casted.model
                 if hasattr(snn_core_model, 'time_steps'):
-                    total_time_steps = cast(int, snn_core_model.time_steps)
+                    time_steps_val = getattr(snn_core_model, 'time_steps')
+                    if isinstance(time_steps_val, int):
+                        total_time_steps = time_steps_val
+                
                 output_layer: Optional[nn.Linear] = None
                 if hasattr(snn_core_model, 'output_projection') and isinstance(snn_core_model.output_projection, nn.Linear):
                     output_layer = snn_core_model.output_projection
@@ -174,30 +177,34 @@ class BreakthroughTrainer:
                 else:
                     logger.warning("Could not find output layer. Falling back to vocab_size from config.")
                     num_classes = cast(int, OmegaConf.select(model_to_run_casted.config, "vocab_size", default=10))
+
             elif hasattr(model_to_run, 'time_steps'):
-                total_time_steps = cast(int, model_to_run_casted.time_steps)
+                time_steps_val = getattr(model_to_run_casted, 'time_steps')
+                if isinstance(time_steps_val, int):
+                    total_time_steps = time_steps_val
             
             min_steps = int(total_time_steps * self.cutoff_min_steps_ratio)
-            sum_logits = torch.zeros(B, S, num_classes, device=self.device)
             
             with torch.no_grad():
-                outputs = self.model(input_ids, return_spikes=True, return_full_mems=True, return_full_hiddens=return_full_hiddens_flag)
-                logits, spikes, mem = outputs
+                # --- ▼ 修正: [no-redef] エラー解消 ▼ ---
+                eval_outputs = self.model(input_ids, return_spikes=True, return_full_mems=True, return_full_hiddens=return_full_hiddens_flag)
+                eval_logits, eval_spikes, eval_mem = eval_outputs
+                # --- ▲ 修正 ▲ ---
                 
-                if logits.ndim == 3:
-                    probs = F.softmax(logits.view(-1, logits.size(-1)), dim=-1)
+                if eval_logits.ndim == 3:
+                    probs = F.softmax(eval_logits.view(-1, eval_logits.size(-1)), dim=-1)
                     confidences, _ = torch.max(probs, dim=-1)
                     estimated_steps = (1.0 - confidences) * (total_time_steps - min_steps) + min_steps
                     estimated_steps[confidences > self.cutoff_threshold] = float(min_steps)
                     avg_cutoff_steps = estimated_steps.mean().item()
                 else:
-                    probs = F.softmax(logits, dim=-1)
+                    probs = F.softmax(eval_logits, dim=-1)
                     confidences, _ = torch.max(probs, dim=-1)
                     estimated_steps = (1.0 - confidences) * (total_time_steps - min_steps) + min_steps
                     estimated_steps[confidences > self.cutoff_threshold] = float(min_steps)
                     avg_cutoff_steps = estimated_steps.mean().item()
                 
-                loss_dict = self.criterion(logits, target_ids, spikes, mem, self.model)
+                loss_dict = self.criterion(eval_logits, target_ids, eval_spikes, eval_mem, self.model)
                 loss_dict['avg_cutoff_steps'] = torch.tensor(avg_cutoff_steps, device=self.device)
         
         else: # 訓練時 または TCL/full_hiddens の場合 (Cutoffなし)
@@ -206,13 +213,16 @@ class BreakthroughTrainer:
                     outputs = self.model(input_ids, return_spikes=True, return_full_mems=True, return_full_hiddens=return_full_hiddens_flag)
                     logits_or_hiddens, spikes, mem = outputs
                     
-                    logits: Optional[torch.Tensor]
+                    # --- ▼ 修正: [no-redef] エラー解消 ▼ ---
+                    logits_for_acc: Optional[torch.Tensor]
+                    # --- ▲ 修正 ▲ ---
+                    
                     if return_full_hiddens_flag:
                         loss_dict = self.criterion(logits_or_hiddens, target_ids, spikes, mem, self.model)
-                        logits = None 
+                        logits_for_acc = None 
                     else:
-                        logits = logits_or_hiddens
-                        loss_dict = self.criterion(logits, target_ids, spikes, mem, self.model)
+                        logits_for_acc = logits_or_hiddens
+                        loss_dict = self.criterion(logits_for_acc, target_ids, spikes, mem, self.model)
             
             for hook in hooks:
                 hook.remove()
@@ -232,26 +242,23 @@ class BreakthroughTrainer:
                         torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
                     self.optimizer.step()
                 
-                # --- ▼ 改善 (v8): AdaptiveNeuronSelector を呼び出す ▼ ---
                 if self.neuron_selector:
                     try:
                         switched, reason = self.neuron_selector.step(loss_dict['total'].item())
                         if switched:
                             logger.info(f"NeuronSelector triggered switch: {reason}")
-                            # オプティマイザのパラメータを新しいモデルの状態にリセット
                             self.optimizer.param_groups[0]['params'] = list(self.model.parameters())
                             logger.info("Optimizer parameters updated for new neuron model.")
                     except Exception as e:
                         logger.error(f"Error during AdaptiveNeuronSelector step: {e}", exc_info=True)
-                # --- ▲ 改善 (v8) ▲ ---
 
                 if self.meta_cognitive_snn:
                     end_time = time.time()
                     computation_time = end_time - start_time
                     accuracy_val = 0.0
-                    if logits is not None:
+                    if logits_for_acc is not None:
                         with torch.no_grad():
-                            preds = torch.argmax(logits, dim=-1)
+                            preds = torch.argmax(logits_for_acc, dim=-1)
                             ignore_idx: int = -100
                             if hasattr(self.criterion, 'ce_loss_fn') and hasattr(self.criterion.ce_loss_fn, 'ignore_index'):
                                 ignore_idx = self.criterion.ce_loss_fn.ignore_index
@@ -270,9 +277,9 @@ class BreakthroughTrainer:
             if not is_train:
                 with torch.no_grad():
                     accuracy_tensor = torch.tensor(0.0, device=self.device)
-                    if logits is not None:
+                    if logits_for_acc is not None:
                         if 'accuracy' not in loss_dict:
-                            preds = torch.argmax(logits, dim=-1)
+                            preds = torch.argmax(logits_for_acc, dim=-1)
                             ignore_idx = -100
                             if hasattr(self.criterion, 'ce_loss_fn') and hasattr(self.criterion.ce_loss_fn, 'ignore_index'):
                                 ignore_idx = self.criterion.ce_loss_fn.ignore_index
@@ -290,17 +297,23 @@ class BreakthroughTrainer:
             
             if is_train:
                  model_to_run = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
-                 total_time_steps = 16
-                 model_to_run_casted = cast(Any, model_to_run)
-                 if hasattr(model_to_run, 'model') and hasattr(model_to_run_casted.model, 'time_steps'):
-                     total_time_steps = cast(int, model_to_run_casted.model.time_steps)
+                 # --- ▼ 修正: [assignment] エラー解消 (型チェック強化) ▼ ---
+                 total_time_steps: int = 16 # Default
+                 
+                 time_steps_val: Any = None
+                 if hasattr(model_to_run, 'model') and hasattr(model_to_run.model, 'time_steps'):
+                     time_steps_val = getattr(model_to_run.model, 'time_steps')
                  elif hasattr(model_to_run, 'time_steps'):
-                     total_time_steps = cast(int, model_to_run_casted.time_steps)
+                     time_steps_val = getattr(model_to_run, 'time_steps')
+                 
+                 if isinstance(time_steps_val, int):
+                    total_time_steps = time_steps_val
+                 # --- ▲ 修正 ▲ ---
                  loss_dict['avg_cutoff_steps'] = torch.tensor(float(total_time_steps), device=self.device)
+
 
         return {k: v.item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}
 
-    # ... (train_epoch, evaluate, save/load_checkpoint, _compute_ewc_fisher_matrix は変更なし) ...
     def train_epoch(self, dataloader: DataLoader, epoch: int) -> Dict[str, float]:
         total_metrics: Dict[str, float] = collections.defaultdict(float)
         num_batches = len(dataloader)
@@ -461,14 +474,10 @@ class BreakthroughTrainer:
             print(f"✅ EWC Fisher matrix and optimal parameters for '{task_name}' saved to '{ewc_data_path}'.")
 
 class DistillationTrainer(BreakthroughTrainer):
-    # (DistillationTrainer の _run_step は変更なし)
     def _run_step(self, batch: Tuple[torch.Tensor, ...], is_train: bool) -> Dict[str, Any]:
-        # 評価時はBreakthroughTrainerのロジック（SNN Cutoff含む）を使用
         if not is_train:
-             # BreakthroughTrainer._run_step を呼び出す
-             return super()._run_step(batch, is_train=False)
+             return super()._run_step(batch, is_train=False) # type: ignore[internal-error]
 
-        # 以下は訓練時 (is_train=True) のみ
         functional.reset_net(self.model)
         self.model.train()
             
@@ -492,7 +501,6 @@ class DistillationTrainer(BreakthroughTrainer):
         self.scaler.step(self.optimizer)
         self.scaler.update()
         
-        # --- ▼ 改善 (v8): AdaptiveNeuronSelector を呼び出す ▼ ---
         if self.neuron_selector:
             try:
                 switched, reason = self.neuron_selector.step(loss_dict['total'].item())
@@ -502,7 +510,6 @@ class DistillationTrainer(BreakthroughTrainer):
                     logger.info("Optimizer parameters updated for new neuron model.")
             except Exception as e:
                 logger.error(f"Error during AdaptiveNeuronSelector step: {e}", exc_info=True)
-        # --- ▲ 改善 (v8) ▲ ---
 
         with torch.no_grad():
             preds = torch.argmax(student_logits, dim=-1)
@@ -518,19 +525,23 @@ class DistillationTrainer(BreakthroughTrainer):
             loss_dict['accuracy'] = accuracy
             
             model_to_run = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
-            total_time_steps = 16
-            model_to_run_casted = cast(Any, model_to_run)
-            if hasattr(model_to_run, 'model') and hasattr(model_to_run_casted.model, 'time_steps'):
-                total_time_steps = cast(int, model_to_run_casted.model.time_steps)
+            # --- ▼ 修正: [assignment] エラー解消 (型チェック強化) ▼ ---
+            total_time_steps: int = 16 # Default
+            
+            time_steps_val: Any = None
+            if hasattr(model_to_run, 'model') and hasattr(model_to_run.model, 'time_steps'):
+                time_steps_val = getattr(model_to_run.model, 'time_steps')
             elif hasattr(model_to_run, 'time_steps'):
-                total_time_steps = cast(int, model_to_run_casted.time_steps)
+                time_steps_val = getattr(model_to_run, 'time_steps')
+            
+            if isinstance(time_steps_val, int):
+                total_time_steps = time_steps_val
+            # --- ▲ 修正 ▲ ---
             loss_dict['avg_cutoff_steps'] = torch.tensor(float(total_time_steps), device=self.device)
 
         
         return {k: v.cpu().item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}
 
-# (SelfSupervisedTrainer, PhysicsInformedTrainer, ProbabilisticEnsembleTrainer, PlannerTrainer, BPTTTrainer, ParticleFilterTrainer は変更なし)
-# ... (省略) ...
 class SelfSupervisedTrainer(BreakthroughTrainer):
     def _run_step(self, batch: Tuple[torch.Tensor, ...], is_train: bool) -> Dict[str, Any]:
         functional.reset_net(self.model)
@@ -565,7 +576,6 @@ class SelfSupervisedTrainer(BreakthroughTrainer):
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
                 self.optimizer.step()
             
-            # --- ▼ 改善 (v8): AdaptiveNeuronSelector を呼び出す ▼ ---
             if self.neuron_selector:
                 try:
                     switched, reason = self.neuron_selector.step(loss_dict['total'].item())
@@ -575,26 +585,29 @@ class SelfSupervisedTrainer(BreakthroughTrainer):
                         logger.info("Optimizer parameters updated for new neuron model.")
                 except Exception as e:
                     logger.error(f"Error during AdaptiveNeuronSelector step: {e}", exc_info=True)
-            # --- ▲ 改善 (v8) ▲ ---
 
         loss_dict['accuracy'] = torch.tensor(0.0, device=self.device) 
         
         model_to_run = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
-        total_time_steps = 16
-        model_to_run_casted = cast(Any, model_to_run)
-        if hasattr(model_to_run, 'model') and hasattr(model_to_run_casted.model, 'time_steps'):
-            total_time_steps = cast(int, model_to_run_casted.model.time_steps)
+        # --- ▼ 修正: [assignment] エラー解消 (型チェック強化) ▼ ---
+        total_time_steps: int = 16 # Default
+        
+        time_steps_val: Any = None
+        if hasattr(model_to_run, 'model') and hasattr(model_to_run.model, 'time_steps'):
+            time_steps_val = getattr(model_to_run.model, 'time_steps')
         elif hasattr(model_to_run, 'time_steps'):
-            total_time_steps = cast(int, model_to_run_casted.time_steps)
+            time_steps_val = getattr(model_to_run, 'time_steps')
+        
+        if isinstance(time_steps_val, int):
+            total_time_steps = time_steps_val
+        # --- ▲ 修正 ▲ ---
         loss_dict['avg_cutoff_steps'] = torch.tensor(float(total_time_steps), device=self.device)
 
 
         return {k: v.item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}
 
 class PhysicsInformedTrainer(BreakthroughTrainer):
-    # (v24修正: _run_step が is_train を受け取るように)
     def _run_step(self, batch: Tuple[torch.Tensor, ...], is_train: bool) -> Dict[str, Any]:
-        # (v24修正: is_train=True の場合、neuron_selectorを呼び出す)
         metrics = super()._run_step(batch, is_train=is_train)
         if is_train and self.neuron_selector:
             try:
@@ -632,7 +645,7 @@ class ProbabilisticEnsembleTrainer(BreakthroughTrainer):
         
         ensemble_logits_tensor = torch.stack(ensemble_logits)
         
-        assert isinstance(self.criterion, ProbabilisticEnsembleLoss) # (v24修正: assert)
+        assert isinstance(self.criterion, ProbabilisticEnsembleLoss)
         loss_dict = self.criterion(ensemble_logits_tensor, target_ids, torch.tensor(0.0), torch.tensor(0.0), self.model)
 
         if is_train:
@@ -650,7 +663,6 @@ class ProbabilisticEnsembleTrainer(BreakthroughTrainer):
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
                 self.optimizer.step()
             
-            # --- ▼ 改善 (v8): AdaptiveNeuronSelector を呼び出す ▼ ---
             if self.neuron_selector:
                 try:
                     switched, reason = self.neuron_selector.step(loss_dict['total'].item())
@@ -660,7 +672,6 @@ class ProbabilisticEnsembleTrainer(BreakthroughTrainer):
                         logger.info("Optimizer parameters updated for new neuron model.")
                 except Exception as e:
                     logger.error(f"Error during AdaptiveNeuronSelector step: {e}", exc_info=True)
-            # --- ▲ 改善 (v8) ▲ ---
 
         with torch.no_grad():
             mean_logits = ensemble_logits_tensor.mean(dim=0)
@@ -674,19 +685,22 @@ class ProbabilisticEnsembleTrainer(BreakthroughTrainer):
             loss_dict['accuracy'] = accuracy
         
         model_to_run = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
-        total_time_steps = 16
-        model_to_run_casted = cast(Any, model_to_run)
-        if hasattr(model_to_run, 'model') and hasattr(model_to_run_casted.model, 'time_steps'):
-            total_time_steps = cast(int, model_to_run_casted.model.time_steps)
+        total_time_steps: int = 16 # Default
+        
+        time_steps_val: Any = None
+        if hasattr(model_to_run, 'model') and hasattr(model_to_run.model, 'time_steps'):
+            time_steps_val = getattr(model_to_run.model, 'time_steps')
         elif hasattr(model_to_run, 'time_steps'):
-            total_time_steps = cast(int, model_to_run_casted.time_steps)
+            time_steps_val = getattr(model_to_run, 'time_steps')
+        
+        if isinstance(time_steps_val, int):
+            total_time_steps = time_steps_val
         loss_dict['avg_cutoff_steps'] = torch.tensor(float(total_time_steps), device=self.device)
 
 
         return {k: v.item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}
 
 class PlannerTrainer:
-    # (変更なし)
     def __init__(self, model: nn.Module, optimizer: torch.optim.Optimizer, criterion: nn.Module, device: str):
         self.model = model.to(device)
         self.optimizer = optimizer
@@ -714,7 +728,6 @@ class PlannerTrainer:
             progress_bar.set_postfix({"loss": loss.item()})
             
 class BPTTTrainer:
-    # (変更なし)
     def __init__(self, model: nn.Module, config: DictConfig):
         self.model = model
         self.config = config
@@ -747,7 +760,6 @@ class BPTTTrainer:
         return loss.item()
 
 class ParticleFilterTrainer:
-    # (変更なし)
     def __init__(self, base_model: BioSNN, config: Dict[str, Any], device: str):
         self.base_model = base_model.to(device)
         self.device = device
@@ -803,3 +815,4 @@ class ParticleFilterTrainer:
         
         best_particle_loss: float = -log_likelihoods_tensor.max().item()
         return best_particle_loss
+

@@ -13,6 +13,7 @@
 #
 # 修正 (v4): HPO (run_hpo.py) から呼び出されるように、--override_config 引数を
 #             受け取れるように修正。
+# 修正 (v5): HPO連携時の設定読み込み順序と、AttributeErrorを修正。
 
 import argparse
 import asyncio
@@ -46,15 +47,30 @@ async def main() -> None:
     # --- ▲ 修正 ▲ ---
     args = parser.parse_args()
 
-    # DIコンテナのインスタンス化
+    # --- ▼ 修正: HPO連携のため、設定のロード順序を修正 ▼ ---
+
+    # 1. DIコンテナのインスタンス化 (空の設定で)
     container = TrainingContainer()
-    container.config.from_yaml(args.config)
-    container.config.from_yaml(args.model_config)
+    cfg: DictConfig = container.config
+
+    # 2. 基本設定をロード
+    cfg.from_yaml(args.config)
+
+    # 3. モデル設定をロード (AttributeError 修正)
+    #    cifar10_spikingcnn_config.yaml には 'model:' キーがないため、
+    #    'model' ノード配下にマージする
+    try:
+        model_cfg_obj = OmegaConf.load(args.model_config)
+        # cfg.model に model_cfg_obj の内容をマージする
+        OmegaConf.update(cfg, 'model', model_cfg_obj, merge=True)
+    except Exception as e:
+        print(f"Warning: Could not load or merge model config '{args.model_config}': {e}")
+
+    # 4. コマンドライン引数からエポック数を上書き
+    #    (override_config よりも先に適用)
+    cfg.training.epochs.from_value(args.epochs)
     
-    # コマンドライン引数からエポック数を上書き
-    container.config.training.epochs.from_value(args.epochs)
-    
-    # --- ▼ 修正: HPO連携のため --override_config を適用 ▼ ---
+    # 5. HPOからの --override_config を適用
     if args.override_config:
         print(f"Applying {len(args.override_config)} overrides from command line...")
         for override in args.override_config:
@@ -75,7 +91,8 @@ async def main() -> None:
                         else:
                             value = value_str  # 文字列として保持
 
-                OmegaConf.update(container.config(), keys, value, merge=True)
+                # cfg (DIコンテナのルート設定) に対して上書き
+                OmegaConf.update(cfg, keys, value, merge=True)
                 print(f"  - Applied: {keys} = {value}")
             except Exception as e:
                 print(f"Error applying override '{override}': {e}")
@@ -84,6 +101,7 @@ async def main() -> None:
     # DIコンテナから必要なコンポーネントを正しい順序で取得・構築
     device = container.device()
     # vocab_sizeは画像タスクではクラス数として使用
+    # (cfg.model が正しく設定されたため、SNNCoreの初期化が成功するはず)
     student_model = container.snn_model(vocab_size=10).to(device)
     optimizer = container.optimizer(params=student_model.parameters())
     scheduler = container.scheduler(optimizer=optimizer) if container.config.training.gradient_based.use_scheduler() else None

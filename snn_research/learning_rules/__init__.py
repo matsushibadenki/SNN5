@@ -2,24 +2,43 @@
 # (更新)
 # - ProbabilisticHebbian を追加
 # - CausalTraceCreditAssignmentEnhancedV2 に対応
+#
+# 改善 (v2):
+# - TripletSTDP を追加
 
 from typing import Dict, Any
 from .base_rule import BioLearningRule
-from .stdp import STDP
+# --- ▼ 修正 (v2) ▼ ---
+from .stdp import STDP, TripletSTDP
+# --- ▲ 修正 (v2) ▲ ---
 from .reward_modulated_stdp import RewardModulatedSTDP
-# --- ▼ 修正 ▼ ---
-from .causal_trace import CausalTraceCreditAssignmentEnhancedV2 # クラス名を V2 に変更
-# --- ▲ 修正 ▲ ---
-from .probabilistic_hebbian import ProbabilisticHebbian # 新しいルールをインポート
+from .causal_trace import CausalTraceCreditAssignmentEnhancedV2
+from .probabilistic_hebbian import ProbabilisticHebbian
 
 def get_bio_learning_rule(name: str, params: Dict[str, Any]) -> BioLearningRule:
     """指定された名前に基づいて生物学的学習ルールオブジェクトを生成して返す。"""
     if name == "STDP":
         return STDP(**params.get('stdp', {}))
+    # --- ▼ 修正 (v2): TripletSTDP を追加 ▼ ---
+    elif name == "TRIPLET_STDP":
+        # TripletSTDP は stdp と triplet_stdp の両方のパラメータ辞書をマージして受け取る
+        stdp_params = params.get('stdp', {})
+        triplet_params = params.get('triplet_stdp', {})
+        
+        # パラメータ名を TripletSTDP の __init__ に合わせる
+        combined_params = {
+            "learning_rate": stdp_params.get('learning_rate', 0.005),
+            "a_plus_pair": stdp_params.get('a_plus', 1.0),
+            "a_minus_pair": stdp_params.get('a_minus', 1.0),
+            "tau_trace_pair": stdp_params.get('tau_trace', 20.0),
+            "a_plus_triplet": triplet_params.get('a_plus_triplet', 0.01),
+            "a_minus_triplet": triplet_params.get('a_minus_triplet', 0.001),
+            "tau_trace_triplet": triplet_params.get('tau_trace_triplet', 50.0),
+        }
+        return TripletSTDP(**combined_params)
+    # --- ▲ 修正 (v2) ▲ ---
     elif name == "REWARD_MODULATED_STDP":
         return RewardModulatedSTDP(**params.get('reward_modulated_stdp', {}))
-    # --- ▼ 修正 ▼ ---
-    # CAUSAL_TRACE または CAUSAL_TRACE_ENHANCED の場合、V2 を使用するように変更
     elif name == "CAUSAL_TRACE" or name == "CAUSAL_TRACE_ENHANCED" or name == "CAUSAL_TRACE_V2":
         # V1 (Enhanced) と V2 のパラメータ取得ロジックはほぼ同じだが、
         # V2固有のパラメータも考慮する
@@ -49,17 +68,18 @@ def get_bio_learning_rule(name: str, params: Dict[str, Any]) -> BioLearningRule:
             raise ValueError(f"Missing required parameters for CausalTraceV2: {', '.join(missing)}")
 
         return CausalTraceCreditAssignmentEnhancedV2(**combined_params) # クラス名を V2 に変更
-    # --- ▲ 修正 ▲ ---
     elif name == "PROBABILISTIC_HEBBIAN": # 新しいルールを追加
         return ProbabilisticHebbian(**params.get('probabilistic_hebbian', {}))
     else:
         raise ValueError(f"未知の学習ルール名です: {name}")
 
 __all__ = [
-    "BioLearningRule", "STDP", "RewardModulatedSTDP",
-    # --- ▼ 修正 ▼ ---
-    "CausalTraceCreditAssignmentEnhancedV2", # クラス名を V2 に変更
-    # --- ▲ 修正 ▲ ---
-    "ProbabilisticHebbian", # 公開リストに追加
+    "BioLearningRule", "STDP", 
+    # --- ▼ 修正 (v2) ▼ ---
+    "TripletSTDP",
+    # --- ▲ 修正 (v2) ▲ ---
+    "RewardModulatedSTDP",
+    "CausalTraceCreditAssignmentEnhancedV2",
+    "ProbabilisticHebbian",
     "get_bio_learning_rule"
 ]

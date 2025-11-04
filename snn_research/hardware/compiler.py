@@ -19,6 +19,9 @@
 # 改善 (v9):
 # - ロードマップ P4.2 / P4.3 に基づき、Lava および sPyNNaker への
 #   エクスポート用メソッドスタブを追加。 (「実装があまい」点の解消)
+#
+# 修正 (v10):
+# - mypy [name-defined] logger をインポート。
 
 from typing import Dict, Any, List, cast, Union, Optional, Type, Tuple
 import yaml
@@ -42,6 +45,9 @@ from snn_research.hardware.profiles import get_hardware_profile
 from snn_research.learning_rules.base_rule import BioLearningRule
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# --- ▼ 修正 (v10): logger を定義 ▼ ---
+logger = logging.getLogger(__name__)
+# --- ▲ 修正 (v10) ▲ ---
 
 
 class NeuromorphicCompiler:
@@ -498,7 +504,7 @@ from pyNN.utility.plotting import Figure, Panel
         """
         コンパイル済み設定に基づき、ハードウェア上での性能をシミュレートする。
         """
-        print(f"\n--- ⚡️ ハードウェアシミュレーション開始 ({self.hardware_profile['name']}) ---")
+        logger.info(f"\n--- ⚡️ ハードウェアシミュレーション開始 ({self.hardware_profile['name']}) ---")
 
         if not os.path.exists(compiled_config_path):
             raise FileNotFoundError(f"コンパイル済み設定ファイルが見つかりません: {compiled_config_path}")

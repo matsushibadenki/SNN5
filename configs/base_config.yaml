@@ -5,6 +5,9 @@
 # 改善点(v1): 知識蒸留の学習率を調整し、損失の重みを変更。
 # 改善点(v2): probabilistic_neuron の設定を追加。
 # 改善点(v3): SNN5改善レポートに基づき、時空間プルーニングとSpQuant量子化の設定を追加。
+#
+# 改善 (v4):
+# - TripletSTDP のパラメータ設定を追加。
 
 # 共通設定
 seed: 42
@@ -102,22 +105,26 @@ training:
       learning_rate: 0.005
       a_plus: 1.0
       a_minus: 1.0
+    # --- ▼ 改善 (v4): TripletSTDP パラメータを追加 ▼ ---
+    triplet_stdp:
+      tau_trace_triplet: 50.0 # トリプレット用の時定数
+      a_plus_triplet: 0.01    # LTP (post-pre-post) の係数
+      a_minus_triplet: 0.001  # LTD (pre-post-pre) の係数
+    # --- ▲ 改善 (v4) ▲ ---
     reward_modulated_stdp:
       tau_eligibility: 100.0
       learning_rate: 0.01
     causal_trace:
       tau_eligibility: 150.0
       learning_rate: 0.01
-    # --- ▼ 修正 ▼ ---
-    probabilistic_neuron: # 確率的ニューロン用の新しいセクション
-      tau_mem: 20.0       # デフォルト値
-      threshold: 1.0      # デフォルト値
-      temperature: 0.5    # デフォルト値
-      noise_intensity: 0.0 # デフォルト値
-    # --- ▲ 修正 ▲ ---
-    probabilistic_hebbian: # 確率的ヘブ学習用の新しいセクション
+    probabilistic_neuron:
+      tau_mem: 20.0
+      threshold: 1.0
+      temperature: 0.5
+      noise_intensity: 0.0
+    probabilistic_hebbian:
       learning_rate: 0.002
-      weight_decay: 0.00005 # 重み減衰
+      weight_decay: 0.00005
 
   self_supervised:
     learning_rate: 0.0008
@@ -126,12 +133,12 @@ training:
     warmup_epochs: 1
     use_amp: true
     loss:
-      prediction_weight: 0.0     # TCL導入のため、従来の損失の重みを0に設定
+      prediction_weight: 0.0
       spike_reg_weight: 0.01
       sparsity_reg_weight: 0.0
       mem_reg_weight: 0.0000001
-      tcl_weight: 1.0            # Temporal Contrastive Lossの重み
-      tcl_temperature: 0.1       # TCLの温度パラメータ
+      tcl_weight: 1.0
+      tcl_temperature: 0.1
 
   physics_informed:
     learning_rate: 0.0005

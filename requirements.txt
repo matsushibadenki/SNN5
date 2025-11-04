@@ -27,3 +27,4 @@ requests
 beautifulsoup4
 typer==0.16.0
 PyYAML
+h5py

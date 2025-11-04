@@ -32,6 +32,10 @@
 # - mypy [operator] (Tensor not callable) エラーを解消するため、
 #   model_to_compile._analyze_model_structure への誤った呼び出しを
 #   self._analyze_model_structure に修正。
+#
+# 修正 (v13):
+# - mypy [syntax] (Unmatched '}') エラーを解消するため、
+#   ファイル末尾の余分な '}' を削除。
 
 from typing import Dict, Any, List, cast, Union, Optional, Type, Tuple
 import yaml
@@ -752,5 +756,3 @@ class NeuromorphicCompiler:
         }
         print("--- ✅ シミュレーション完了 ---")
         return report
-
-}

@@ -3,17 +3,6 @@
 # Title: 知識蒸留実行スクリプト
 # Description: KnowledgeDistillationManagerを使用して、知識蒸留プロセスを開始します。
 #              設定ファイルとコマンドライン引数からパラメータを読み込みます。
-#              mypyエラー修正: ContainerをTrainingContainerに修正。
-# 改善点: argparseを追加し、asyncio.runで実行するように修正。
-# 改善点(snn_4_ann_parity_plan):
-# - ANN教師モデルとして、AutoModelForCausalLMの代わりに具体的なANNBaselineModelを
-#   インスタンス化するように修正し、より管理された蒸留プロセスを実現。
-# 改善点(v2): torchvisionのモデルを教師として使用できるようにし、画像データセットに対応。
-# 改善点(v3): エポック数を増やし、学習を促進。
-#
-# 修正 (v4): HPO (run_hpo.py) から呼び出されるように、--override_config 引数を
-#             受け取れるように修正。
-# 修正 (v5): HPO連携時の設定読み込み順序と、AttributeErrorを修正。
 #
 # 修正 (v6): HPO連携時の設定読み込みと適用のロジックを dependency-injector に
 #             合わせて修正。OmegaConf.update の誤用を修正。
@@ -23,10 +12,13 @@ import asyncio
 import torch
 import torchvision.models as models  # type: ignore[import-untyped]
 from torch.utils.data import DataLoader
-# --- ▼ 修正: HPO連携のためインポート ▼ ---
 from omegaconf import OmegaConf, DictConfig
 from typing import Any, List, Optional
-# --- ▲ 修正 ▲ ---
+import sys # sysをインポート
+
+# プロジェクトルートをPythonパスに追加 (app.containersをインポートするため)
+from pathlib import Path
+sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 from app.containers import TrainingContainer
 from snn_research.distillation.knowledge_distillation_manager import KnowledgeDistillationManager
@@ -40,14 +32,12 @@ async def main() -> None:
     parser.add_argument("--task", type=str, default="cifar10", help="The benchmark task to distill.")
     parser.add_argument("--teacher_model", type=str, default="resnet18", help="The torchvision teacher model to use.")
     parser.add_argument("--epochs", type=int, default=15, help="Number of distillation epochs.")
-    # --- ▼ 修正: HPO連携のため --override_config を追加 ▼ ---
     parser.add_argument(
         "--override_config",
         type=str,
         action='append',
         help="Override config (e.g., 'training.epochs=5')"
     )
-    # --- ▲ 修正 ▲ ---
     args = parser.parse_args()
 
     # --- ▼ 修正: HPO連携のため、設定のロード順序を修正 ▼ ---
@@ -64,8 +54,8 @@ async def main() -> None:
     try:
         # モデル設定を辞書としてロード
         model_cfg_dict = OmegaConf.to_container(OmegaConf.load(args.model_config), resolve=True)
-        # 'model' キーでラップしてDIコンテナの設定にマージ
         if isinstance(model_cfg_dict, dict):
+            # 'model' キーでラップしてDIコンテナの設定にマージ
             container.config.from_dict({'model': model_cfg_dict})
         else:
             raise TypeError(f"Model config loaded from {args.model_config} is not a dictionary.")
@@ -175,6 +165,7 @@ async def main() -> None:
         epochs=container.config.training.epochs(), # 設定ファイルからエポック数を取得
         model_id=f"{args.task}_distilled_from_{args.teacher_model}",
         task_description=f"An expert SNN for {args.task}, distilled from {args.teacher_model}.",
+        # 修正: model.to_dict() ではなく、コンテナから辞書を取得
         student_config=container.config.model.to_dict()
     )
 

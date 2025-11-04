@@ -5,21 +5,24 @@
 #
 # 改善 (v2):
 # - TripletSTDP を追加
+#
+# 改善 (v3):
+# - BCMLearningRule を追加
 
 from typing import Dict, Any
 from .base_rule import BioLearningRule
-# --- ▼ 修正 (v2) ▼ ---
 from .stdp import STDP, TripletSTDP
-# --- ▲ 修正 (v2) ▲ ---
 from .reward_modulated_stdp import RewardModulatedSTDP
 from .causal_trace import CausalTraceCreditAssignmentEnhancedV2
 from .probabilistic_hebbian import ProbabilisticHebbian
+# --- ▼ 修正 (v3) ▼ ---
+from .bcm_rule import BCMLearningRule
+# --- ▲ 修正 (v3) ▲ ---
 
 def get_bio_learning_rule(name: str, params: Dict[str, Any]) -> BioLearningRule:
     """指定された名前に基づいて生物学的学習ルールオブジェクトを生成して返す。"""
     if name == "STDP":
         return STDP(**params.get('stdp', {}))
-    # --- ▼ 修正 (v2): TripletSTDP を追加 ▼ ---
     elif name == "TRIPLET_STDP":
         # TripletSTDP は stdp と triplet_stdp の両方のパラメータ辞書をマージして受け取る
         stdp_params = params.get('stdp', {})
@@ -36,7 +39,10 @@ def get_bio_learning_rule(name: str, params: Dict[str, Any]) -> BioLearningRule:
             "tau_trace_triplet": triplet_params.get('tau_trace_triplet', 50.0),
         }
         return TripletSTDP(**combined_params)
-    # --- ▲ 修正 (v2) ▲ ---
+    # --- ▼ 修正 (v3) ▼ ---
+    elif name == "BCM":
+        return BCMLearningRule(**params.get('bcm', {}))
+    # --- ▲ 修正 (v3) ▲ ---
     elif name == "REWARD_MODULATED_STDP":
         return RewardModulatedSTDP(**params.get('reward_modulated_stdp', {}))
     elif name == "CAUSAL_TRACE" or name == "CAUSAL_TRACE_ENHANCED" or name == "CAUSAL_TRACE_V2":
@@ -75,9 +81,10 @@ def get_bio_learning_rule(name: str, params: Dict[str, Any]) -> BioLearningRule:
 
 __all__ = [
     "BioLearningRule", "STDP", 
-    # --- ▼ 修正 (v2) ▼ ---
     "TripletSTDP",
-    # --- ▲ 修正 (v2) ▲ ---
+    # --- ▼ 修正 (v3) ▼ ---
+    "BCMLearningRule",
+    # --- ▲ 修正 (v3) ▲ ---
     "RewardModulatedSTDP",
     "CausalTraceCreditAssignmentEnhancedV2",
     "ProbabilisticHebbian",

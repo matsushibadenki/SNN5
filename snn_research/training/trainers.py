@@ -148,6 +148,12 @@ class BreakthroughTrainer:
         return_full_hiddens_flag = isinstance(self.criterion, SelfSupervisedLoss)
         
         # (SNN Cutoff のロジック)
+        # --- ▼ 修正: [no-redef] [assignment] エラー解消のための変数スコープ修正 ▼ ---
+        total_time_steps: int = 16
+        num_classes: int = 10
+        time_steps_val: Any = None
+        # --- ▲ 修正 ▲ ---
+
         if not is_train and not return_full_hiddens_flag:
             B, S = input_ids.shape
             model_to_run = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
@@ -160,7 +166,7 @@ class BreakthroughTrainer:
             if isinstance(model_to_run, SNNCore):
                 snn_core_model = model_to_run_casted.model
                 if hasattr(snn_core_model, 'time_steps'):
-                    time_steps_val = getattr(snn_core_model, 'time_steps')
+                    time_steps_val = getattr(snn_core_model, 'time_steps') # 割り当て
                     if isinstance(time_steps_val, int):
                         total_time_steps = time_steps_val
                 
@@ -179,7 +185,7 @@ class BreakthroughTrainer:
                     num_classes = cast(int, OmegaConf.select(model_to_run_casted.config, "vocab_size", default=10))
 
             elif hasattr(model_to_run, 'time_steps'):
-                time_steps_val = getattr(model_to_run_casted, 'time_steps')
+                time_steps_val = getattr(model_to_run_casted, 'time_steps') # 割り当て
                 if isinstance(time_steps_val, int):
                     total_time_steps = time_steps_val
             
@@ -297,10 +303,9 @@ class BreakthroughTrainer:
             
             if is_train:
                  model_to_run = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
-                 # --- ▼ 修正: [assignment] エラー解消 (型チェック強化) ▼ ---
-                 total_time_steps: int = 16 # Default
+                 # --- ▼ 修正: [no-redef] [assignment] エラー解消 (変数を再定義しない) ▼ ---
                  
-                 time_steps_val: Any = None
+                 time_steps_val = None
                  if hasattr(model_to_run, 'model') and hasattr(model_to_run.model, 'time_steps'):
                      time_steps_val = getattr(model_to_run.model, 'time_steps')
                  elif hasattr(model_to_run, 'time_steps'):
@@ -525,7 +530,7 @@ class DistillationTrainer(BreakthroughTrainer):
             loss_dict['accuracy'] = accuracy
             
             model_to_run = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
-            # --- ▼ 修正: [assignment] エラー解消 (型チェック強化) ▼ ---
+            # --- ▼ 修正: [no-redef] [assignment] エラー解消 (変数を再定義しない) ▼ ---
             total_time_steps: int = 16 # Default
             
             time_steps_val: Any = None
@@ -589,7 +594,7 @@ class SelfSupervisedTrainer(BreakthroughTrainer):
         loss_dict['accuracy'] = torch.tensor(0.0, device=self.device) 
         
         model_to_run = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
-        # --- ▼ 修正: [assignment] エラー解消 (型チェック強化) ▼ ---
+        # --- ▼ 修正: [no-redef] [assignment] エラー解消 (変数を再定義しない) ▼ ---
         total_time_steps: int = 16 # Default
         
         time_steps_val: Any = None
@@ -685,6 +690,7 @@ class ProbabilisticEnsembleTrainer(BreakthroughTrainer):
             loss_dict['accuracy'] = accuracy
         
         model_to_run = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
+        # --- ▼ 修正: [no-redef] [assignment] エラー解消 (変数を再定義しない) ▼ ---
         total_time_steps: int = 16 # Default
         
         time_steps_val: Any = None
@@ -695,6 +701,7 @@ class ProbabilisticEnsembleTrainer(BreakthroughTrainer):
         
         if isinstance(time_steps_val, int):
             total_time_steps = time_steps_val
+        # --- ▲ 修正 ▲ ---
         loss_dict['avg_cutoff_steps'] = torch.tensor(float(total_time_steps), device=self.device)
 
 
@@ -815,4 +822,5 @@ class ParticleFilterTrainer:
         
         best_particle_loss: float = -log_likelihoods_tensor.max().item()
         return best_particle_loss
+
 

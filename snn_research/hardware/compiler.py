@@ -27,6 +27,11 @@
 # - P4.2 / P4.3 のスタブ実装を強化。
 # - hw_config をパースし、Lava/sPyNNakerの実際のAPI呼び出しを
 #   含むスクリプトを生成するように改善。 (「実装があまい」点の解消)
+#
+# 修正 (v12):
+# - mypy [operator] (Tensor not callable) エラーを解消するため、
+#   model_to_compile._analyze_model_structure への誤った呼び出しを
+#   self._analyze_model_structure に修正。
 
 from typing import Dict, Any, List, cast, Union, Optional, Type, Tuple
 import yaml
@@ -605,7 +610,9 @@ class NeuromorphicCompiler:
         
         if not input_layer_info:
              # _analyze_model_structure から取得 (v11.1)
-             input_layer_info = next((l for n, l in model_to_compile._analyze_model_structure(model_to_compile)["layer_map"].items() if l.get("type") == "input_layer"), None) # type: ignore[attr-defined]
+             # --- ▼ 修正: model_to_compile._analyze_model_structure を self._analyze_model_structure に変更 ▼ ---
+             input_layer_info = next((l for n, l in self._analyze_model_structure(model_to_compile)["layer_map"].items() if l.get("type") == "input_layer"), None)
+             # --- ▲ 修正 ▲ ---
 
         input_neurons = input_layer_info.get('num_neurons', 10) if input_layer_info else 10
         if input_neurons > 0:
@@ -639,7 +646,9 @@ class NeuromorphicCompiler:
         layer_map = hw_config.get("compilation_constraints", {}).get("layers", []) # Fallback
         if not layer_map:
              # _analyze_model_structure から取得 (v11.1)
-             layer_map = model_to_compile._analyze_model_structure(model_to_compile)["layer_map"] # type: ignore[attr-defined]
+             # --- ▼ 修正: model_to_compile._analyze_model_structure を self._analyze_model_structure に変更 ▼ ---
+             layer_map = self._analyze_model_structure(model_to_compile)["layer_map"] # type: ignore[assignment]
+             # --- ▲ 修正 ▲ ---
              
         # layer_map を {name: info} 辞書に変換
         layer_map_dict: Dict[str, Any] = {l['name']: l for l in layer_map if isinstance(l, dict) and 'name' in l}
@@ -743,3 +752,5 @@ class NeuromorphicCompiler:
         }
         print("--- ✅ シミュレーション完了 ---")
         return report
+
+}

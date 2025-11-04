@@ -22,6 +22,9 @@
 # 改善 (v5):
 # - ロードマップ P1.4 (DTA-SNN [10]) に基づき、
 #   DynamicTemporalAttention (DTA) モジュールを追加。
+#
+# 修正 (v6):
+# - mypy [name-defined] F をインポート
 
 import torch
 import torch.nn as nn
@@ -29,6 +32,9 @@ import torch.nn as nn
 from typing import Tuple, Dict, Any, Optional, cast, List
 # --- ▲ 改善 (v5) ▲ ---
 import random 
+# --- ▼ 修正 (v6): F をインポート ▼ ---
+import torch.nn.functional as F
+# --- ▲ 修正 (v6) ▲ ---
 
 # SDSAで使用するスパイクニューロン (例: LIF)
 from .neurons import AdaptiveLIFNeuron as LIFNeuron

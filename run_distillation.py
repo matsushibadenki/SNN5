@@ -14,6 +14,9 @@
 # 修正 (v4): HPO (run_hpo.py) から呼び出されるように、--override_config 引数を
 #             受け取れるように修正。
 # 修正 (v5): HPO連携時の設定読み込み順序と、AttributeErrorを修正。
+#
+# 修正 (v6): HPO連携時の設定読み込みと適用のロジックを dependency-injector に
+#             合わせて修正。OmegaConf.update の誤用を修正。
 
 import argparse
 import asyncio
@@ -51,24 +54,30 @@ async def main() -> None:
 
     # 1. DIコンテナのインスタンス化 (空の設定で)
     container = TrainingContainer()
-    cfg: DictConfig = container.config
-
+    
     # 2. 基本設定をロード
-    cfg.from_yaml(args.config)
+    container.config.from_yaml(args.config)
 
     # 3. モデル設定をロード (AttributeError 修正)
     #    cifar10_spikingcnn_config.yaml には 'model:' キーがないため、
     #    'model' ノード配下にマージする
     try:
-        model_cfg_obj = OmegaConf.load(args.model_config)
-        # cfg.model に model_cfg_obj の内容をマージする
-        OmegaConf.update(cfg, 'model', model_cfg_obj, merge=True)
+        # モデル設定を辞書としてロード
+        model_cfg_dict = OmegaConf.to_container(OmegaConf.load(args.model_config), resolve=True)
+        # 'model' キーでラップしてDIコンテナの設定にマージ
+        if isinstance(model_cfg_dict, dict):
+            container.config.from_dict({'model': model_cfg_dict})
+        else:
+            raise TypeError(f"Model config loaded from {args.model_config} is not a dictionary.")
     except Exception as e:
         print(f"Warning: Could not load or merge model config '{args.model_config}': {e}")
+        # 'model' が設定されていない可能性があるため、空の辞書をマージしておく
+        container.config.from_dict({'model': {}})
+
 
     # 4. コマンドライン引数からエポック数を上書き
     #    (override_config よりも先に適用)
-    cfg.training.epochs.from_value(args.epochs)
+    container.config.training.epochs.from_value(args.epochs)
     
     # 5. HPOからの --override_config を適用
     if args.override_config:
@@ -91,8 +100,15 @@ async def main() -> None:
                         else:
                             value = value_str  # 文字列として保持
 
-                # cfg (DIコンテナのルート設定) に対して上書き
-                OmegaConf.update(cfg, keys, value, merge=True)
+                # 修正: dependency-injector の provider API を使って上書き
+                key_parts = keys.split('.')
+                config_provider = container.config
+                for part in key_parts:
+                    # providerオブジェクトを辿る
+                    config_provider = getattr(config_provider, part)
+                
+                # 最終的な provider に .from_value() で値を設定
+                config_provider.from_value(value)
                 print(f"  - Applied: {keys} = {value}")
             except Exception as e:
                 print(f"Error applying override '{override}': {e}")
@@ -100,7 +116,7 @@ async def main() -> None:
 
     # DIコンテナから必要なコンポーネントを正しい順序で取得・構築
     device = container.device()
-    # vocab_sizeは画像タスクではクラス数として使用
+    
     # (cfg.model が正しく設定されたため、SNNCoreの初期化が成功するはず)
     student_model = container.snn_model(vocab_size=10).to(device)
     optimizer = container.optimizer(params=student_model.parameters())

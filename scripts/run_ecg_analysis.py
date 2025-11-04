@@ -18,8 +18,10 @@ import sys
 import numpy as np
 import logging
 import random
-from omegaconf import OmegaConf, DictConfig
-from typing import Optional, Tuple, cast, Any
+from omegaconf import OmegaConf, DictConfig, ListConfig
+# --- ▼ 修正: Dict, List をインポート ▼ ---
+from typing import Optional, Tuple, cast, Any, Dict, List, Union
+# --- ▲ 修正 ▲ ---
 
 # プロジェクトルートをPythonパスに追加
 sys.path.append(str(Path(__file__).resolve().parent.parent))
@@ -79,7 +81,9 @@ def load_snn_model(
         logger.error(f"モデル設定ファイルが見つかりません: {model_config_path}")
         raise FileNotFoundError(f"Model config not found: {model_config_path}")
 
-    cfg: DictConfig = OmegaConf.load(model_config_path)
+    # --- ▼ 修正: [assignment] エラー解消のため cast を追加 ▼ ---
+    cfg: DictConfig = cast(DictConfig, OmegaConf.load(model_config_path))
+    # --- ▲ 修正 ▲ ---
     
     # --- ▼ 改善 (v2): TSkipsSNN/SpikingSSM の設定を上書き ▼ ---
     architecture_type: str = cfg.model.get("architecture_type", "unknown")
@@ -105,8 +109,10 @@ def load_snn_model(
     if model_path and Path(model_path).exists():
         logger.info(f"Loading trained model weights from: {model_path}")
         try:
+            # --- ▼ 修正: [name-defined] Dict を使用 ▼ ---
             checkpoint: Dict[str, Any] = torch.load(model_path, map_location=device)
             state_dict: Dict[str, Any] = checkpoint.get('model_state_dict', checkpoint)
+            # --- ▲ 修正 ▲ ---
             if list(state_dict.keys())[0].startswith('module.'):
                  state_dict = {k[7:]: v for k, v in state_dict.items()}
             model.load_state_dict(state_dict, strict=False)
@@ -184,7 +190,9 @@ def main() -> None:
 
     # 3. 推論の実行
     logger.info("\n--- Starting ECG Classification ---")
+    # --- ▼ 修正: [name-defined] List, Dict を使用 ▼ ---
     results: List[Dict[str, Any]] = []
+    # --- ▲ 修正 ▲ ---
     
     with torch.no_grad():
         # モデルタイプに応じて入力キーを決定
@@ -252,7 +260,9 @@ def main() -> None:
         probabilities = torch.softmax(logits, dim=-1)
 
         for i in range(args.num_samples):
-            pred_class = predictions[i].item()
+            # --- ▼ 修正: [index] エラー解消のため、int() で明示的にキャスト ▼ ---
+            pred_class: int = int(predictions[i].item())
+            # --- ▲ 修正 ▲ ---
             pred_label = "Anomaly" if pred_class == 1 else "Normal"
             confidence = probabilities[i, pred_class].item()
             results.append({
@@ -277,3 +287,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

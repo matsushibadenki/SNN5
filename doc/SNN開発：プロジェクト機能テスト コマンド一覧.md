@@ -6,13 +6,17 @@
 
 **基本構文:**
 
-python snn-cli.py \[CATEGORY\] \[COMMAND\] \[OPTIONS\]
+python snn-cli.py
 
-* **ヘルプの表示:**  
-  * 全体: python snn-cli.py \--help  
-  * カテゴリ別: python snn-cli.py \[CATEGORY\] \--help  
-  * コマンド別: python snn-cli.py \[CATEGORY\] \[COMMAND\] \--help  
-* **個別スクリプト:** 一部の機能は scripts/ ディレクトリ内のスクリプトを直接実行します。これらのヘルプは python scripts/\[script\_name\].py \--help で確認できます。
+$$CATEGORY$$$$COMMAND$$$$OPTIONS$$
+
+* **ヘルプの表示:** \* 全体: python snn-cli.py \--help  
+  * カテゴリ別: python snn-cli.py$$CATEGORY$$  
+    \--help  
+  * コマンド別: python snn-cli.py$$CATEGORY$$$$COMMAND$$  
+    \--help  
+* **個別スクリプト:** 一部の機能は scripts/ ディレクトリ内のスクリプトを直接実行します。これらのヘルプは python scripts/$$script\\\_name$$  
+  .py \--help で確認できます。
 
 ## **2\. コマンド一覧**
 
@@ -63,18 +67,27 @@ SNNモデルの訓練や知識転移を行います。
 
 **コマンド例:**
 
-\# 中規模モデル(medium.yaml)を5エポック学習  
-python snn-cli.py gradient-train \\  
-    \--model-config configs/models/medium.yaml \\  
-    \--data-path data/sample\_data.jsonl \\  
-    \--override\_config "training.epochs=5"
+\# 中規模モデル(medium.yaml)を5エポック学習
 
-\# 知識蒸留の実行 (個別スクリプト)  
-python run\_distillation.py \\  
-    \--task cifar10 \\  
-    \--teacher\_model resnet18 \\  
-    \--model-config configs/cifar10\_spikingcnn\_config.yaml \\  
-    \--epochs 15
+python snn-cli.py gradient-train \\
+
+\--model-config configs/models/medium.yaml \\
+
+\--data-path data/sample\_data.jsonl \\
+
+\--override\_config "training.epochs=5"
+
+\# 知識蒸留の実行 (個別スクリプト)
+
+python run\_distillation.py \\
+
+\--task cifar10 \\
+
+\--teacher\_model resnet18 \\
+
+\--model-config configs/cifar10\_spikingcnn\_config.yaml \\
+
+\--epochs 15
 
 ### **2.4. 🔄 モデル変換 (Model Conversion)**
 
@@ -87,11 +100,15 @@ python run\_distillation.py \\
 
 **コマンド例:**
 
-\# 学習済みCNNをSpikingCNNに変換 (高忠実度)  
-python snn-cli.py convert ann2snn-cnn \\  
-    runs/ann\_cifar\_baseline/cifar10/best\_model.pth \\  
-    runs/converted/spiking\_cnn\_from\_ann.pth \\  
-    \--snn-model-config configs/cifar10\_spikingcnn\_config.yaml
+\# 学習済みCNNをSpikingCNNに変換 (高忠実度)
+
+python snn-cli.py convert ann2snn-cnn \\
+
+runs/ann\_cifar\_baseline/cifar10/best\_model.pth \\
+
+runs/converted/spiking\_cnn\_from\_ann.pth \\
+
+\--snn-model-config configs/cifar10\_spikingcnn\_config.yaml
 
 ### **2.5. 📊 評価・ベンチマーク (Evaluation & Benchmarks)**
 
@@ -106,21 +123,31 @@ python snn-cli.py convert ann2snn-cnn \\
 **主なオプション (benchmark run):**
 
 * \--experiment \<name\>: 実行する実験 (all, cifar10\_comparison, sst2\_comparison, mrpc\_comparison, shd\_comparison 等)  
-* \--epochs \<num\>: \[訓練モード\] 訓練エポック数 (デフォルト: 3\)  
-* \--eval\_only: \[評価モード\] 訓練をスキップし、指定モデルで評価のみ実行。  
-* \--model\_path \<path\>: \[評価モード\] 評価する学習済みモデルのパス (.pth)。  
-* \--model\_config \<path\>: \[評価モード\] 評価するモデルのアーキテクチャ設定 (.yaml)。  
-* \--model\_type \<SNN|ANN\>: \[評価モード\] 評価するモデルのタイプ。
+* \--epochs \<num\>:$$訓練モード$$  
+  訓練エポック数 (デフォルト: 3\)  
+* \--eval\_only:$$評価モード$$  
+  訓練をスキップし、指定モデルで評価のみ実行。  
+* \--model\_path \<path\>:$$評価モード$$  
+  評価する学習済みモデルのパス (.pth)。  
+* \--model\_config \<path\>:$$評価モード$$  
+  評価するモデルのアーキテクチャ設定 (.yaml)。  
+* \--model\_type \<SNN|ANN\>:$$評価モード$$  
+  評価するモデルのタイプ。
 
 **コマンド例:**
 
-\# CIFAR-10でANN/SNN比較 (5エポック)  
-python snn-cli.py benchmark run \\  
-    \--experiment cifar10\_comparison \\  
-    \--epochs 5 \\  
-    \--tag "AccuracyTest\_CIFAR10"
+\# CIFAR-10でANN/SNN比較 (5エポック)
 
-\# 継続学習実験 (EWC vs Finetune)  
+python snn-cli.py benchmark run \\
+
+\--experiment cifar10\_comparison \\
+
+\--epochs 5 \\
+
+\--tag "AccuracyTest\_CIFAR10"
+
+\# 継続学習実験 (EWC vs Finetune)
+
 python snn-cli.py benchmark continual \--epochs\_task\_a 3 \--epochs\_task\_b 3
 
 ### **2.6. 🤖 エージェント・認知システム (Agents & Cognitive Systems)**
@@ -139,13 +166,16 @@ python snn-cli.py benchmark continual \--epochs\_task\_a 3 \--epochs\_task\_b 3
 
 **コマンド例:**
 
-\# 対話形式で人工脳を起動し、思考プロセスを観察  
+\# 対話形式で人工脳を起動し、思考プロセスを観察
+
 python snn-cli.py brain \--loop
 
-\# デジタル生命体を30秒間実行  
+\# デジタル生命体を30秒間実行
+
 python snn-cli.py life-form \--duration 30
 
-\# "文章要約"タスクをエージェントに依頼 (必要ならWebデータで学習)  
+\# "文章要約"タスクをエージェントに依頼 (必要ならWebデータで学習)
+
 python snn-cli.py agent solve \--task "文章要約" \--unlabeled\_data data/sample\_data.jsonl
 
 ### **2.7. 📱 アプリケーションデモ (Application Demos)**
@@ -158,10 +188,13 @@ SNN技術の実用的な応用例を示すデモスクリプトを実行しま�
 
 **コマンド例:**
 
-\# Temporal SNNモデルでECG異常検出デモを実行  
-python scripts/run\_ecg\_analysis.py \\  
-    \--model-config configs/models/ecg\_temporal\_snn.yaml \\  
-    \--num\_samples 10
+\# Temporal SNNモデルでECG異常検出デモを実行
+
+python scripts/run\_ecg\_analysis.py \\
+
+\--model-config configs/models/ecg\_temporal\_snn.yaml \\
+
+\--num\_samples 10
 
 ### **2.8. 🛠️ 最適化 (Optimization)**
 
@@ -173,15 +206,23 @@ python scripts/run\_ecg\_analysis.py \\
 
 **コマンド例:**
 
-\# run\_distillation.py のパラメータを最適化 (10回試行)  
-python snn-cli.py hpo run \\  
-    configs/cifar10\_spikingcnn\_config.yaml \\  
-    cifar10 \\  
-    \--target-script run\_distillation.py \\  
-    \--teacher-model resnet18 \\  
-    \--n-trials 10 \\  
-    \--eval-epochs 1 \\  
-    \--metric-name accuracy
+\# run\_distillation.py のパラメータを最適化 (10回試行)
+
+python snn-cli.py hpo run \\
+
+configs/cifar10\_spikingcnn\_config.yaml \\
+
+cifar10 \\
+
+\--target-script run\_distillation.py \\
+
+\--teacher-model resnet18 \\
+
+\--n-trials 10 \\
+
+\--eval-epochs 1 \\
+
+\--metric-name accuracy
 
 ### **2.9. 🩺 モデル診断 (Diagnostics)**
 
@@ -193,11 +234,15 @@ python snn-cli.py hpo run \\
 
 **コマンド例:**
 
-\# 学習済み中規模モデルの効率を診断  
-python scripts/report\_sparsity\_and\_T.py \\  
-    \--model-config configs/models/medium.yaml \\  
-    \--model-path runs/snn\_experiment/best\_model.pth \\  
-    \--data-path data/smoke\_test\_data.jsonl
+\# 学習済み中規模モデルの効率を診断
+
+python scripts/report\_sparsity\_and\_T.py \\
+
+\--model-config configs/models/medium.yaml \\
+
+\--model-path runs/snn\_experiment/best\_model.pth \\
+
+\--data-path data/smoke\_test\_data.jsonl
 
 ### **2.10. 🖥️ UI (User Interface)**
 
@@ -210,12 +255,48 @@ python scripts/report\_sparsity\_and\_T.py \\
 
 **コマンド例:**
 
-\# 動的モデルロードUIを起動 (レジストリ \+ CLI引数からモデルをロード)  
-python snn-cli.py ui \\  
-    \--chat\_model\_config configs/models/medium.yaml \\  
-    \--chat\_model\_path runs/snn\_experiment/best\_model.pth \\  
-    \--cifar\_model\_config configs/cifar10\_spikingcnn\_config.yaml \\  
-    \--cifar\_model\_path runs/converted/spiking\_cnn\_from\_ann.pth
+\# 動的モデルロードUIを起動 (レジストリ \+ CLI引数からモデルをロード)
 
-\# LangChain連携UIを起動 (smallモデル使用)  
-python snn-cli.py ui \--start-langchain \--model-config configs/models/small.yaml  
+python snn-cli.py ui \\
+
+\--chat\_model\_config configs/models/medium.yaml \\
+
+\--chat\_model\_path runs/snn\_experiment/best\_model.pth \\
+
+Check if the user wants to write a cover letter.
+
+\--cifar\_model\_config configs/cifar10\_spikingcnn\_config.yaml \\
+
+\--cifar\_model\_path runs/converted/spiking\_cnn\_from\_ann.pth
+
+\# LangChain連携UIを起動 (smallモデル使用)
+
+python snn-cli.py ui \--start-langchain \--model-config configs/models/small.yaml
+
+### **2.11. 🧹 プロジェクト・クリーンアップ (Project Cleanup)**
+
+プロジェクトディレクトリ内に蓄積されたログやキャッシュファイルをクリーンアップします。
+
+| CLIコマンド | 個別スクリプト (直接実行) | 説明 |
+| :---- | :---- | :---- |
+| clean | (N/A) | runs, precomputed\_data, workspace 内の一時ログやキャッシュを削除。デフォルトではモデル(.pth)やDB(.db, .jsonl)は保護。 |
+
+**主なオプション (clean):**
+
+* \-y, \--yes: 削除実行の確認プロンプトをスキップします。  
+* \--delete-models: 保護を解除し、モデルファイル (.pth, .pt) も削除対象に含めます。  
+* \--delete-data: 保護を解除し、データファイル (.jsonl, .json, .db, .csv) も削除対象に含めます。
+
+**コマンド例:**
+
+\# 不要なログを削除（モデルとデータは保持）
+
+python snn-cli.py clean
+
+\# モデルもデータも含むすべての中間生成物を削除（確認あり）
+
+python snn-cli.py clean \--delete-models \--delete-data
+
+\# 確認なしで全てのログを強制削除（モデルとデータは保持）
+
+python snn-cli.py clean \-y

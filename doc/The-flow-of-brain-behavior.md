@@ -72,7 +72,8 @@ flowchart TB
     EI["E/Iバランス\n(興奮 ≒ 80% / 抑制 ≒ 20%)"]
     OSC["同期振動\nGamma (30–100 Hz)\nBeta (12–30 Hz)\nAlpha (8–12 Hz)\nTheta (4–8 Hz)"]
     LONG["長距離結合\n(皮質間・遅延含む)"]
-    HIERARCHY["階層構造\n(皮質6層構造 / 視床-皮質ループ)"] %% 提案5を反映
+    %% 提案5を反映
+    HIERARCHY["階層構造\n(皮質6層構造 / 視床-皮質ループ)"]
 
     ENCODING --> FF
     FF --> REC

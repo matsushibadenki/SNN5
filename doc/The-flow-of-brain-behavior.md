@@ -72,9 +72,9 @@ flowchart TB
     EI["E/Iバランス\n(興奮 ≒ 80% / 抑制 ≒ 20%)"]
     OSC["同期振動\nGamma (30–100 Hz)\nBeta (12–30 Hz)\nAlpha (8–12 Hz)\nTheta (4–8 Hz)"]
     LONG["長距離結合\n(皮質間・遅延含む)"]
-    %% 提案5を反映
     HIERARCHY["階層構造\n(皮質6層構造 / 視床-皮質ループ)"]
 
+    %% 提案5を反映
     ENCODING --> FF
     FF --> REC
     REC --> FF
@@ -82,7 +82,9 @@ flowchart TB
     EI --> OSC
     FF --> LONG
     REC --> LONG
-    FF --> HIERARCHY %% 階層構造へのリンク
+
+    %% 階層構造へのリンク（コメントは独立行）
+    FF --> HIERARCHY
     HIERARCHY --> FF
   end
 
@@ -138,6 +140,7 @@ flowchart TB
   class MEMBRANE,SPIKE,POSTSYN,WEIGHT core
   class STDP,LTP,LTD,NEUROMOD learning
   class NOISE,ENERGY,GLIA optional
+
   ```
 
   

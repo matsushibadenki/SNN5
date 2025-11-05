@@ -31,6 +31,10 @@
 # 修正 (v9):
 # - mypy [misc], [union-attr] エラーを解消するため、
 #   pruned_model と snn_core_model を cast するよう修正。
+#
+# 修正 (v10):
+# - mypy [call-arg] エラーを修正。
+# - BioSNN のコンストラクタ引数を `learning_rule` から `synaptic_rule` に変更。
 
 import sys
 from pathlib import Path
@@ -66,12 +70,15 @@ def test_biosnn_compilation(compiler: NeuromorphicCompiler, output_dir: str) -> 
         learning_rate=learning_rate, a_plus=1.0, a_minus=1.0,
         tau_trace=20.0, tau_eligibility=50.0
     )
+    # --- ▼ 修正(v10): [call-arg] learning_rule -> synaptic_rule ▼ ---
     model = BioSNN(
         layer_sizes=[10, 20, 5],
         neuron_params={'tau_mem': 10.0, 'v_threshold': 1.0, 'v_reset': 0.0, 'v_rest': 0.0},
-        learning_rule=learning_rule,
+        synaptic_rule=learning_rule, # learning_rule を synaptic_rule に変更
+        homeostatic_rule=None,      # homeostatic_rule を None で指定
         sparsification_config={"enabled": True, "contribution_threshold": 0.01} # スパース化も有効化
     )
+    # --- ▲ 修正(v10) ▲ ---
     print("✅ ダミーのBioSNNモデルを構築しました。")
 
     # --- ▼ 修正: mypy [misc], [union-attr] エラー解消 (L87) ▼ ---

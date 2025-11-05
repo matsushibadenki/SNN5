@@ -1,6 +1,12 @@
 # ファイルパス: app/containers.py
 # (動的ロードUI対応 v5 - TypeError 修正 v2)
 # 修正: _registry_path_provider を .get() で安全にアクセスするように変更。
+#
+# 改善 (v6):
+# - doc/The-flow-of-brain-behavior.md との整合性を高めるため、
+#   snn_research/agent/reinforcement_learner_agent.py (v2) の変更に対応。
+# - `bio_rl_agent` プロバイダが、`synaptic_rule` と `homeostatic_rule` の
+#   両方をインスタンス化して `ReinforcementLearnerAgent` に注入するように修正。
 
 import torch
 from dependency_injector import containers, providers
@@ -8,7 +14,9 @@ from torch.optim import AdamW, Optimizer
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR, LRScheduler
 from transformers import AutoTokenizer
 import os
+# --- ▼ 修正: Union をインポート ▼ ---
 from typing import TYPE_CHECKING, Dict, Any, cast, Optional, List, Union
+# --- ▲ 修正 ▲ ---
 from omegaconf import DictConfig, OmegaConf # DictConfig, OmegaConf をインポート
 
 # --- プロジェクト内モジュールのインポート ---
@@ -26,7 +34,9 @@ from .services.image_classification_service import ImageClassificationService
 from .adapters.snn_langchain_adapter import SNNLangChainAdapter
 from snn_research.distillation.model_registry import SimpleModelRegistry, DistributedModelRegistry, ModelRegistry
 from snn_research.tools.web_crawler import WebCrawler
+# --- ▼ 修正: `get_bio_learning_rule` と `BioLearningRule` をインポート ▼ ---
 from snn_research.learning_rules import ProbabilisticHebbian, get_bio_learning_rule, BioLearningRule, CausalTraceCreditAssignmentEnhancedV2
+# --- ▲ 修正 ▲ ---
 from snn_research.core.neurons import ProbabilisticLIFNeuron
 from snn_research.bio_models.simple_network import BioSNN
 from snn_research.rl_env.grid_world import GridWorldEnv
@@ -102,10 +112,42 @@ class TrainingContainer(containers.DeclarativeContainer):
     pi_optimizer = providers.Factory(AdamW, lr=config.training.physics_informed.learning_rate)
     pi_scheduler = providers.Factory(_create_scheduler, optimizer=pi_optimizer, epochs=config.training.epochs, warmup_epochs=config.training.physics_informed.warmup_epochs)
     physics_informed_trainer = providers.Factory(PhysicsInformedTrainer, criterion=providers.Factory(PhysicsInformedLoss, ce_weight=config.training.physics_informed.loss.ce_weight, spike_reg_weight=config.training.physics_informed.loss.spike_reg_weight, mem_smoothness_weight=config.training.physics_informed.loss.mem_smoothness_weight, tokenizer=tokenizer), grad_clip_norm=config.training.physics_informed.grad_clip_norm, use_amp=config.training.physics_informed.use_amp, log_dir=config.training.log_dir, meta_cognitive_snn=meta_cognitive_snn)
-    bio_rl_agent = providers.Factory(ReinforcementLearnerAgent, input_size=4, output_size=4, device=device)
+    
+    # --- ▼ 改善 (v6): 生物学的学習ルールの定義 ▼ ---
+    
+    # 1. シナプス可塑性ルール (例: CausalTrace)
+    synaptic_learning_rule = providers.Factory(
+        get_bio_learning_rule,
+        name=config.training.biologically_plausible.learning_rule, # "CAUSAL_TRACE"
+        params=config.training.biologically_plausible # パラメータ辞書全体を渡す
+    )
+    
+    # 2. 恒常性維持ルール (例: BCM)
+    #    base_config.yaml の "bcm" ブロックを参照する
+    homeostatic_learning_rule = providers.Factory(
+        get_bio_learning_rule,
+        name="BCM", # ハードコード (またはconfigで指定)
+        params=config.training.biologically_plausible # BCMパラメータもこの配下にあると仮定
+    )
+    
+    # --- ▲ 改善 (v6) ▲ ---
+
+    # --- ▼ 改善 (v6): bio_rl_agent のファクトリを修正 ▼ ---
+    bio_rl_agent = providers.Factory(
+        ReinforcementLearnerAgent, 
+        input_size=4, 
+        output_size=4, 
+        device=device,
+        synaptic_rule=synaptic_learning_rule,     # 注入
+        homeostatic_rule=homeostatic_learning_rule # 注入
+    )
+    # --- ▲ 改善 (v6) ▲ ---
+
     grid_world_env = providers.Factory(GridWorldEnv, device=device)
     bio_rl_trainer = providers.Factory(BioRLTrainer, agent=bio_rl_agent, env=grid_world_env)
-    particle_filter_trainer = providers.Factory(ParticleFilterTrainer, base_model=providers.Factory(BioSNN, layer_sizes=[10, 5, 2], neuron_params={'tau_mem': 10.0, 'v_threshold': 1.0, 'v_reset': 0.0, 'v_rest': 0.0}, learning_rule=providers.Object(None), sparsification_config=config.training.biologically_plausible.adaptive_causal_sparsification), config=config, device=device)
+    
+    # ( ... 残りのプロバイダは変更なし ...)
+    particle_filter_trainer = providers.Factory(ParticleFilterTrainer, base_model=providers.Factory(BioSNN, layer_sizes=[10, 5, 2], neuron_params={'tau_mem': 10.0, 'v_threshold': 1.0, 'v_reset': 0.0, 'v_rest': 0.0}, synaptic_rule=providers.Object(None), homeostatic_rule=providers.Object(None)), config=config, device=device) # BioSNNの引数を修正
     planner_snn = providers.Factory(PlannerSNN, vocab_size=providers.Callable(len, tokenizer), d_model=config.model.d_model, d_state=config.model.d_state, num_layers=config.model.num_layers, time_steps=config.model.time_steps, n_head=config.model.n_head, num_skills=10, neuron_config=config.model.neuron)
     planner_optimizer = providers.Factory(AdamW, lr=config.training.planner.learning_rate)
     planner_loss = providers.Factory(PlannerLoss)
@@ -116,8 +158,8 @@ class TrainingContainer(containers.DeclarativeContainer):
     )
     probabilistic_neuron_params: providers.Provider[Dict[str, Any]] = providers.Factory(lambda cfg: cfg.training.biologically_plausible.probabilistic_neuron.to_dict() if cfg.training.biologically_plausible.probabilistic_neuron() else {}, config.provided)
     probabilistic_learning_rule: providers.Provider[Optional[BioLearningRule]] = providers.Factory(lambda cfg: ProbabilisticHebbian(learning_rate=cfg.training.biologically_plausible.probabilistic_hebbian.learning_rate.as_float(), weight_decay=cfg.training.biologically_plausible.probabilistic_hebbian.weight_decay.as_float()) if cfg.training.biologically_plausible.probabilistic_hebbian() else None, config.provided)
-    probabilistic_model = providers.Factory(BioSNN, layer_sizes=[10, 5, 2], neuron_params=probabilistic_neuron_params, learning_rule=probabilistic_learning_rule, sparsification_config=config.training.biologically_plausible.adaptive_causal_sparsification)
-    probabilistic_agent = providers.Factory(ReinforcementLearnerAgent, input_size=4, output_size=4, device=device)
+    probabilistic_model = providers.Factory(BioSNN, layer_sizes=[10, 5, 2], neuron_params=probabilistic_neuron_params, synaptic_rule=probabilistic_learning_rule, homeostatic_rule=providers.Object(None), sparsification_config=config.training.biologically_plausible.adaptive_causal_sparsification) # BioSNNの引数を修正
+    probabilistic_agent = providers.Factory(ReinforcementLearnerAgent, input_size=4, output_size=4, device=device, synaptic_rule=probabilistic_learning_rule, homeostatic_rule=providers.Object(None)) # Agentの引数を修正
     probabilistic_trainer = providers.Factory(BioRLTrainer, agent=probabilistic_agent, env=grid_world_env)
     bio_learning_rule = providers.Factory( get_bio_learning_rule, name=config.training.biologically_plausible.learning_rule, params=config.training.biologically_plausible )
 
@@ -204,7 +246,9 @@ class BrainContainer(containers.DeclarativeContainer):
     causal_inference_engine = providers.Singleton( CausalInferenceEngine, rag_system=providers.Callable(lambda ac: ac.rag_system(), ac=agent_container), workspace=global_workspace )
     artificial_brain = providers.Singleton( ArtificialBrain, global_workspace=global_workspace, motivation_system=motivation_system, sensory_receptor=sensory_receptor, spike_encoder=spike_encoder, actuator=actuator, perception_cortex=perception_cortex, prefrontal_cortex=prefrontal_cortex, hippocampus=hippocampus, cortex=cortex, amygdala=amygdala, basal_ganglia=basal_ganglia, cerebellum=cerebellum, motor_cortex=motor_cortex, causal_inference_engine=causal_inference_engine )
     autonomous_agent = providers.Callable(lambda ac: ac.autonomous_agent(), ac=agent_container)
-    rl_agent = providers.Singleton( ReinforcementLearnerAgent, input_size=4, output_size=4, device=providers.Callable(lambda ac: ac.device(), ac=agent_container) )
+    # --- ▼ 改善 (v6): bio_rl_agent の取得先を training_container に変更 ▼ ---
+    rl_agent = providers.Callable(lambda ac: ac.training_container().bio_rl_agent(), ac=agent_container)
+    # --- ▲ 改善 (v6) ▲ ---
     self_evolving_agent = providers.Callable(lambda ac: ac.self_evolving_agent_master(), ac=agent_container) # Master Agent を参照
     digital_life_form = providers.Singleton(
         DigitalLifeForm,
@@ -220,4 +264,3 @@ class BrainContainer(containers.DeclarativeContainer):
         langchain_adapter=app_container.langchain_adapter,
         global_workspace=global_workspace
     )
-

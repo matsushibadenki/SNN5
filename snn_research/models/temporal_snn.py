@@ -11,6 +11,8 @@
 # - mypy --strict 準拠のための型ヒントを完全実装
 #
 # 修正 (v3): SyntaxError の原因となった末尾の全角句点を削除。
+#
+# 修正 (v4): SyntaxError: 末尾の余分な '}' を削除。
 
 import torch
 import torch.nn as nn
@@ -156,7 +158,7 @@ class SimpleRSNN(BaseModel): # TemporalFeatureExtractor -> SimpleRSNN
         # 膜電位はここでは単純化して0を返す
         mem = torch.tensor(0.0, device=device)
 
-        return final_output, avg_spikes, mem
+        return final_logits, avg_spikes, mem
 
     # reset メソッドは BaseModel から継承される reset_spike_stats を使用
 

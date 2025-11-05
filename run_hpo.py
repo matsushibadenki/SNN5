@@ -21,6 +21,10 @@
 # - Trial 64 のログに基づき、spike_reg_weight の探索範囲がまだ高すぎると判断。
 #   探索範囲を (1e-10, 1e-7) にさらに狭める。
 # - HPOの対象に sparsity_reg_weight を追加。
+#
+# 修正 (v5):
+# - Trial 65 のログに基づき、spike_reg_weight と sparsity_reg_weight の
+#   探索範囲がまだ高すぎると判断。探索範囲をさらに大幅に引き下げる。
 
 import optuna
 import argparse
@@ -62,14 +66,15 @@ def objective(trial: optuna.trial.Trial, args: argparse.Namespace) -> float:
     ce_weight = trial.suggest_float("ce_weight", 0.1, 0.5)
     distill_weight = 1.0 - ce_weight # 合わせて1になるように
     
-    # --- ▼▼▼ 修正 (v4): 探索範囲をさらに狭め、sparsity_reg_weight を追加 ▼▼▼ ---
-    # ログ(Trial 64)でも spike_reg_loss が 1e+7 と発散しているため、
-    # 探索範囲を (1e-7, 1e-4) から (1e-10, 1e-7) にさらに狭める。
-    spike_reg_weight = trial.suggest_float("spike_reg_weight", 1e-10, 1e-7, log=True)
+    # --- ▼▼▼ 修正 (v5): 探索範囲をさらに引き下げ ▼▼▼ ---
+    # ログ(Trial 65)でも spike_reg_loss が 1e+7 と発散しているため、
+    # 探索範囲を (1e-10, 1e-7) から (1e-12, 1e-9) にさらに狭める。
+    spike_reg_weight = trial.suggest_float("spike_reg_weight", 1e-12, 1e-9, log=True)
     
-    # sparsity_loss も 1e+3 と高いため、最適化対象に追加
-    sparsity_reg_weight = trial.suggest_float("sparsity_reg_weight", 1e-8, 1e-5, log=True)
-    # --- ▲▲▲ 修正 (v4) ▲▲▲ ---
+    # sparsity_loss も 1e+3 と高いため、探索範囲を
+    # (1e-8, 1e-5) から (1e-10, 1e-7) に狭める。
+    sparsity_reg_weight = trial.suggest_float("sparsity_reg_weight", 1e-10, 1e-7, log=True)
+    # --- ▲▲▲ 修正 (v5) ▲▲▲ ---
     
     # --- 2. 設定の上書き ---
     # 各試行にユニークな出力ディレクトリを作成

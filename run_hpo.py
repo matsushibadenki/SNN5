@@ -12,6 +12,10 @@
 # - ユーザーの要望に基づき、サブプロセスの進捗がリアルタイムで
 #   表示されるように `subprocess.run` から `subprocess.Popen` に変更。
 # - ログのパースロジックを堅牢化。
+#
+# 修正 (v3):
+# - ログに基づき、spike_reg_weight の探索範囲が大きすぎた問題を修正。
+#   探索範囲を (1e-5, 1e-2) から (1e-7, 1e-4) に狭め、学習の安定化を図る。
 
 import optuna
 import argparse
@@ -46,15 +50,23 @@ def objective(trial: optuna.trial.Trial, args: argparse.Namespace) -> float:
     """Optunaの試行ごとに呼び出される目的関数。"""
     
     # --- 1. ハイパーパラメータの提案 ---
-    # (省略: 変更なし)
+    # ここで探索したいパラメータとその範囲を定義
+    # 例: 知識蒸留 (run_distillation.py) のパラメータ
     lr = trial.suggest_float("learning_rate", 1e-5, 1e-3, log=True)
     temperature = trial.suggest_float("temperature", 1.5, 3.5)
     ce_weight = trial.suggest_float("ce_weight", 0.1, 0.5)
     distill_weight = 1.0 - ce_weight # 合わせて1になるように
-    spike_reg_weight = trial.suggest_float("spike_reg_weight", 1e-5, 1e-2, log=True)
+    
+    # --- ▼▼▼ 修正 (v3): spike_reg_weight の探索範囲を狭める ▼▼▼ ---
+    # ログ(Trial 63)から、1e-5 ですら損失全体に大きな影響を与えていたため、
+    # 探索範囲を (1e-5, 1e-2) から (1e-7, 1e-4) に変更する。
+    spike_reg_weight = trial.suggest_float("spike_reg_weight", 1e-7, 1e-4, log=True)
+    # --- ▲▲▲ 修正 (v3) ▲▲▲ ---
+    
+    # 必要に応じて他のパラメータも追加 (例: batch_size, warmup_epochs, neuron params...)
     
     # --- 2. 設定の上書き ---
-    # (省略: 変更なし)
+    # 各試行にユニークな出力ディレクトリを作成
     trial_id = str(uuid.uuid4())[:8]
     output_dir = Path(args.output_base_dir) / f"trial_{trial.number}_{trial_id}"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -65,17 +77,19 @@ def objective(trial: optuna.trial.Trial, args: argparse.Namespace) -> float:
         f"training.gradient_based.distillation.loss.ce_weight={ce_weight}",
         f"training.gradient_based.distillation.loss.distill_weight={distill_weight}",
         f"training.gradient_based.distillation.loss.spike_reg_weight={spike_reg_weight}",
+        # 最適化中は短いエポック数で実行
         f"training.epochs={args.eval_epochs}",
-        f"training.log_dir={output_dir.as_posix()}" 
+        f"training.log_dir={output_dir.as_posix()}" # ログ出力先を試行ごとに変更
     ]
     
     # --- 3. 学習スクリプトの実行 ---
     command = [
-        sys.executable, 
+        sys.executable, # 現在のPythonインタプリタを使用
         args.target_script,
         "--config", args.base_config,
         "--model_config", args.model_config,
-        "--task", args.task,
+        "--task", args.task, # run_distillation.py が task 引数を取る場合
+        # 必要に応じて他の引数を追加 (例: --teacher_model)
     ]
     if args.teacher_model:
         command.extend(["--teacher_model", args.teacher_model])
@@ -84,14 +98,11 @@ def objective(trial: optuna.trial.Trial, args: argparse.Namespace) -> float:
         command.extend(["--override_config", override])
         
     logger.info(f"--- Starting Trial {trial.number} ---")
-    logger.info(f"Parameters: lr={lr:.5f}, temp={temperature:.2f}, ce_w={ce_weight:.2f}, spike_w={spike_reg_weight:.5f}")
+    logger.info(f"Parameters: lr={lr:.5e}, temp={temperature:.2f}, ce_w={ce_weight:.2f}, spike_w={spike_reg_weight:.5e}")
     logger.info(f"Command: {' '.join(command)}")
     
     try:
         # --- ▼▼▼ 修正 (v2): リアルタイム進捗表示 ▼▼▼ ---
-        # 学習スクリプトを実行 (標準出力をキャプチャ)
-        # result = subprocess.run(command, check=True, capture_output=True, text=True, encoding='utf-8')
-        
         process = subprocess.Popen(
             command,
             stdout=subprocess.PIPE,
@@ -125,9 +136,6 @@ def objective(trial: optuna.trial.Trial, args: argparse.Namespace) -> float:
         # --- ▲▲▲ 修正 (v2) ▲▲▲ ---
         
         # --- 4. 結果の解析 ---
-        # 学習スクリプトが最終的な検証メトリクスを標準出力するか、
-        # 指定されたlog_dirに結果ファイル(例: metrics.json)を保存すると仮定
-        
         metric_value = float('inf') # Optunaは最小化するので損失をデフォルトに
         accuracy = 0.0 # 精度も記録しておく
 
@@ -181,7 +189,7 @@ def objective(trial: optuna.trial.Trial, args: argparse.Namespace) -> float:
         
         # 不要になった試行ディレクトリを削除 (ディスク容量節約のためオプション)
         # shutil.rmtree(output_dir)
-        
+            
         if metric_value == float('inf') and args.metric_name == "accuracy":
              logger.warning(f"Trial {trial.number}: Could not find final 'accuracy' in log. Returning 0.0.")
              metric_value = 0.0 # 精度が見つからない場合は 0 (最大化のために -0.0)

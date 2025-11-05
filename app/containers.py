@@ -7,6 +7,10 @@
 #   snn_research/agent/reinforcement_learner_agent.py (v2) の変更に対応。
 # - `bio_rl_agent` プロバイダが、`synaptic_rule` と `homeostatic_rule` の
 #   両方をインスタンス化して `ReinforcementLearnerAgent` に注入するように修正。
+#
+# 修正 (v7):
+# - run_brain_simulation.py での TypeError: stat: path should be string... not NoneType を修正。
+# - _load_planner_snn_factory (L83) で model_path が None の場合に os.path.exists を呼び出さないよう修正。
 
 import torch
 from dependency_injector import containers, providers
@@ -86,7 +90,9 @@ def _create_scheduler(optimizer: Optimizer, epochs: int, warmup_epochs: int) -> 
 
 def _load_planner_snn_factory(planner_snn_instance, model_path: str, device: str):
     model = planner_snn_instance
-    if os.path.exists(model_path):
+    # --- ▼ 修正 (v7): model_path が None の場合に os.path.exists がエラーになるのを修正 ▼ ---
+    if model_path and os.path.exists(model_path):
+    # --- ▲ 修正 (v7) ▲ ---
         try:
             checkpoint = torch.load(model_path, map_location=device)
             state_dict = checkpoint.get('model_state_dict', checkpoint)

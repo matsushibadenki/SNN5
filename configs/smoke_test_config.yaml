@@ -1,6 +1,7 @@
 # ファイルパス: configs/smoke_test_config.yaml
 # Title: スモークテスト用基本設定
 # Description: 全機能の動作確認を高速に行うための設定ファイル。
+# 修正(v2): train.py が期待する quantization と pruning の設定ブロックを追加。
 
 # 共通設定
 seed: 42
@@ -22,6 +23,33 @@ training:
   log_interval: 1
   log_dir: "runs/smoke_tests"
 
+  # --- ▼ 修正(v2): 不足していたキーを追加 ▼ ---
+  quantization:
+    enabled: false
+    backend: 'fbgemm'
+    spquant:
+      enabled: false
+
+  pruning:
+    enabled: false
+    sbc:
+      enabled: false
+      amount: 0.2
+    spatio_temporal:
+      enabled: false
+      spatial_amount: 0.2
+      kl_threshold: 0.01
+  # --- ▲ 修正(v2) ▲ ---
+
+  meta_cognition:
+    enabled: true
+    error_threshold: 0.8
+    modulation_strength: 0.05
+
+  planner:
+    learning_rate: 0.001
+    model_path: "runs/planner/best_model.pth"
+
   # 各パラダイムの設定（内容はbase_config.yamlと同じで良い）
   gradient_based:
     type: "standard"
@@ -34,6 +62,11 @@ training:
       ce_weight: 1.0
       spike_reg_weight: 0.01
       mem_reg_weight: 0.0
+      # (base_configから不足分をコピー)
+      sparsity_reg_weight: 0.0
+      temporal_compression_weight: 0.0
+      sparsity_threshold_reg_weight: 0.0
+      ewc_weight: 0.0 # スモークテストではEWCはオフ
     distillation:
       teacher_model: "gpt2"
       loss:
@@ -42,6 +75,11 @@ training:
         spike_reg_weight: 0.01
         temperature: 2.0
         mem_reg_weight: 0.0
+        # (base_configから不足分をコピー)
+        sparsity_reg_weight: 0.0
+        temporal_compression_weight: 0.0
+        sparsity_threshold_reg_weight: 0.0
+
 
   biologically_plausible:
     learning_rule: "CAUSAL_TRACE"
@@ -72,6 +110,11 @@ training:
     loss:
       prediction_weight: 1.0
       spike_reg_weight: 0.01
+      # (base_configから不足分をコピー)
+      sparsity_reg_weight: 0.0
+      mem_reg_weight: 0.0
+      tcl_weight: 1.0
+      tcl_temperature: 0.1
 
   physics_informed:
     learning_rate: 0.0005

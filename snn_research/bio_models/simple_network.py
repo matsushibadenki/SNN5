@@ -3,8 +3,13 @@
 # 修正: learning_rule.update がタプルを返すようになったため、
 #       戻り値を正しくアンパックして使用する。
 # 修正: CausalTraceCreditAssignmentEnhancedV2 に対応
+#
+# 改善 (v2):
+# - doc/The-flow-of-brain-behavior.md および doc/プロジェクト強化案の調査.md (セクション2.3) に基づき、
+#   単一の学習則しか持てなかった制約を解消。
+# - シナプス可塑性ルール (synaptic_rule) と 恒常性維持ルール (homeostatic_rule) を
+#   別々に受け取り、両方を適用できるように __init__ と update_weights を変更。
 
-# ... (import文などは変更なし) ...
 import torch
 import torch.nn as nn
 from typing import Dict, Any, Optional, Tuple, List
@@ -19,15 +24,28 @@ from snn_research.learning_rules.causal_trace import CausalTraceCreditAssignment
 
 class BioSNN(nn.Module):
     # ... (init, forward は変更なし) ...
-    def __init__(self, layer_sizes: List[int], neuron_params: dict, learning_rule: BioLearningRule,
-                 sparsification_config: Optional[Dict[str, Any]] = None): # ◾️ 追加
+    # --- ▼ 改善 (v2): __init__ のシグネチャを変更 ▼ ---
+    def __init__(
+        self, 
+        layer_sizes: List[int], 
+        neuron_params: dict, 
+        synaptic_rule: BioLearningRule, # learning_rule -> synaptic_rule に名前変更
+        homeostatic_rule: Optional[BioLearningRule] = None, # 安定化ルールを追加
+        sparsification_config: Optional[Dict[str, Any]] = None
+    ):
+    # --- ▲ 改善 (v2) ▲ ---
         super().__init__()
         self.layer_sizes = layer_sizes
-        self.learning_rule = learning_rule
+        # --- ▼ 改善 (v2): 2種類のルールを保持 ▼ ---
+        self.synaptic_rule = synaptic_rule
+        self.homeostatic_rule = homeostatic_rule
+        # --- ▲ 改善 (v2) ▲ ---
         self.sparsification_enabled = sparsification_config.get("enabled", False) if sparsification_config else False
         self.contribution_threshold = sparsification_config.get("contribution_threshold", 0.0) if sparsification_config else 0.0
         if self.sparsification_enabled:
             print(f"🧬 適応的因果スパース化が有効です (貢献度閾値: {self.contribution_threshold})")
+        if self.homeostatic_rule:
+            print(f"⚖️ 恒常性維持ルール ({type(self.homeostatic_rule).__name__}) が有効です。")
 
         self.layers = nn.ModuleList()
         self.weights = nn.ParameterList()
@@ -73,9 +91,10 @@ class BioSNN(nn.Module):
                 # または causal_creditとして渡す
                 # current_params["causal_credit"] = backward_credit.mean().item()
 
-            # --- ▼ 修正 ▼ ---
-            # dw, backward_credit_new をアンパックして受け取る
-            dw, backward_credit_new = self.learning_rule.update(
+            # --- ▼ 改善 (v2): 2種類の学習則を適用 ▼ ---
+            
+            # 1. シナプス可塑性ルール (STDP, R-STDP, CausalTrace など)
+            dw_synaptic, backward_credit_new = self.synaptic_rule.update(
                 pre_spikes=pre_spikes,
                 post_spikes=post_spikes,
                 weights=self.weights[i],
@@ -83,14 +102,29 @@ class BioSNN(nn.Module):
             )
             # 次のループのためにクレジット信号を更新
             backward_credit = backward_credit_new
-            # --- ▲ 修正 ▲ ---
+            
+            # 2. 恒常性維持ルール (BCM など)
+            dw_homeostasis = torch.zeros_like(self.weights[i].data)
+            if self.homeostatic_rule:
+                # BCMなどは報酬信号を必要としないため、元の optional_params を渡す
+                dw_homeo, _ = self.homeostatic_rule.update(
+                    pre_spikes=pre_spikes,
+                    post_spikes=post_spikes,
+                    weights=self.weights[i],
+                    optional_params=optional_params 
+                )
+                dw_homeostasis = dw_homeo
+
+            # 最終的な重み変化量 = 可塑性 + 恒常性
+            dw = dw_synaptic + dw_homeostasis
+            # --- ▲ 改善 (v2) ▲ ---
 
             # --- ▼ 修正 ▼ ---
             # 適応的因果スパース化 (貢献度に基づく)
             # V2 クラス名に変更
-            if self.sparsification_enabled and isinstance(self.learning_rule, CausalTraceCreditAssignmentEnhancedV2):
+            if self.sparsification_enabled and isinstance(self.synaptic_rule, CausalTraceCreditAssignmentEnhancedV2):
                 # get_causal_contribution メソッドは V2 でも存在すると仮定
-                causal_contribution = self.learning_rule.get_causal_contribution()
+                causal_contribution = self.synaptic_rule.get_causal_contribution()
                 if causal_contribution is not None:
                     # 貢献度が閾値以下の接続に対応する重み更新をゼロにする
                     contribution_mask = causal_contribution > self.contribution_threshold

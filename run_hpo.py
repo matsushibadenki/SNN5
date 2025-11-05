@@ -16,6 +16,11 @@
 # 修正 (v3):
 # - ログに基づき、spike_reg_weight の探索範囲が大きすぎた問題を修正。
 #   探索範囲を (1e-5, 1e-2) から (1e-7, 1e-4) に狭め、学習の安定化を図る。
+#
+# 修正 (v4):
+# - Trial 64 のログに基づき、spike_reg_weight の探索範囲がまだ高すぎると判断。
+#   探索範囲を (1e-10, 1e-7) にさらに狭める。
+# - HPOの対象に sparsity_reg_weight を追加。
 
 import optuna
 import argparse
@@ -57,13 +62,14 @@ def objective(trial: optuna.trial.Trial, args: argparse.Namespace) -> float:
     ce_weight = trial.suggest_float("ce_weight", 0.1, 0.5)
     distill_weight = 1.0 - ce_weight # 合わせて1になるように
     
-    # --- ▼▼▼ 修正 (v3): spike_reg_weight の探索範囲を狭める ▼▼▼ ---
-    # ログ(Trial 63)から、1e-5 ですら損失全体に大きな影響を与えていたため、
-    # 探索範囲を (1e-5, 1e-2) から (1e-7, 1e-4) に変更する。
-    spike_reg_weight = trial.suggest_float("spike_reg_weight", 1e-7, 1e-4, log=True)
-    # --- ▲▲▲ 修正 (v3) ▲▲▲ ---
+    # --- ▼▼▼ 修正 (v4): 探索範囲をさらに狭め、sparsity_reg_weight を追加 ▼▼▼ ---
+    # ログ(Trial 64)でも spike_reg_loss が 1e+7 と発散しているため、
+    # 探索範囲を (1e-7, 1e-4) から (1e-10, 1e-7) にさらに狭める。
+    spike_reg_weight = trial.suggest_float("spike_reg_weight", 1e-10, 1e-7, log=True)
     
-    # 必要に応じて他のパラメータも追加 (例: batch_size, warmup_epochs, neuron params...)
+    # sparsity_loss も 1e+3 と高いため、最適化対象に追加
+    sparsity_reg_weight = trial.suggest_float("sparsity_reg_weight", 1e-8, 1e-5, log=True)
+    # --- ▲▲▲ 修正 (v4) ▲▲▲ ---
     
     # --- 2. 設定の上書き ---
     # 各試行にユニークな出力ディレクトリを作成
@@ -77,6 +83,9 @@ def objective(trial: optuna.trial.Trial, args: argparse.Namespace) -> float:
         f"training.gradient_based.distillation.loss.ce_weight={ce_weight}",
         f"training.gradient_based.distillation.loss.distill_weight={distill_weight}",
         f"training.gradient_based.distillation.loss.spike_reg_weight={spike_reg_weight}",
+        # --- ▼▼▼ 修正 (v4): override に sparsity_reg_weight を追加 ▼▼▼ ---
+        f"training.gradient_based.distillation.loss.sparsity_reg_weight={sparsity_reg_weight}",
+        # --- ▲▲▲ 修正 (v4) ▲▲▲ ---
         # 最適化中は短いエポック数で実行
         f"training.epochs={args.eval_epochs}",
         f"training.log_dir={output_dir.as_posix()}" # ログ出力先を試行ごとに変更
@@ -98,7 +107,9 @@ def objective(trial: optuna.trial.Trial, args: argparse.Namespace) -> float:
         command.extend(["--override_config", override])
         
     logger.info(f"--- Starting Trial {trial.number} ---")
-    logger.info(f"Parameters: lr={lr:.5e}, temp={temperature:.2f}, ce_w={ce_weight:.2f}, spike_w={spike_reg_weight:.5e}")
+    # --- ▼▼▼ 修正 (v4): ログに sparsity_w を追加 ▼▼▼ ---
+    logger.info(f"Parameters: lr={lr:.5e}, temp={temperature:.2f}, ce_w={ce_weight:.2f}, spike_w={spike_reg_weight:.5e}, sparsity_w={sparsity_reg_weight:.5e}")
+    # --- ▲▲▲ 修正 (v4) ▲▲▲ ---
     logger.info(f"Command: {' '.join(command)}")
     
     try:

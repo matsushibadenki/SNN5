@@ -6,6 +6,10 @@
 #
 # 修正 (v6): HPO連携時の設定読み込みと適用のロジックを dependency-injector に
 #             合わせて修正。OmegaConf.update の誤用を修正。
+#
+# 修正 (v7): mypyエラー [arg-type], [call-arg] を修正。
+#            - container.tokenizer.provided を渡すように変更。
+#            - task.prepare_data に data_dir="data" を渡すように変更。
 
 import argparse
 import asyncio
@@ -108,7 +112,10 @@ async def main() -> None:
     device = container.device()
     
     # (cfg.model が正しく設定されたため、SNNCoreの初期化が成功するはず)
+    # --- ▼ 修正(v7): [arg-type] vocab_size=10 を明示的に渡す ▼ ---
+    # (タスクが "cifar10" であることが前提)
     student_model = container.snn_model(vocab_size=10).to(device)
+    # --- ▲ 修正(v7) ▲ ---
     optimizer = container.optimizer(params=student_model.parameters())
     scheduler = container.scheduler(optimizer=optimizer) if container.config.training.gradient_based.use_scheduler() else None
 
@@ -147,8 +154,14 @@ async def main() -> None:
     TaskClass = TASK_REGISTRY.get(args.task)
     if not TaskClass:
         raise ValueError(f"Task '{args.task}' not found.")
+        
+    # --- ▼ 修正(v7): [arg-type] .provided でインスタンスを取得 ▼ ---
     task = TaskClass(tokenizer=container.tokenizer.provided, device=device, hardware_profile={})
-    train_dataset, val_dataset = task.prepare_data()
+    # --- ▲ 修正(v7) ▲ ---
+    
+    # --- ▼ 修正(v7): [call-arg] data_dir を追加 ▼ ---
+    train_dataset, val_dataset = task.prepare_data(data_dir="data")
+    # --- ▲ 修正(v7) ▲ ---
 
     # 知識蒸留用にデータセットをラップ
     train_loader, val_loader = manager.prepare_dataset(

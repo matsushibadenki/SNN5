@@ -18,6 +18,8 @@
 # 修正 (v4): mypy [name-defined: logger] エラーを解消。
 # 修正 (v5): mypyエラー(v4)の修正漏れ（Union, cast）を再度修正。
 # 修正 (v6): mypy [name-defined] [operator] エラーを解消 (インポートの整理)
+#
+# 修正 (v7): SyntaxError: 末尾の余分な '}' を削除。
 
 import torch
 import torch.nn as nn

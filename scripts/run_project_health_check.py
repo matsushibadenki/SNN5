@@ -10,6 +10,11 @@
 # 本格的なテストの前に実行することを想定。
 #
 # mypy --strict 準拠。
+#
+# 修正 (v2):
+# - ベンチマークチェック (check2) が --eval_only で失敗していた問題を修正。
+# - --eval_only 関連の引数を削除し、--epochs 1 --batch_size 4 で
+#   実際に最小限の訓練・評価を実行するように変更。
 
 import subprocess
 import sys
@@ -43,7 +48,7 @@ def _run_check(command: List[str], check_name: str) -> bool:
         if process.stdout:
             for line in iter(process.stdout.readline, ''):
                 # ログが長くなりすぎないよう、簡易的に表示
-                if "Epoch" in line or "Result" in line or "INFO" in line or "Error" in line:
+                if "Epoch" in line or "Result" in line or "INFO" in line or "Error" in line or "fail" in line.lower() or "warning" in line.lower():
                     logger.info(f"  [{check_name}] {line.strip()}")
                 else:
                     # tqdmの進捗などは省略
@@ -81,23 +86,19 @@ def main():
     checks.append((_run_check(check1_cmd, "1. 代理勾配学習 (gradient_based)"), "代理勾配学習"))
 
     # 2. 簡易ベンチマーク (ANN vs SNN)
-    # 1エポック、SNNのみ (ANNを省略して高速化)
+    # --- ▼ 修正(v2): --eval_only を削除し、実際に最小限の訓練を実行 ▼ ---
     check2_cmd = [
         PYTHON_EXEC, "scripts/run_benchmark_suite.py",
         "--experiment", "cifar10_comparison",
         "--epochs", "1",
         "--batch_size", "4", # バッチサイズを小さく
-        "--eval_only", # 訓練済みモデルがないため、このチェックは失敗する可能性がある
-        "--model_type", "SNN", # SNNのみチェック
-        "--model_path", "runs/dummy_model_for_check.pth", # 存在しないパス (実行時エラーの確認)
+        # "--eval_only", # 削除
+        # "--model_type", "SNN", # 削除 (ANNとSNNの両方を実行)
+        # "--model_path", "runs/dummy_model_for_check.pth", # 削除
         "--model_config", "configs/cifar10_spikingcnn_config.yaml"
     ]
-    # (注: このテストは `best_model.pth` がないと失敗する。
-    #      ここでは「スクリプトが起動し、モデルロード失敗で正常に終了する」ことをテストする)
-    # (より良いテストは `train.py` でダミーモデルを生成することだが、ここでは簡易化)
-    _run_check(check2_cmd, "2. ベンチマーク実行 (eval_only)")
-    # (ベンチマークはセットアップが重いため、ここでは成否を問わない)
-    logger.info("  (ベンチマークはセットアップの確認のみ)")
+    checks.append((_run_check(check2_cmd, "2. ベンチマーク実行 (Train+Eval)"), "ベンチマーク実行"))
+    # --- ▲ 修正(v2) ▲ ---
 
 
     # 3. 簡易・生物学的学習テスト (Bio-RL)

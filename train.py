@@ -14,6 +14,15 @@
 # 修正 (v13):
 # - health-check ログで検出された `IndentationError: unexpected indent` を修正。
 #   `if train_size <= 0:` ブロックのインデントを元に戻す。
+#
+# 修正 (v14):
+# - health-check ログで検出された `TypeError: 'NoneType' object is not subscriptable` を修正。
+# - `collate_fn` (L86) が TrainingContainer クラス内にネストされていたインデントエラーを修正。
+# - データパスの決定ロジック (L263-L277) を修正し、`args.data_path` が最優先されるように変更。
+#
+# 修正 (v15):
+# - 循環インポートを解消するため、collate_fn を app/utils.py に移動し、
+#   ここからはインポートして使用するよう変更。
 
 import argparse
 import os
@@ -44,7 +53,9 @@ from snn_research.training.pruning import apply_sbc_pruning, apply_spatio_tempor
 # --- ▲ 修正 ▲ ---
 from scripts.data_preparation import prepare_wikitext_data
 from snn_research.core.snn_core import SNNCore
-from app.utils import get_auto_device
+# --- ▼ 修正 (v15): collate_fn を app/utils からインポート ▼ ---
+from app.utils import get_auto_device, collate_fn
+# --- ▲ 修正 (v15) ▲ ---
 # ◾️◾️◾️ 追加: logging ◾️◾️◾️
 import logging
 logger = logging.getLogger(__name__)
@@ -52,58 +63,9 @@ logger = logging.getLogger(__name__)
 # DIコンテナのセットアップ
 container = TrainingContainer()
 
-# --- ▼ 修正: collate_fn のインデントを修正 ▼ ---
-def collate_fn(tokenizer: PreTrainedTokenizerBase, is_distillation: bool) -> Callable[[List[Any]], Any]:
-    """
-    データローダー用の Collate 関数。
-    """
-    def collate(batch: List[Any]) -> Any:
-        padding_val = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
-        inputs: List[torch.Tensor] = []
-        targets: List[torch.Tensor] = []
-        logits: List[torch.Tensor] = [] # Only used if is_distillation
-
-        # Handle different batch item types (dict from HF, tuple from SNNBaseDataset)
-        for item in batch:
-            if isinstance(item, dict):
-                # Ensure keys exist and are tensors or tensor-like
-                inp = item.get('input_ids')
-                tgt = item.get('labels') # Assuming 'labels' key
-                if inp is None or tgt is None: continue # Skip invalid items
-                inputs.append(torch.tensor(inp) if not isinstance(inp, torch.Tensor) else inp)
-                targets.append(torch.tensor(tgt) if not isinstance(tgt, torch.Tensor) else tgt)
-                if is_distillation:
-                    lg = item.get('teacher_logits')
-                    if lg is not None: logits.append(torch.tensor(lg) if not isinstance(lg, torch.Tensor) else lg)
-                    else: logits.append(torch.empty(0)) # Placeholder if missing
-
-            elif isinstance(item, tuple) and len(item) >= 2:
-                # Ensure elements are tensors or tensor-like
-                inp = item[0]
-                tgt = item[1]
-                if not isinstance(inp, (torch.Tensor, list, tuple)) or not isinstance(tgt, (torch.Tensor, list, tuple)): continue
-                inputs.append(torch.tensor(inp) if not isinstance(inp, torch.Tensor) else inp)
-                targets.append(torch.tensor(tgt) if not isinstance(tgt, torch.Tensor) else tgt)
-                if is_distillation:
-                    if len(item) >= 3:
-                         lg = item[2]
-                         if lg is not None: logits.append(torch.tensor(lg) if not isinstance(lg, torch.Tensor) else lg)
-                         else: logits.append(torch.empty(0))
-                    else: logits.append(torch.empty(0))
-            else:
-                print(f"Warning: Skipping unsupported batch item type: {type(item)}")
-                continue # Skip unsupported item types
-
-        if not inputs or not targets: # If batch becomes empty after filtering
-            # Return empty structures that match expected types
-            if is_distillation:
-                return torch.empty((0, 0), dtype=torch.long), torch.empty((0, 0), dtype=torch.long), torch.empty((0, 0), dtype=torch.long), torch.empty((0, 0, 0), dtype=torch.float32)
-            else:
-                return {"input_ids": torch.empty((0, 0), dtype=torch.long),
-                        "attention_mask": torch.empty((0, 0), dtype=torch.long),
-                        "labels": torch.empty((0, 0), dtype=torch.long)}
-    return collate
-# --- ▲ 修正 ▲ ---
+# --- ▼ 修正 (v15): collate_fn のローカル定義を削除 ▼ ---
+# (L86-L156 の collate_fn 定義を削除)
+# --- ▲ 修正 (v15) ▲ ---
 
 
 # --- ▼ 修正 (v12): @inject を削除し、config: DictConfig を明示的に受け取る ▼ ---
@@ -155,19 +117,29 @@ def train(
 
         is_distillation = paradigm == "gradient_based" and config.training.gradient_based.type == "distillation"
 
-        # データセットの準備
-        wikitext_path = "data/wikitext-103_train.jsonl"
+        # --- ▼ 修正 (v14): データパスの決定ロジックを修正 ▼ ---
+        # 1. args.data_path (CLI引数) を最優先
         data_path: str
-        if os.path.exists(wikitext_path):
-            data_path = wikitext_path
+        if args.data_path:
+            data_path = args.data_path
+            logger.info(f"Using data_path from command line: {data_path}")
         else:
-             # 修正(v12): config は DictConfig なので .get() や OmegaConf.select を使用
-             data_path_config = OmegaConf.select(config, "data.path", default=None)
-             if not isinstance(data_path_config, str):
-                 data_path = args.data_path or "data/default_data.jsonl"
-                 print(f"Warning: config.data.path was not a string, using fallback: {data_path}")
-             else:
-                 data_path = args.data_path or data_path_config
+            # 2. config.data.path (設定ファイル)
+            data_path_config = OmegaConf.select(config, "data.path", default=None)
+            if not isinstance(data_path_config, str):
+                data_path = "data/default_data.jsonl" # 最終フォールバック
+                logger.warning(f"config.data.path was not a string, using fallback: {data_path}")
+            else:
+                data_path = data_path_config
+            
+            # 3. wikitext が存在する場合の上書き (ただし args.data_path が指定されていない場合のみ)
+            wikitext_path = "data/wikitext-103_train.jsonl"
+            if os.path.exists(wikitext_path):
+                data_path = wikitext_path
+                logger.info(f"Found wikitext, using data_path: {data_path}")
+            else:
+                 logger.info(f"Using data_path from config: {data_path}")
+        # --- ▲ 修正 (v14) ▲ ---
 
         DatasetClass = get_dataset_class(DataFormat(config.data.format))
         dataset: SNNBaseDataset
@@ -181,7 +153,7 @@ def train(
             dataset = DistillationDataset(file_path=distill_jsonl_path, data_dir=data_dir, tokenizer=tokenizer, max_seq_len=max_seq_len)
         else:
             if not os.path.exists(data_path):
-                 if data_path == wikitext_path:
+                 if data_path == "data/wikitext-103_train.jsonl": # wikitext が期待されていた場合
                       print(f"Data file '{data_path}' not found. Attempting to prepare WikiText data...")
                       prepared_path = prepare_wikitext_data()
                       if prepared_path != data_path:
@@ -218,8 +190,14 @@ def train(
         # --- ▼ 修正 ▼ ---
         train_sampler: Optional[Sampler[int]] = DistributedSampler(train_dataset) if is_distributed else None # Sampler[int] に修正
         # --- ▲ 修正 ▲ ---
-        train_loader = DataLoader(train_dataset, batch_size=config.training.batch_size, shuffle=(train_sampler is None), sampler=train_sampler, collate_fn=collate_fn(tokenizer, is_distillation), num_workers=0)
-        val_loader = DataLoader(val_dataset, batch_size=config.training.batch_size, shuffle=False, collate_fn=collate_fn(tokenizer, is_distillation), num_workers=0)
+        
+        # --- ▼ 修正 (v15): collate_fn をインポートして使用 ▼ ---
+        collate_fn_instance = collate_fn(tokenizer, is_distillation)
+        if collate_fn_instance is None:
+            raise RuntimeError("collate_fn factory returned None. Check app/utils.py for errors.")
+        train_loader = DataLoader(train_dataset, batch_size=config.training.batch_size, shuffle=(train_sampler is None), sampler=train_sampler, collate_fn=collate_fn_instance, num_workers=0)
+        val_loader = DataLoader(val_dataset, batch_size=config.training.batch_size, shuffle=False, collate_fn=collate_fn_instance, num_workers=0)
+        # --- ▲ 修正 (v15) ▲ ---
 
         snn_model: nn.Module = container.snn_model(backend=args.backend)
 

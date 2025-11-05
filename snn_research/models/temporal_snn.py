@@ -8,7 +8,9 @@
 # - 論文 arXiv:2511.01938v1 (Gated Spiking Recurrent Neural Networks) に基づき、
 #   GatedSNN (Spiking GRUライク) アーキテクチャを追加。
 # - 既存の TemporalFeatureExtractor を SimpleRSNN にリネーム。
-# - mypy --strict 準拠のための型ヒントを完全実装。
+# - mypy --strict 準拠のための型ヒントを完全実装
+#
+# 修正 (v3): SyntaxError の原因となった末尾の全角句点を削除。
 
 import torch
 import torch.nn as nn

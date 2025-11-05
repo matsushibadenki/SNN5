@@ -23,6 +23,9 @@
 # 修正 (v15):
 # - 循環インポートを解消するため、collate_fn を app/utils.py に移動し、
 #   ここからはインポートして使用するよう変更。
+#
+# 修正 (v16):
+# - SyntaxError: 末尾の余分な '}' を削除。
 
 import argparse
 import os

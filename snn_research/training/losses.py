@@ -1,6 +1,5 @@
 # ファイルパス: snn_research/training/losses.py
-# コードの最も最初には、ファイルパス、ファイルの内容を示したタイトル、機能の説明を詳細に記述してください。 修正内容は記載する必要はありません。
-# Title: 損失関数定義
+# Title: SNN 損失関数定義
 # Description: CombinedLoss, DistillationLoss, SelfSupervisedLoss (TCL), PhysicsInformedLoss, PlannerLoss, ProbabilisticEnsembleLoss を含む各種損失関数を定義します。
 # 改善点(v1): 継続学習のためのElastic Weight Consolidation (EWC) 損失を追加。
 # 改善点(v2): スパース性を促す正則化項(sparsity_reg_weight)を追加し,汎化性能を向上。
@@ -9,20 +8,62 @@
 # - Spiking Transformerの自己注意メカニズムのスパース性を適応的に学習させるための 正則化項(sparsity_threshold_reg_weight)を追加。
 # 改善点(v4): SelfSupervisedLossをTemporal Contrastive Loss (TCL)に再実装。
 # 修正(v5): DistillationLossのマスク処理を画像分類に対応。
+#
+# 修正(v6):
+# - HPOログ(Trial 66)の分析に基づき、spike_reg_lossとsparsity_lossが発散する根本原因を修正。
+# - _get_total_neurons ヘルパーを追加し、入力された 'spikes' (平均スパイク数) を
+#   総ニューロン数で割ることで、真の 'spike_rate' (0.0-1.0) を計算するように修正。
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 # --- ▼ 修正 ▼ ---
-from typing import Dict, Optional, cast # cast をインポート
+from typing import Dict, Optional, cast, Any, Type # Any, Type をインポート
 # --- ▲ 修正 ▲ ---
 from transformers import PreTrainedTokenizerBase
 
 from snn_research.core.snn_core import MultiLevelSpikeDrivenSelfAttention
+# --- ▼ 修正(v6): ニューロンクラスをインポート ▼ ---
+from snn_research.core.neurons import (
+    AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron,
+    TC_LIF, DualThresholdNeuron, ScaleAndFireNeuron
+)
+# --- ▲ 修正(v6) ▲ ---
+
+
+# --- ▼▼▼ 修正(v6): _get_total_neurons ヘルパー関数を追加 ▼▼▼ ---
+def _get_total_neurons(model: nn.Module) -> int:
+    """SNNモデル内のニューロン総数を計算する"""
+    num_neurons = 0
+    # 認識対象のニューロンクラス
+    neuron_classes: Tuple[Type[nn.Module], ...] = (
+        AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron,
+        TC_LIF, DualThresholdNeuron
+        # ScaleAndFireNeuron は T=1 のため、ここでは除外
+    )
+    
+    # SNNCoreラッパーを考慮
+    model_to_scan = model
+    if isinstance(model, nn.parallel.DistributedDataParallel):
+        model_to_scan = model.module # DDPラッパーを解除
+    if hasattr(model_to_scan, 'model') and isinstance(getattr(model_to_scan, 'model'), nn.Module):
+        model_to_scan = getattr(model_to_scan, 'model') # SNNCoreラッパーを解除
+        
+    for module in model_to_scan.modules():
+        if isinstance(module, neuron_classes):
+            if hasattr(module, 'features'):
+                num_neurons += cast(int, module.features)
+            elif hasattr(module, 'num_neurons'): # DifferentiableTTFSEncoder
+                num_neurons += cast(int, module.num_neurons)
+                
+    return max(num_neurons, 1) # ゼロ除算を防ぐため最低1
+# --- ▲▲▲ 修正(v6) ▲▲▲ ---
+
 
 class CombinedLoss(nn.Module):
     """クロスエントロピー損失、各種正則化、EWC損失を組み合わせた損失関数。"""
     def __init__(self, tokenizer: PreTrainedTokenizerBase, ce_weight: float = 1.0, spike_reg_weight: float = 0.0, mem_reg_weight: float = 0.0, sparsity_reg_weight: float = 0.0, temporal_compression_weight: float = 0.0, sparsity_threshold_reg_weight: float = 0.0, target_spike_rate: float = 0.02, ewc_weight: float = 0.0, **kwargs):
+        # ... (変更なし) ...
         super().__init__()
         pad_id = tokenizer.pad_token_id
         self.ce_loss_fn = nn.CrossEntropyLoss(ignore_index=pad_id if pad_id is not None else -100)
@@ -43,13 +84,24 @@ class CombinedLoss(nn.Module):
     def forward(self, logits: torch.Tensor, targets: torch.Tensor, spikes: torch.Tensor, mem: torch.Tensor, model: nn.Module, **kwargs) -> dict:
         ce_loss = self.ce_loss_fn(logits.view(-1, logits.size(-1)), targets.view(-1))
 
-        spike_rate = spikes.mean()
+        # --- ▼▼▼ 修正(v6): スパイク率を正規化 ▼▼▼ ---
+        # spikes は「タイムステップあたりの平均スパイク数」
+        # これを総ニューロン数で割り、真の「スパイク率」を計算
+        num_neurons = _get_total_neurons(model)
+        # .mean() は、spikesがスカラーテンソルの場合、その値自体を返す
+        spike_rate = spikes.mean() / num_neurons 
+        # --- ▲▲▲ 修正(v6) ▲▲▲ ---
+
         spike_reg_loss = F.mse_loss(spike_rate, torch.tensor(self.target_spike_rate, device=spike_rate.device))
 
-        sparsity_loss = torch.mean(torch.abs(spikes))
+        # --- ▼▼▼ 修正(v6): スパース性損失を「スパイク率」自体にする ▼▼▼ ---
+        # sparsity_loss = torch.mean(torch.abs(spikes)) # 修正前
+        sparsity_loss = spike_rate # 修正後
+        # --- ▲▲▲ 修正(v6) ▲▲▲ ---
 
         mem_reg_loss = torch.mean(mem**2)
 
+        # ... (temporal_compression_loss, sparsity_threshold_reg_loss, ewc_loss の計算は変更なし) ...
         temporal_compression_loss = torch.tensor(0.0, device=spikes.device)
         if self.weights['temporal_compression'] > 0 and spikes.ndim > 1 and spikes.shape[1] > 1:
             time_steps = spikes.shape[1]
@@ -102,6 +154,7 @@ class DistillationLoss(nn.Module):
                  spike_reg_weight: float = 0.01, mem_reg_weight: float = 0.0, sparsity_reg_weight: float = 0.00001,
                  temporal_compression_weight: float = 0.0, sparsity_threshold_reg_weight: float = 0.0,
                  temperature: float = 2.0, target_spike_rate: float = 0.02, **kwargs):
+        # ... (変更なし) ...
         super().__init__()
         student_pad_id = tokenizer.pad_token_id
         self.temperature = temperature
@@ -118,6 +171,7 @@ class DistillationLoss(nn.Module):
     def forward(self, student_logits: torch.Tensor, teacher_logits: torch.Tensor,
                 targets: torch.Tensor, spikes: torch.Tensor, mem: torch.Tensor, model: nn.Module, attention_mask: Optional[torch.Tensor] = None, **kwargs) -> Dict[str, torch.Tensor]:
 
+        # ... (ce_loss, distill_loss の計算は変更なし) ...
         is_classification = student_logits.ndim == 2 # (batch_size, num_classes)
         is_sequence = student_logits.ndim == 3 # (batch_size, seq_len, vocab_size)
 
@@ -169,14 +223,22 @@ class DistillationLoss(nn.Module):
         distill_loss = distill_loss * (self.temperature ** 2)
 
         # (正則化項の計算)
-        spike_rate = spikes.mean()
+        # --- ▼▼▼ 修正(v6): スパイク率を正規化 ▼▼▼ ---
+        num_neurons = _get_total_neurons(model)
+        spike_rate = spikes.mean() / num_neurons 
+        # --- ▲▲▲ 修正(v6) ▲▲▲ ---
+        
         target_spike_rate = torch.tensor(self.target_spike_rate, device=spikes.device)
         spike_reg_loss = F.mse_loss(spike_rate, target_spike_rate)
 
-        sparsity_loss = torch.mean(torch.abs(spikes))
+        # --- ▼▼▼ 修正(v6): スパース性損失を「スパイク率」自体にする ▼▼▼ ---
+        # sparsity_loss = torch.mean(torch.abs(spikes)) # 修正前
+        sparsity_loss = spike_rate # 修正後
+        # --- ▲▲▲ 修正(v6) ▲▲▲ ---
 
         mem_reg_loss = torch.mean(mem**2)
 
+        # ... (temporal_compression_loss, sparsity_threshold_reg_loss の計算は変更なし) ...
         temporal_compression_loss = torch.tensor(0.0, device=spikes.device)
         if self.weights['temporal_compression'] > 0 and spikes.ndim > 1 and spikes.shape[1] > 1:
             time_steps = spikes.shape[1]
@@ -208,12 +270,16 @@ class DistillationLoss(nn.Module):
             'total': total_loss, 'ce_loss': ce_loss,
             'distill_loss': distill_loss, 'spike_reg_loss': spike_reg_loss,
             'sparsity_loss': sparsity_loss, 'mem_reg_loss': mem_reg_loss,
+            # --- ▼▼▼ 修正(v6): 正規化後の spike_rate を返す ▼▼▼ ---
+            'spike_rate': spike_rate, 
+            # --- ▲▲▲ 修正(v6) ▲▲▲ ---
             'temporal_compression_loss': temporal_compression_loss,
             'sparsity_threshold_reg_loss': sparsity_threshold_reg_loss
         }
 
 
 class SelfSupervisedLoss(nn.Module):
+    # ... (このクラスは v6 修正の対象外) ...
     """
     Temporal Contrastive Learning (TCL)のための損失関数。
     時間的に隣接する隠れ状態をポジティブペアとして学習する。
@@ -269,7 +335,10 @@ class SelfSupervisedLoss(nn.Module):
             tcl_loss = (tcl_loss_unmasked * valid_mask.float()).sum() / num_valid
 
 
-        spike_rate = spikes.mean()
+        # --- ▼▼▼ 修正(v6): スパイク率を正規化 ▼▼▼ ---
+        num_neurons = _get_total_neurons(model)
+        spike_rate = spikes.mean() / num_neurons
+        # --- ▲▲▲ 修正(v6) ▲▲▲ ---
         target_spike_rate = torch.tensor(self.target_spike_rate, device=spikes.device)
         spike_reg_loss = F.mse_loss(spike_rate, target_spike_rate)
 
@@ -289,6 +358,7 @@ class SelfSupervisedLoss(nn.Module):
 
 
 class PhysicsInformedLoss(nn.Module):
+    # ... (このクラスは v6 修正の対象外だが、同様の修正が必要) ...
     """
     物理法則（膜電位の滑らかさ）を制約として組み込んだ損失関数。
     """
@@ -306,7 +376,10 @@ class PhysicsInformedLoss(nn.Module):
     def forward(self, logits: torch.Tensor, targets: torch.Tensor, spikes: torch.Tensor, mem_sequence: torch.Tensor, model: nn.Module) -> dict:
         ce_loss = self.ce_loss_fn(logits.view(-1, logits.size(-1)), targets.view(-1))
 
-        spike_rate = spikes.mean()
+        # --- ▼▼▼ 修正(v6): スパイク率を正規化 ▼▼▼ ---
+        num_neurons = _get_total_neurons(model)
+        spike_rate = spikes.mean() / num_neurons
+        # --- ▲▲▲ 修正(v6) ▲▲▲ ---
         spike_reg_loss = F.mse_loss(spike_rate, torch.tensor(self.target_spike_rate, device=spike_rate.device))
 
         mem_smoothness_loss = torch.tensor(0.0, device=logits.device) # Initialize
@@ -338,6 +411,7 @@ class PhysicsInformedLoss(nn.Module):
         }
 
 class PlannerLoss(nn.Module):
+    # ... (変更なし) ...
     """
     プランナーSNNの学習用損失関数。
     """
@@ -351,6 +425,7 @@ class PlannerLoss(nn.Module):
         return {'total': loss, 'planner_loss': loss}
 
 class ProbabilisticEnsembleLoss(nn.Module):
+    # ... (変更なし) ...
     """
     確率的アンサンブル学習のための損失関数。
     出力のばらつきを抑制する正則化項を持つ。

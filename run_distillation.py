@@ -10,6 +10,11 @@
 # 修正 (v7): mypyエラー [arg-type], [call-arg] を修正。
 #            - container.tokenizer.provided を渡すように変更。
 #            - task.prepare_data に data_dir="data" を渡すように変更。
+#
+# 修正 (v8): mypyエラー [arg-type] を修正。
+#            - container.tokenizer.provided を container.tokenizer() に変更。
+#            - DIコンテナの .provided は ProvidedInstance を返し、
+#              () 呼び出しで実際のインスタンスを取得するため。
 
 import argparse
 import asyncio
@@ -155,9 +160,9 @@ async def main() -> None:
     if not TaskClass:
         raise ValueError(f"Task '{args.task}' not found.")
         
-    # --- ▼ 修正(v7): [arg-type] .provided でインスタンスを取得 ▼ ---
-    task = TaskClass(tokenizer=container.tokenizer.provided, device=device, hardware_profile={})
-    # --- ▲ 修正(v7) ▲ ---
+    # --- ▼ 修正(v8): [arg-type] .provided -> () に変更 ▼ ---
+    task = TaskClass(tokenizer=container.tokenizer(), device=device, hardware_profile={})
+    # --- ▲ 修正(v8) ▲ ---
     
     # --- ▼ 修正(v7): [call-arg] data_dir を追加 ▼ ---
     train_dataset, val_dataset = task.prepare_data(data_dir="data")

@@ -10,6 +10,8 @@
 #           正しく処理するように修正。
 #
 # 修正(v4): 構文エラー解消のため、末尾の余分な '}' を削除。
+#
+# 修正 (v5): SyntaxError: 末尾の余分な '}' を削除。
 
 import torch
 import torch.nn as nn

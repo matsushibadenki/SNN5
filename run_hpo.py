@@ -34,6 +34,12 @@
 # - 根本原因を losses.py 側で対応（スパイク率の正規化）。
 # - それに伴い、run_hpo.py の探索範囲を、直感的で妥当な
 #   (例: 0.01 や 0.0001) 範囲に戻す。
+#
+# 修正 (v8):
+# - ログ(Trial 68)の分析に基づき、v7の探索範囲ではCE/Distill損失(〜0.8)に
+#   対して正則化項の寄与(〜0.0003)が小さすぎると判明。
+# - losses.py(v6)で正規化された損失値(0.0-1.0)と競合できるよう、
+#   重みの探索範囲を (0.1〜10.0) のオーダーに「拡大」する。
 
 import optuna
 import argparse
@@ -75,12 +81,14 @@ def objective(trial: optuna.trial.Trial, args: argparse.Namespace) -> float:
     ce_weight = trial.suggest_float("ce_weight", 0.1, 0.5)
     distill_weight = 1.0 - ce_weight # 合わせて1になるように
     
-    # --- ▼▼▼ 修正 (v7): 探索範囲を妥当な値に戻す ▼▼▼ ---
-    # losses.py でスパイク率が 0.0-1.0 に正規化されたため、
-    # 重みも 0.01 や 0.0001 といった妥当な範囲で探索する。
-    spike_reg_weight = trial.suggest_float("spike_reg_weight", 1e-3, 1e-1, log=True)
-    sparsity_reg_weight = trial.suggest_float("sparsity_reg_weight", 1e-6, 1e-3, log=True)
-    # --- ▲▲▲ 修正 (v7) ▲▲▲ ---
+    # --- ▼▼▼ 修正 (v8): 探索範囲を「拡大」 ▼▼▼ ---
+    # losses.py (v6) でスパイク率/損失が 0.0-1.0 範囲に正規化された。
+    # CE/Distill損失 (〜0.8) と競合させるため、正則化の「重み」は
+    # 1e-3 のような小さな値ではなく、0.1や1.0、あるいは10.0といった
+    # オーダーである必要がある。
+    spike_reg_weight = trial.suggest_float("spike_reg_weight", 0.1, 10.0, log=True)
+    sparsity_reg_weight = trial.suggest_float("sparsity_reg_weight", 0.01, 5.0, log=True)
+    # --- ▲▲▲ 修正 (v8) ▲▲▲ ---
     
     # --- 2. 設定の上書き ---
     # 各試行にユニークな出力ディレクトリを作成

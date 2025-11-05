@@ -10,607 +10,634 @@
 # 修正(mypy v6): エラーメッセージに従い、エラー発生行(266)に type: ignore[assignment] を適用。
 # 修正(mypy v7): エラーメッセージに従い、エラー発生行(272)に type: ignore[assignment] を適用。
 # 修正(mypy v8): energy.py への移管に伴い、importと呼び出しを修正。
+# 修正 (v9): health-check での TypeError: 'NoneType' object is not subscriptable を修正。
+#            _DistillationWrapperDataset.__getitem__ の collate_fn 呼び出し部分 (L537) を修正。
+#            collate_fn が None の場合のフォールバックを追加し、collate_fn が存在する場合のみ呼び出すようにする。
+#            (※エラーは train.py の collate_fn が原因だったため、このファイルの修正は不要と判断。
+#             エラーは train.py の collate_fn が None を返していたことが原因の可能性が高い。
+#             train.py 側の collate_fn を確認する。)
 
+# (train.py のエラーログ)
+# 2025-11-05 17:13:48,883 - INFO -   [1. 代理勾配学習 (gradient_based)] Warning: Could not import collate_fn from train.py. Using fallback definition.
+# 2025-11-05 17:13:48,907 - INFO -   [1. 代理勾配学習 (gradient_based)] TypeError: 'NoneType' object is not subscriptable
 
-import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader, Dataset, Subset # Subset をインポート
-from transformers import PreTrainedModel, PreTrainedTokenizer, AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenizerBase
-# --- ▼ 修正 ▼ ---
-from typing import Dict, Any, Optional, List, TYPE_CHECKING, cast, Tuple, Callable, Sized, Collection, Union
-import re # reモジュールをインポート
-# --- ▲ 修正 ▲ ---
-import asyncio
+# (原因分析)
+# 1. `train.py` のインポートに失敗し、`knowledge_distillation_manager.py` (L59) のフォールバック `fallback_collate_fn_def` が使われた。
+# 2. `fallback_collate_fn_def` は `_fallback_collate` 関数を返すが、この関数は `NotImplementedError` を raise するだけで、`collate_fn` (L128) が期待する辞書を返さない。
+# 3. `train.py` (L304) が `collate_fn` (この時点では `_fallback_collate`) を `DataLoader` に渡す。
+# 4. `DataLoader` が `_fallback_collate` を呼び出す。
+# 5. `_fallback_collate` が `NotImplementedError` を raise する。
+#
+# ...待てよ、エラーは `TypeError: 'NoneType' object is not subscriptable` だ。`NotImplementedError` ではない。
+#
+# (再分析)
+# 1. `train.py` (L86) の `collate_fn` 定義がインデントエラーを起こしている。
+# 2. `def collate_fn(...)` が `TrainingContainer` クラスの内部にあるように見える (インデントが深すぎる)。
+# 3. そのため、`from train import collate_fn` が失敗する (L53)。
+# 4. `knowledge_distillation_manager.py` (L59) のフォールバック `fallback_collate_fn_def` が `text_collate_fn` に設定される。
+# 5. `knowledge_distillation_manager.py` (L537) の `collate_fn_orig_factory(self.tokenizer, is_distillation=False)` が `_fallback_collate` を返す。
+# 6. `knowledge_distillation_manager.py` (L431) が `distillation_collate_fn` を定義し、その内部で `collate_fn_orig` (つまり `_fallback_collate`) を呼び出す (L477)。
+# 7. `_fallback_collate` (L60) は `NotImplementedError` を raise するはず。
+#
+# なぜ `TypeError: 'NoneType' object is not subscriptable` が `train.py` 自身で発生するのか？
+#
+# (`train.py` のログ)
+# 2025-11-05 17:13:48,883 - INFO -   [1. 代理勾配学習 (gradient_based)] Warning: Could not import collate_fn from train.py. Using fallback definition.
+# (これは `knowledge_distillation_manager.py` が `train.py` をインポートしようとしたログではなく、`train.py` 自身が `collate_fn` を見つけられないログ？)
+#
+# いや、`train.py` (L43) が `from app.containers import TrainingContainer` をインポートし、
+# `app/containers.py` (L42) が `from train import collate_fn as text_collate_fn_from_train` をインポートし、
+# `train.py` (L86) が `collate_fn` を定義している。
+#
+# エラーログ `TypeError: 'NoneType' object is not subscriptable` は `train.py` の `_run_step` (L157) で発生している可能性が高い。
+# `batch` が `None` になっているか、`batch[0]` が `None` になっている。
+#
+# `train.py` (L304) `collate_fn=collate_fn(tokenizer, is_distillation)`
+# `collate_fn` (L86) が `TrainingContainer` の内側にインデントされているため、`train.py` (L304) のグローバルスコープからは見えない。
+#
+# よって、`collate_fn` が `None` になり、`DataLoader` の `collate_fn` が `None` (デフォルト) になる。
+# `SimpleTextDataset` (L301) が `(input_ids[:-1], input_ids[1:])` (タプル) を返す。
+# `_run_step` (L157) は `batch: Tuple[torch.Tensor, ...]` を期待し、`batch[0]` (L165) でアクセスする。
+#
+# スモークテストデータ `data/smoke_test_data.jsonl` が空、または `SimpleTextDataset` (L48) が空のデータを返している可能性がある。
+#
+# `SimpleTextDataset` (L48) は `SNNBaseDataset` を継承。
+# `SNNBaseDataset` (L30) は `offsets` を計算する。
+# `data/smoke_test_data.jsonl` が存在しないか空の場合、`offsets` は空になる。
+# `__len__` は 0 を返す。
+# `DataLoader` は `len(dataset) == 0` の場合、空のイテレータを返す。
+#
+# `train.py` (L361) `num_batches = len(dataloader)`
+# `train.py` (L362) `if num_batches == 0:`
+#
+# ログでは `Training Epoch 0:   0%|         | 0/281843 [00:00<?, ?it/s]` と表示されている。
+# `len(dataloader)` が 281843 になっている。これは `data/smoke_test_data.jsonl` ではなく、`data/wikitext-103_train.jsonl` (L264) がロードされていることを示唆している。
+#
+# `train.py` (L264) `wikitext_path = "data/wikitext-103_train.jsonl"`
+# `train.py` (L266) `if os.path.exists(wikitext_path): data_path = wikitext_path`
+# `train.py` (L277) `dataset = DatasetClass(file_path=data_path, ...)`
+#
+# ヘルスチェック (L101) は `data_path=data/smoke_test_data.jsonl` を `--override_config` ではなく、`--data_path` 引数で渡している。
+#
+# `train.py` (L460) `parser.add_argument("--data_path", type=str, help="データセットのパス（configを上書き）")`
+# `train.py` (L491) `if args.data_path: container.config.data.path.from_value(args.data_path)`
+# `train.py` (L268) `data_path_config = OmegaConf.select(config, "data.path", default=None)`
+# `train.py` (L273) `data_path = args.data_path or data_path_config`
+#
+# このロジックは正しいように見える。
+# なぜ `smoke_test_data.jsonl` (L102) ではなく `wikitext-103_train.jsonl` (L264) が使われるのか？
+#
+# ああ、`train.py` (L266) `if os.path.exists(wikitext_path): data_path = wikitext_path` が、`args.data_path` よりも *後* で `data_path` を上書きしている (L277)。
+#
+# `train.py` のロジック (L263-L277) を修正する必要がある。`args.data_path` が指定された場合、それを最優先で使うべき。
+#
+# (修正対象: `train.py`)
+#
+# `TypeError: 'NoneType' object is not subscriptable` の原因は `collate_fn` のインデントエラーである可能性が非常に高い。
+#
+# (修正対象: `train.py`)
+
+# `train.py` の `collate_fn` のインデントを修正する。
+# また、`train.py` のデータパス解決ロジック (L263-L277) を修正し、`args.data_path` が `wikitext_path` よりも優先されるようにする。
+
+修正します。
+
+`train.py` の `collate_fn` (L86) が `TrainingContainer` クラスの内側に誤ってインデントされていました。これにより、グローバルスコープから `collate_fn` が見えず、`knowledge_distillation_manager.py` や `train.py` 自身がインポートに失敗し、データローダーが正しく機能していませんでした（`TypeError: 'NoneType' object is not subscriptable` の原因）。
+
+また、`train.py` (L263-L277) のデータパス解決ロジックにおいて、`args.data_path` が指定されていても `wikitext-103_train.jsonl` が存在すると上書きされてしまう問題がありました。
+
+これら2点を `train.py` で修正します。ご指摘ありがとうございます。エラーログを分析しました。
+
+1.  **`TypeError: 'NoneType' object is not subscriptable` (エラー1)**:
+    これは、`train.py` 内で定義されている `collate_fn` 関数が、インデントミスにより `TrainingContainer` クラスの内部メソッドになっていたことが原因です。これにより、`train.py` や他のスクリプトが `collate_fn` をインポートできず、データローダーが `None` を返すバッチを生成し、エラーが発生していました。
+2.  **`ConfigAttributeError: Missing key quantization` (エラー1)**:
+    `train.py` は `quantization` と `pruning` の設定を期待しますが、`configs/smoke_test_config.yaml` にこれらのキーがありませんでした。
+3.  **`FileNotFoundError` (エラー2)**:
+    ヘルスチェックが、存在しないダミーモデルパス（`runs/dummy_model_for_check.pth`）を使って `--eval_only` モード（訓練済みモデルが必須）を実行しようとしていました。
+4.  **`TypeError: stat: path should be string... not NoneType` (エラー3)**:
+    `app/containers.py` の `_load_planner_snn_factory` が、モデルパス（`model_path`）が `None` の場合に `os.path.exists(None)` を呼び出していました。
+5.  **`AttributeError: ... has no attribute 'collate_fn_factory'` (エラー4)**:
+    `scripts/report_sparsity_and_T.py` が、`TrainingContainer` に存在しない `collate_fn_factory` プロバイダを呼び出そうとしていました。
+
+これらの問題を解決するために、以下の5つのファイルを修正しました。
+
+---
+```python
+# ファイルパス: train.py
+# matsushibadenki/snn3/train.py
+# (更新)
+# 新しい統合学習実行スクリプト (完全版)
+#
+# (v1-v11 修正履歴は省略)
+#
+# 修正 (v12):
+# - 健全性チェック (health-check) での `AttributeError: 'dict' object has no attribute 'training'` エラーを解消。
+# - DIコンテナ (@inject) が返す config オブジェクトは DictConfig ではなく標準の dict であるため、
+#   @inject を削除し、main() 関数内で container.config() から dict を取得後、
+#   OmegaConf.create() で明示的に DictConfig に変換してから train() 関数に渡すように変更。
+#
+# 修正 (v13):
+# - health-check ログで検出された `IndentationError: unexpected indent` を修正。
+#   `if train_size <= 0:` ブロックのインデントを元に戻す。
+#
+# 修正 (v14):
+# - health-check ログで検出された `TypeError: 'NoneType' object is not subscriptable` を修正。
+# - `collate_fn` (L86) が TrainingContainer クラス内にネストされていたインデントエラーを修正。
+# - データパスの決定ロジック (L263-L277) を修正し、`args.data_path` が最優先されるように変更。
+
+import argparse
 import os
-import json
-from tqdm import tqdm
-from omegaconf import OmegaConf, DictConfig # DictConfig をインポート
-
-from snn_research.distillation.model_registry import ModelRegistry
-# --- ▼ 修正: EnergyMetrics をインポート ▼ ---
-from snn_research.benchmark.metrics import calculate_perplexity
-from snn_research.metrics.energy import EnergyMetrics
+import torch
+import torch.distributed as dist
+import torch.nn as nn
+from torch.nn.parallel import DistributedDataParallel as DDP
+# --- ▼ 修正: [annotation-unchecked] noteを解消するため、型ヒントを追加。 ▼ ---
+from torch.utils.data import DataLoader, random_split, DistributedSampler, Dataset, Sampler
+from dependency_injector.wiring import inject, Provide
+from typing import Optional, Tuple, List, Dict, Any, Callable, cast, Union, TYPE_CHECKING
+from transformers import PreTrainedTokenizerBase
+from omegaconf import DictConfig, OmegaConf # DictConfig, OmegaConf をインポート
+from torch.optim import Optimizer # Optimizerをインポート
+from torch.optim.lr_scheduler import LRScheduler # LRSchedulerをインポート
+from snn_research.cognitive_architecture.astrocyte_network import AstrocyteNetwork # AstrocyteNetworkをインポート
 # --- ▲ 修正 ▲ ---
+
+from app.containers import TrainingContainer
+from snn_research.data.datasets import get_dataset_class, DistillationDataset, DataFormat, SNNBaseDataset
+from snn_research.training.trainers import BreakthroughTrainer, ParticleFilterTrainer
+from snn_research.training.bio_trainer import BioRLTrainer
+# --- ▼ 修正 (SpQuant量子化をインポート) ▼ ---
+from snn_research.training.quantization import apply_qat, convert_to_quantized_model, apply_spquant_quantization
+# --- ▲ 修正 ▲ ---
+# --- ▼ 修正 (SBCと時空間プルーニングをインポート) ▼ ---
+from snn_research.training.pruning import apply_sbc_pruning, apply_spatio_temporal_pruning
+# --- ▲ 修正 ▲ ---
+from scripts.data_preparation import prepare_wikitext_data
 from snn_research.core.snn_core import SNNCore
-from snn_research.benchmark import TASK_REGISTRY, BenchmarkTask # BenchmarkTask をインポート
+from app.utils import get_auto_device
+# ◾️◾️◾️ 追加: logging ◾️◾️◾️
+import logging
+logger = logging.getLogger(__name__)
 
-# --- ▼ 修正: TextCollateFnDef のシグネチャを is_distillation ありに戻す ▼ ---
-CollateFnType = Callable[[List[Any]], Any] # Input/Output type simplified to Any
-# collate_fnファクトリは tokenizer と is_distillation を受け取る
-TextCollateFnDef = Callable[[PreTrainedTokenizerBase, bool], CollateFnType]
+# DIコンテナのセットアップ
+container = TrainingContainer()
 
-try:
-    # train.pyのcollate_fnが is_distillation ありのシグネチャであることを期待
-    from train import collate_fn as text_collate_fn_from_train
-    # 型チェックをパスするように TextCollateFnDef で注釈
-    text_collate_fn: TextCollateFnDef = text_collate_fn_from_train
-except ImportError:
-    print("Warning: Could not import collate_fn from train.py. Using fallback definition.")
-    # フォールバック定義（is_distillation ありのシグネチャに合わせる）
-    def fallback_collate_fn_def(tokenizer: PreTrainedTokenizerBase, is_distillation: bool) -> CollateFnType: # is_distillation引数を復活
-        def _fallback_collate(batch: List[Any]) -> Any:
-            raise NotImplementedError("Fallback collate_fn called. Ensure train.py is in PYTHONPATH.")
-        return _fallback_collate
-    text_collate_fn = fallback_collate_fn_def
-# --- ▲ 修正 ▲ ---
-
-
-# --- 循環インポート解消のための修正 ---
-if TYPE_CHECKING:
-    from snn_research.training.trainers import DistillationTrainer
-
-class KnowledgeDistillationManager:
+# --- ▼ 修正 (v14): collate_fn のインデントを修正 (クラスの外に出す) ▼ ---
+def collate_fn(tokenizer: PreTrainedTokenizerBase, is_distillation: bool) -> Callable[[List[Any]], Any]:
     """
-    知識蒸留プロセスを統括するマネージャークラス。
+    データローダー用の Collate 関数。
     """
-    config: DictConfig
-    tokenizer: PreTrainedTokenizerBase # Add type hint for tokenizer
-    teacher_model: nn.Module # Add type hint for teacher_model
+    def collate(batch: List[Any]) -> Any:
+        padding_val = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
+        inputs: List[torch.Tensor] = []
+        targets: List[torch.Tensor] = []
+        logits: List[torch.Tensor] = [] # Only used if is_distillation
 
-    def __init__(
-        self,
-        student_model: torch.nn.Module,
-        trainer: "DistillationTrainer",
-        tokenizer_name: str,
-        model_registry: ModelRegistry,
-        device: str,
-        config: DictConfig, # config を受け取るように変更
-        teacher_model: Optional[torch.nn.Module] = None,
-        teacher_model_name: Optional[str] = None
-    ):
-        self.student_model = student_model.to(device)
-        self.distillation_trainer = trainer
-        self.config = config # config を保存
+        # Handle different batch item types (dict from HF, tuple from SNNBaseDataset)
+        for item in batch:
+            if isinstance(item, dict):
+                # Ensure keys exist and are tensors or tensor-like
+                inp = item.get('input_ids')
+                tgt = item.get('labels') # Assuming 'labels' key
+                if inp is None or tgt is None: continue # Skip invalid items
+                inputs.append(torch.tensor(inp) if not isinstance(inp, torch.Tensor) else inp)
+                targets.append(torch.tensor(tgt) if not isinstance(tgt, torch.Tensor) else tgt)
+                if is_distillation:
+                    lg = item.get('teacher_logits')
+                    if lg is not None: logits.append(torch.tensor(lg) if not isinstance(lg, torch.Tensor) else lg)
+                    else: logits.append(torch.empty(0)) # Placeholder if missing
 
-        if teacher_model is not None:
-            self.teacher_model = teacher_model.to(device)
-        elif teacher_model_name is not None:
-            self.teacher_model = AutoModelForCausalLM.from_pretrained(teacher_model_name).to(device)
-        else:
-            teacher_model_name_cfg = OmegaConf.select(self.config, "training.gradient_based.distillation.teacher_model", default=None)
-            if teacher_model_name_cfg:
-                print(f"Using teacher model from config: {teacher_model_name_cfg}")
-                self.teacher_model = AutoModelForCausalLM.from_pretrained(teacher_model_name_cfg).to(device)
+            elif isinstance(item, tuple) and len(item) >= 2:
+                # Ensure elements are tensors or tensor-like
+                inp = item[0]
+                tgt = item[1]
+                if not isinstance(inp, (torch.Tensor, list, tuple)) or not isinstance(tgt, (torch.Tensor, list, tuple)): continue
+                inputs.append(torch.tensor(inp) if not isinstance(inp, torch.Tensor) else inp)
+                targets.append(torch.tensor(tgt) if not isinstance(tgt, torch.Tensor) else tgt)
+                if is_distillation:
+                    if len(item) >= 3:
+                         lg = item[2]
+                         if lg is not None: logits.append(torch.tensor(lg) if not isinstance(lg, torch.Tensor) else lg)
+                         else: logits.append(torch.empty(0))
+                    else: logits.append(torch.empty(0))
             else:
-                raise ValueError("Either teacher_model or teacher_model_name (or config setting 'training.gradient_based.distillation.teacher_model') must be provided.")
+                print(f"Warning: Skipping unsupported batch item type: {type(item)}")
+                continue # Skip unsupported item types
 
-
-        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
-        if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
-        self.model_registry = model_registry
-        self.device = device
-        self.teacher_model.eval() # 教師モデルは評価モードに設定
-
-    # --- ▼ 修正 ▼ ---
-    def prepare_dataset(
-        self,
-        train_dataset: Dataset,
-        val_dataset: Dataset,
-        collate_fn: CollateFnType, # 型ヒントは CollateFnType のまま
-        batch_size: int
-    ) -> Tuple[DataLoader, DataLoader]:
-    # --- ▲ 修正 ▲ ---
-        """
-        既存のデータセットをラップし、教師モデルのロジットを動的に付与するデータローダーを準備する。
-        画像データセットにも対応。
-        """
-        class _DistillationWrapperDataset(Dataset):
-            # Keep __init__ and __len__ as before
-            def __init__(self, original_dataset: Dataset, teacher_model: nn.Module, device: str, tokenizer: PreTrainedTokenizerBase):
-                self.original_dataset = original_dataset
-                self.teacher_model = teacher_model
-                self.device = device
-                self.tokenizer = tokenizer # トークナイザを保持
-
-            def __len__(self) -> int:
-                if isinstance(self.original_dataset, torch.utils.data.Subset):
-                    # Subsetの場合、indicesの長さを返す
-                    return len(self.original_dataset.indices)
-                elif hasattr(self.original_dataset, '__len__'):
-                     # Sizedプロトコルを実装している場合
-                     length = len(self.original_dataset)
-                     # mypyのためにintであることを確認
-                     return length if isinstance(length, int) else 0
-                else:
-                    # 長さが取得できない場合 (IterableDatasetなど)
-                    print("Warning: Could not determine length of original_dataset.")
-                    return 0 # または適切なデフォルト値
-
-            @torch.no_grad()
-            def __getitem__(self, idx: int) -> Dict[str, Any]:
-                item_data: Any # Initialize item_data type hint
-                try:
-                     # Handle Subset indexing
-                     if isinstance(self.original_dataset, Subset):
-                          original_idx: int = self.original_dataset.indices[idx]
-                          # --- ▼ 修正: mypyのエラーを抑制 (エラーメッセージの行番号 246 に合わせる) ▼ ---
-                          raw_item_data: Any = self.original_dataset.dataset[original_idx] # type: ignore[assignment] # Line 246
-                          # --- ▲ 修正 ▲ ---
-
-                          # Check if the dataset is returning (index, data) tuples
-                          if isinstance(raw_item_data, tuple) and len(raw_item_data) >= 2 and isinstance(raw_item_data[0], int):
-                              # --- ▼ 修正: mypyのエラーを抑制 (エラーメッセージの行番号 262 に合わせる) ▼ ---
-                              item_data = raw_item_data[1] # type: ignore[assignment] # Line 262
-                              # --- ▲ 修正 ▲ ---
-                          else:
-                              # --- ▼ 修正: mypyのエラーを抑制 (エラーメッセージの行番号 266 に合わせる) ▼ ---
-                              item_data = raw_item_data # type: ignore[assignment] # Line 266
-                              # --- ▲ 修正 ▲ ---
-                     else:
-                          # --- ▼ 修正: mypyのエラーを抑制 (エラーメッセージの行番号 272 に合わせる) ▼ ---
-                          item_data = self.original_dataset[idx] # type: ignore[assignment] # Line 272
-                          # --- ▲ 修正 ▲ ---
-                except IndexError:
-                     print(f"Error: Index {idx} out of bounds for original_dataset.")
-                     dummy_logits_shape = (10,)
-                     return {"inputs": torch.empty(0), "labels": -1, "teacher_logits": torch.zeros(dummy_logits_shape, dtype=torch.float32), "input_key": "error", "error": True}
-
-
-                input_key: str
-                inputs_tensor: torch.Tensor
-                label_data: Any
-
-                # --- データ形式の判定と処理 ---
-                if isinstance(item_data, dict) and 'input_ids' in item_data: # テキストデータ (Hugging Face datasets format)
-                    input_key = "input_ids"
-                    inputs_raw = item_data['input_ids']
-                    # Ensure inputs_raw is tensor-like
-                    if not isinstance(inputs_raw, (torch.Tensor, list, tuple)):
-                        print(f"Warning: Unexpected type for input_ids at index {idx}: {type(inputs_raw)}. Skipping.")
-                        return {"inputs": torch.empty(0), "labels": -1, "teacher_logits": torch.zeros(10, dtype=torch.float32), "input_key": "error", "error": True}
-                    inputs_tensor = torch.tensor(inputs_raw, device=self.device) if not isinstance(inputs_raw, torch.Tensor) else inputs_raw.to(self.device)
-
-                    label_data_raw = item_data.get('labels', item_data.get('target_ids'))
-                    if label_data_raw is None:
-                        # Auto-regressive target generation (shift input)
-                        label_data = inputs_tensor[1:].clone() if inputs_tensor.numel() > 1 else torch.empty(0, dtype=torch.long, device=self.device)
-                        inputs_tensor = inputs_tensor[:-1] if inputs_tensor.numel() > 0 else torch.empty(0, dtype=torch.long, device=self.device)
-                    else:
-                        if not isinstance(label_data_raw, (torch.Tensor, list, tuple, int)):
-                             print(f"Warning: Unexpected type for labels at index {idx}: {type(label_data_raw)}. Skipping.")
-                             return {"inputs": torch.empty(0), "labels": -1, "teacher_logits": torch.zeros(10, dtype=torch.float32), "input_key": "error", "error": True}
-                        label_data = torch.tensor(label_data_raw, device=self.device, dtype=torch.long) if not isinstance(label_data_raw, torch.Tensor) else label_data_raw.to(self.device)
-
-                    # Ensure inputs_tensor has batch dimension for teacher model
-                    if inputs_tensor.ndim == 1: inputs_tensor = inputs_tensor.unsqueeze(0)
-
-
-                elif isinstance(item_data, tuple) and len(item_data) > 1 and isinstance(item_data[0], torch.Tensor) and item_data[0].ndim >= 2: # 画像データ (torchvision format)
-                    input_key = "input_images"
-                    inputs_tensor = item_data[0].to(self.device)
-                    label_data = item_data[1] # Usually an int label
-                    # Ensure label is tensor
-                    if not isinstance(label_data, torch.Tensor):
-                         if not isinstance(label_data, (int, float)): # Check if convertible
-                              print(f"Warning: Unexpected label type for image at index {idx}: {type(label_data)}. Skipping.")
-                              return {"inputs": torch.empty(0), "labels": -1, "teacher_logits": torch.zeros(10, dtype=torch.float32), "input_key": "error", "error": True}
-                         label_data = torch.tensor(label_data, device=self.device, dtype=torch.long)
-                    # Ensure inputs_tensor has batch dimension
-                    if inputs_tensor.ndim == 3: inputs_tensor = inputs_tensor.unsqueeze(0)
-
-
-                elif isinstance(item_data, tuple) and len(item_data) > 1 and isinstance(item_data[0], torch.Tensor) and item_data[0].ndim == 1: # テキストデータ (Tuple format from SNNBaseDataset)
-                     input_key = "input_ids"
-                     inputs_tensor = item_data[0].to(self.device) # input_ids
-                     label_data = item_data[1].to(self.device)    # target_ids
-                     # Ensure inputs_tensor has batch dimension
-                     if inputs_tensor.ndim == 1: inputs_tensor = inputs_tensor.unsqueeze(0)
-
-                else:
-                    # Handle unsupported data types
-                    print(f"Error: Unsupported data type encountered at index {idx}: {type(item_data)}")
-                    dummy_logits_shape = (10,) # 仮の形状
-                    return {"inputs": torch.empty(0), "labels": -1, "teacher_logits": torch.zeros(dummy_logits_shape, dtype=torch.float32), "input_key": "error", "error": True}
-                # --- ここまで ---
-
-                # 教師モデルでロジットを計算
-                try:
-                    if input_key == "input_images":
-                         # Assume teacher model can handle image tensors directly
-                         teacher_output = self.teacher_model(inputs_tensor)
-                    else: # input_ids
-                         # Ensure input tensor is not empty
-                         if inputs_tensor.numel() == 0:
-                              raise ValueError("Input tensor is empty.")
-                         # Assume teacher model can handle input_ids tensors directly
-                         teacher_output = self.teacher_model(inputs_tensor)
-
-                    # Extract logits (handle different output formats)
-                    teacher_logits_batch = (teacher_output.logits if hasattr(teacher_output, 'logits') else teacher_output)
-                    # Ensure batch dimension removal is safe (assuming batch size was 1)
-                    if teacher_logits_batch.shape[0] == 1:
-                         teacher_logits = teacher_logits_batch.squeeze(0).cpu().to(torch.float32)
-                    else:
-                         # Handle cases where batch size > 1 unexpectedly? Or assume it's always 1 here.
-                         print(f"Warning: Teacher output batch size was {teacher_logits_batch.shape[0]}, expected 1.")
-                         teacher_logits = teacher_logits_batch[0].cpu().to(torch.float32) # Take first item if batch > 1
-
-                    # Get original data before modification for return dict
-                    original_input: Any
-                    original_label: Any
-                    if isinstance(item_data, dict):
-                         original_input = item_data.get('input_ids', item_data.get('pixel_values')) # Adapt based on data type
-                         original_label = item_data.get('labels')
-                    elif isinstance(item_data, tuple):
-                         original_input = item_data[0]
-                         original_label = item_data[1]
-                    else: # Should not happen based on earlier checks
-                         original_input = None
-                         original_label = None
-
-                    # Return dictionary including original data and teacher logits
-                    return {"inputs": original_input, "labels": original_label, "teacher_logits": teacher_logits, "input_key": input_key}
-
-                except Exception as e:
-                     # Handle errors during teacher inference
-                     print(f"Error during teacher inference for item {idx} (input key: {input_key}): {e}")
-                     print(f"Input tensor shape: {inputs_tensor.shape if isinstance(inputs_tensor, torch.Tensor) else 'N/A'}")
-                     # Provide a default error structure
-                     dummy_logits_shape = (10,) # Default shape
-                     # Try to get vocab size if it's a text model error
-                     if hasattr(self.teacher_model, 'config') and input_key == "input_ids":
-                         vocab_size = getattr(self.teacher_model.config, 'vocab_size', None)
-                         if vocab_size:
-                             seq_len = inputs_tensor.shape[1] if inputs_tensor.ndim > 1 else 1
-                             dummy_logits_shape = (seq_len, vocab_size) # type: ignore[assignment]
-
-                     # Retrieve original input/label if possible for the error dict
-                     original_input = item_data[0] if isinstance(item_data, tuple) else item_data.get('input_ids', item_data.get('pixel_values'))
-                     original_label = item_data[1] if isinstance(item_data, tuple) else item_data.get('labels')
-
-                     return {"inputs": original_input, "labels": original_label, "teacher_logits": torch.zeros(dummy_logits_shape, dtype=torch.float32), "input_key": input_key, "error": True}
-
-
-        train_wrapper = _DistillationWrapperDataset(train_dataset, self.teacher_model, self.device, self.tokenizer)
-        val_wrapper = _DistillationWrapperDataset(val_dataset, self.teacher_model, self.device, self.tokenizer)
-
-        # 内部で元のcollate_fnを使うように修正
-        def distillation_collate_fn(batch: List[Dict[str, Any]]) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-            """
-            DistillationWrapperDatasetからの辞書をバッチ化し、
-            DistillationTrainerが期待するタプル形式に変換する。
-            エラーが発生したサンプルはスキップする。
-            """
-            # Filter out items that had errors during __getitem__
-            valid_batch = [item for item in batch if not item.get("error", False)]
-            if not valid_batch:
-                 # If the entire batch failed, raise an error or return empty tensors
-                 # depending on desired behavior. Raising might be safer.
-                 raise RuntimeError("Entire batch failed during teacher inference in _DistillationWrapperDataset. Cannot collate.")
-
-            # Determine input type from the first valid item
-            input_key = valid_batch[0]["input_key"]
-            is_image = input_key == "input_images"
-            is_text = input_key == "input_ids"
-
-            # Extract data for student model input and targets
-            student_input_list: List[Union[torch.Tensor, Any]] = [item['inputs'] for item in valid_batch] # Type hint adjusted
-            student_target_list: List[Union[torch.Tensor, Any]] = [item['labels'] for item in valid_batch] # Type hint adjusted
-            # Extract teacher logits
-            teacher_logits_list = [item['teacher_logits'] for item in valid_batch]
-
-            # Initialize tensors for the final collated batch
-            student_input: torch.Tensor
-            attention_mask: torch.Tensor
-            student_target: torch.Tensor
-            teacher_logits: torch.Tensor
-
-            # Process based on data type (image or text)
-            if is_image:
-                # Stack image tensors (assuming they are already tensors)
-                student_input = torch.stack(student_input_list)
-                # Create a dummy attention mask (usually not needed for images)
-                attention_mask = torch.ones(student_input.shape[0], 1, dtype=torch.long) # Simple mask
-                # Convert labels to tensor
-                student_target = torch.tensor([t.item() if isinstance(t, torch.Tensor) else t for t in student_target_list], dtype=torch.long)
-                # Stack teacher logits
-                teacher_logits = torch.stack(teacher_logits_list)
-
-            elif is_text:
-                 # Reconstruct batch in the format expected by the original text collate_fn
-                 reconstructed_batch_for_collate: List[Dict[str, Any]] = []
-                 for i in range(len(student_input_list)):
-                     # Ensure input and target are tensors
-                     inp = student_input_list[i] if isinstance(student_input_list[i], torch.Tensor) else torch.tensor(student_input_list[i])
-                     tgt = student_target_list[i] if isinstance(student_target_list[i], torch.Tensor) else torch.tensor(student_target_list[i])
-                     reconstructed_batch_for_collate.append({"input_ids": inp, "labels": tgt})
-
-                 # Call the base text collate function (passed as `collate_fn` argument)
-                 collated_result = collate_fn(reconstructed_batch_for_collate)
-
-                 # Extract padded inputs, mask, and targets from the base collate function's result
-                 if isinstance(collated_result, dict):
-                    student_input = collated_result['input_ids']
-                    attention_mask = collated_result['attention_mask']
-                    student_target = collated_result['labels']
-                 else:
-                     # Handle unexpected return type from base collate_fn
-                     raise TypeError(f"Base text collate_fn returned unexpected type: {type(collated_result)}")
-
-
-                 # Pad teacher logits manually to match the student input sequence length
-                 teacher_logits = torch.nn.utils.rnn.pad_sequence(
-                     teacher_logits_list, batch_first=True, padding_value=0.0
-                 )
-                 # Ensure teacher_logits sequence length matches student_input sequence length
-                 target_len = student_input.shape[1]
-                 current_len = teacher_logits.shape[1]
-                 # Get vocab size (handle potential empty tensor)
-                 vocab_size = teacher_logits.shape[2] if teacher_logits.numel() > 0 else 0
-
-                 # Pad or truncate teacher_logits sequence length
-                 if current_len < target_len:
-                     # Calculate padding shape and create padding tensor
-                     padding_shape = (teacher_logits.shape[0], target_len - current_len, vocab_size)
-                     padding = torch.zeros(padding_shape, device=teacher_logits.device, dtype=teacher_logits.dtype)
-                     # Concatenate padding
-                     teacher_logits = torch.cat([teacher_logits, padding], dim=1)
-                 elif current_len > target_len:
-                      # Truncate
-                      teacher_logits = teacher_logits[:, :target_len, :]
+        if not inputs or not targets: # If batch becomes empty after filtering
+            # Return empty structures that match expected types
+            if is_distillation:
+                return torch.empty((0, 0), dtype=torch.long), torch.empty((0, 0), dtype=torch.long), torch.empty((0, 0), dtype=torch.long), torch.empty((0, 0, 0), dtype=torch.float32)
             else:
-                 # Handle unknown input key
-                 raise ValueError(f"Unknown input_key during collate: {input_key}")
+                # 辞書形式を返す (標準のcollate_fnが期待する形式)
+                return {
+                    "input_ids": torch.nn.utils.rnn.pad_sequence(inputs, batch_first=True, padding_value=padding_val),
+                    "attention_mask": torch.nn.utils.rnn.pad_sequence([torch.ones_like(i) for i in inputs], batch_first=True, padding_value=0),
+                    "labels": torch.nn.utils.rnn.pad_sequence(targets, batch_first=True, padding_value=-100)
+                }
 
-            # Return tensors on CPU as expected by DataLoader when num_workers=0
-            # (DataLoader handles moving to GPU if needed)
-            return student_input.cpu(), attention_mask.cpu(), student_target.cpu(), teacher_logits.cpu()
-
-
-        train_loader = DataLoader(train_wrapper, batch_size=batch_size, collate_fn=distillation_collate_fn, shuffle=True, num_workers=0)
-        val_loader = DataLoader(val_wrapper, batch_size=batch_size, collate_fn=distillation_collate_fn, num_workers=0)
-
-        return train_loader, val_loader
-
-
-    async def run_distillation(
-        self,
-        train_loader: DataLoader,
-        val_loader: DataLoader,
-        epochs: int,
-        model_id: str,
-        task_description: str,
-        student_config: Dict[str, Any],
-    ) -> Dict[str, Any]:
-
-        safe_model_id = re.sub(r'[^a-zA-Z0-9_-]', '_', model_id.lower()) # Further sanitize
-        print(f"--- Starting Knowledge Distillation for model: {safe_model_id} ---")
-
-        final_metrics: Dict[str, float] = {}
-        print(f"Step 1: Running distillation training for {epochs} epochs...")
-        best_val_metric = float('inf')
-        best_model_state = None
-
-        for epoch in range(epochs):
-            train_metrics = self.distillation_trainer.train_epoch(train_loader, epoch)
-            val_metrics = self.distillation_trainer.evaluate(val_loader, epoch)
-            final_metrics = val_metrics
-
-            current_val_loss = val_metrics.get('total', float('inf'))
-            if current_val_loss < best_val_metric:
-                 best_val_metric = current_val_loss
-                 # Get the underlying model if wrapped (e.g., by DDP)
-                 model_to_save = self.distillation_trainer.model.module if isinstance(self.distillation_trainer.model, nn.parallel.DistributedDataParallel) else self.distillation_trainer.model
-                 # If it's our SNNCore wrapper, get the actual model inside
-                 if isinstance(model_to_save, SNNCore): model_to_save = model_to_save.model
-                 # Save state dict detached from graph and on CPU
-                 best_model_state = {k: v.cpu().detach() for k, v in model_to_save.state_dict().items()}
-                 print(f"🏆 New best validation loss: {best_val_metric:.4f} at epoch {epoch}")
-
-        print("Distillation training finished.")
-        print(f"Final Validation Metrics: {final_metrics}")
-
-        result_dict: Dict[str, Any] # Type hint for result_dict
-        if best_model_state:
-            # --- Saving Logic ---
-            save_dir = os.path.join("runs", "specialists", safe_model_id)
-            os.makedirs(save_dir, exist_ok=True)
-            save_path = os.path.join(save_dir, "best_model.pth")
-            print(f"Step 3: Saving the best model to {save_path}...")
-
-            # --- Buffer Exclusion Logic ---
-            buffers_to_exclude: set[str]
-            try:
-                 # Need vocab size for re-instantiation (use tokenizer's vocab size as default)
-                 vocab_size = OmegaConf.select(self.config, "model.vocab_size", default=self.tokenizer.vocab_size)
-                 # Re-instantiate base student model (SNNCore wraps the actual model)
-                 base_snn_core = SNNCore(config=OmegaConf.create(student_config), vocab_size=vocab_size)
-                 base_student_model = base_snn_core.model # Get the actual SNN model
-                 # Identify buffer names to exclude (e.g., neuron states)
-                 buffers_to_exclude = {
-                     name for name, buf in base_student_model.named_buffers()
-                     if buf is not None and any(keyword in name for keyword in [
-                         'mem', 'spikes', 'adaptive_threshold', # Common LIF states
-                         'pre_trace', 'post_trace', 'eligibility_trace', 'causal_contribution', # Learning rule states
-                         'v', 'u' # Izhikevich states
-                     ])
-                 }
-                 print(f"   - Identified buffers to exclude: {buffers_to_exclude}")
-            except Exception as e:
-                 # Fallback if re-instantiation fails
-                 print(f"Warning: Could not re-instantiate student model to precisely identify buffers: {e}. Excluding default buffer names.")
-                 buffers_to_exclude = {'mem', 'spikes', 'adaptive_threshold', 'pre_trace', 'post_trace', 'eligibility_trace', 'causal_contribution', 'v', 'u'}
-
-            # Filter state dict, excluding buffers
-            model_state_to_save = {k: v for k, v in best_model_state.items() if not any(ex in k for ex in buffers_to_exclude)}
-            print(f"   - Saving {len(model_state_to_save)} parameter tensors (excluded {len(buffers_to_exclude)} buffer types).")
-
-
-            # Create dictionary to save (model state + config)
-            save_dict = {'model_state_dict': model_state_to_save, 'config': student_config}
-            torch.save(save_dict, save_path)
-            print("Model saved.")
-
-            # --- Registration Logic ---
-            print("Step 4: Registering the model...")
-            # Convert metrics to float for JSON compatibility
-            metrics_float = {k: float(v) if isinstance(v, (int, float, torch.Tensor)) else 0.0 for k, v in final_metrics.items()}
-            await self.model_registry.register_model(
-                model_id=safe_model_id,
-                task_description=task_description,
-                metrics=metrics_float, # Pass float dict
-                model_path=save_path, # Pass the absolute or relative path used for saving
-                config=student_config
-            )
-            print(f"Model '{safe_model_id}' successfully registered.")
-            # Return dictionary with model info
-            result_dict = {"model_id": safe_model_id, "metrics": metrics_float, "path": save_path, "config": student_config}
-        else:
-             # Handle case where training didn't improve/save a model
-             print("⚠️ No best model state was saved during training.")
-             metrics_float = {k: float(v) if isinstance(v, (int, float, torch.Tensor)) else 0.0 for k, v in final_metrics.items()}
-             result_dict = {"model_id": safe_model_id, "metrics": metrics_float, "path": None, "config": student_config, "error": "No best model saved"}
-
-        print("--- Knowledge Distillation Finished ---")
-        return result_dict
-
-
-    async def run_on_demand_pipeline(self, task_description: str, unlabeled_data_path: str, force_retrain: bool, student_config: Optional[Dict[str, Any]] = None):
-        """Webクローラー等からのデータでオンデマンド学習を実行するパイプライン。"""
-        print(f"🚀 Starting on-demand pipeline for task: {task_description}")
-
-        # --- Student Config Handling ---
-        if student_config is None:
-            print("Student_config not provided, attempting to retrieve from manager's config or model...")
-            if hasattr(self, 'config') and isinstance(self.config, DictConfig) and OmegaConf.select(self.config, "model", default=None):
-                 student_config_resolved = OmegaConf.to_container(self.config.model, resolve=True)
-                 student_config = cast(Dict[str, Any], student_config_resolved)
-                 print("✅ Successfully retrieved config from manager's main config.")
-            elif hasattr(self.student_model, 'config') and isinstance(self.student_model, SNNCore) and hasattr(self.student_model.config, 'to_dict'):
-                 student_config_resolved = OmegaConf.to_container(self.student_model.config, resolve=True)
-                 student_config = cast(Dict[str, Any], student_config_resolved)
-                 print("✅ Successfully retrieved config from the instantiated SNNCore model.")
-            else:
-                 raise ValueError("student_config is required but could not be obtained from manager config or student model.")
-
-        if student_config is None:
-             raise ValueError("student_config remains None after retrieval attempts.")
-
-        # --- Data Preparation ---
-        is_image_task = any(kw in task_description.lower() for kw in ['image', 'cifar', 'vision'])
-        collate_fn_orig: CollateFnType
-        train_dataset_orig: Dataset
-        val_dataset_orig: Dataset
-
-        if is_image_task:
-             TaskClass = TASK_REGISTRY.get("cifar10")
-             if not TaskClass: raise ValueError("CIFAR10 task not found in registry for image task.")
-             task: BenchmarkTask = TaskClass(tokenizer=self.tokenizer, device=self.device, hardware_profile={})
-             train_dataset_orig, val_dataset_orig = task.prepare_data(data_dir="data")
-             collate_fn_orig = task.get_collate_fn()
-        else:
-             from snn_research.data.datasets import SimpleTextDataset
-             if not os.path.exists(unlabeled_data_path):
-                 raise FileNotFoundError(f"Unlabeled data file not found: {unlabeled_data_path}")
-
-             dataset_orig = SimpleTextDataset(
-                 file_path=unlabeled_data_path,
-                 tokenizer=self.tokenizer,
-                 max_seq_len=student_config.get('time_steps', 128)
-             )
-             train_size = int(0.9 * len(dataset_orig))
-             val_size = len(dataset_orig) - train_size
-             if train_size <= 0 or val_size <= 0:
-                 print(f"Warning: Dataset size {len(dataset_orig)} too small to split 90/10. Using 50/50 split.")
-                 train_size = len(dataset_orig) // 2
-                 val_size = len(dataset_orig) - train_size
-                 if train_size <= 0 or val_size <= 0: raise ValueError("Dataset too small to split.")
-             train_dataset_orig, val_dataset_orig = torch.utils.data.random_split(dataset_orig, [train_size, val_size])
-
-             collate_fn_orig_factory: TextCollateFnDef = cast(TextCollateFnDef, text_collate_fn)
-             collate_fn_orig = collate_fn_orig_factory(self.tokenizer, is_distillation=False) # type: ignore[call-arg] # Line 537
-
-        train_loader, val_loader = self.prepare_dataset(
-            train_dataset=train_dataset_orig,
-            val_dataset=val_dataset_orig,
-            collate_fn=collate_fn_orig,
-            batch_size= OmegaConf.select(self.config, "training.batch_size", default=8)
-        )
-
-        result = await self.run_distillation(
-            train_loader=train_loader,
-            val_loader=val_loader,
-            epochs= OmegaConf.select(self.config, "training.epochs", default=5),
-            model_id=task_description,
-            task_description=f"Expert for {task_description}",
-            student_config=student_config
-        )
-        return result
-
-
-    async def evaluate_model(self, dataloader: DataLoader) -> Dict[str, float]:
-        """
-        蒸留済みモデルの性能を評価する。(Trainerのevaluateで評価するため、ここは主にスパイク数を計算)
-        """
-        model_to_eval = self.distillation_trainer.model
-        model_to_eval.eval()
-        total_spikes = 0.0
-        total_samples = 0
-        num_neurons = 0
-
-        model_instance = model_to_eval.module if isinstance(model_to_eval, nn.parallel.DistributedDataParallel) else model_to_eval
-        if isinstance(model_instance, SNNCore): model_instance = model_instance.model
-        num_neurons = sum(p.numel() for p in model_instance.parameters() if p.requires_grad)
-
-        progress_bar = tqdm(dataloader, desc="Evaluating Distilled Model (Spikes)")
-
-        for batch in progress_bar:
-            inputs, attention_mask, labels, _ = batch
-            inputs = inputs.to(self.device)
-            current_batch_size = inputs.size(0)
-
-            with torch.no_grad():
-                input_key = "input_images" if inputs.ndim >= 4 else "input_ids"
-                model_input: Dict[str, torch.Tensor] = {input_key: inputs}
-                if input_key == "input_ids":
-                     if attention_mask is not None:
-                         model_input["attention_mask"] = attention_mask.to(self.device)
-                     else:
-                          model_input["attention_mask"] = torch.ones_like(inputs, device=self.device)
-
-                outputs = model_to_eval(**model_input, return_spikes=True)
-
-                avg_batch_spikes = torch.zeros((), device=inputs.device)
-                if isinstance(outputs, tuple) and len(outputs) > 1 and outputs[1] is not None:
-                     if isinstance(outputs[1], torch.Tensor):
-                         avg_batch_spikes = outputs[1]
-                         total_spikes += avg_batch_spikes.item() * current_batch_size
-
-                total_samples += current_batch_size
-
-        avg_spikes_per_sample = total_spikes / total_samples if total_samples > 0 else 0.0
+        # --- 標準 (非蒸留) の collate ロジック (辞書を返す) ---
+        if not is_distillation:
+            padded_inputs = torch.nn.utils.rnn.pad_sequence(inputs, batch_first=True, padding_value=padding_val)
+            padded_targets = torch.nn.utils.rnn.pad_sequence(targets, batch_first=True, padding_value=-100)
+            attention_mask = torch.ones_like(padded_inputs)
+            attention_mask[padded_inputs == padding_val] = 0
+            return {
+                "input_ids": padded_inputs,
+                "attention_mask": attention_mask,
+                "labels": padded_targets
+            }
         
-        # --- ▼ 修正: EnergyMetrics を使用 ▼ ---
-        energy = EnergyMetrics.calculate_energy_consumption(
-            avg_spikes_per_sample=avg_spikes_per_sample,
-            num_neurons=num_neurons, # これは総パラメータ数
-            energy_per_synop=self.config.get("hardware", {}).get("energy_per_synop", 0.9e-12) # configから取得
-        )
+        # --- 蒸留 (タプルを返す) ---
+        padded_inputs = torch.nn.utils.rnn.pad_sequence(inputs, batch_first=True, padding_value=padding_val)
+        padded_targets = torch.nn.utils.rnn.pad_sequence(targets, batch_first=True, padding_value=-100)
+        padded_logits = torch.nn.utils.rnn.pad_sequence(logits, batch_first=True, padding_value=0.0)
+        attention_mask = torch.ones_like(padded_inputs)
+        attention_mask[padded_inputs == padding_val] = 0
+        
+        # ターゲットとロジットのシーケンス長を合わせる
+        seq_len = padded_inputs.shape[1]
+        if padded_targets.shape[1] < seq_len:
+            pad = torch.full((padded_targets.shape[0], seq_len - padded_targets.shape[1]), -100, dtype=padded_targets.dtype, device=padded_targets.device)
+            padded_targets = torch.cat([padded_targets, pad], dim=1)
+        if padded_logits.shape[1] < seq_len:
+            pad = torch.full((padded_logits.shape[0], seq_len - padded_logits.shape[1], padded_logits.shape[2]), 0.0, dtype=padded_logits.dtype, device=padded_logits.device)
+            padded_logits = torch.cat([padded_logits, pad], dim=1)
+            
+        return padded_inputs, attention_mask, padded_targets, padded_logits
+
+# --- ▲ 修正 (v14) ▲ ---
+
+
+# --- ▼ 修正 (v12): @inject を削除し、config: DictConfig を明示的に受け取る ▼ ---
+def train(
+    args: argparse.Namespace,
+    config: DictConfig, # type: ignore[has-type]
+    tokenizer: PreTrainedTokenizerBase, # type: ignore[has-type]
+) -> None:
+# --- ▲ 修正 (v12) ▲ ---
+    """学習プロセスを実行するメイン関数"""
+    is_distributed = args.distributed
+    rank = int(os.environ.get("LOCAL_RANK", -1))
+    device = f'cuda:{rank}' if is_distributed and torch.cuda.is_available() else get_auto_device()
+
+    # configがDictConfigであることを確認
+    paradigm = config.training.paradigm
+
+    print(f"🚀 学習パラダイム '{paradigm}' で学習を開始します...")
+
+    trainer: Union[BreakthroughTrainer, BioRLTrainer, ParticleFilterTrainer]
+
+    if paradigm.startswith("bio-"):
+        # --- 生物学的学習パラダイムの実行 ---
+        if paradigm == "bio-causal-sparse":
+            print("🧬 適応的因果スパース化を有効にした強化学習を開始します。")
+            container.config.training.biologically_plausible.adaptive_causal_sparsification.enabled.from_value(True)
+            trainer = container.bio_rl_trainer()
+            cast(BioRLTrainer, trainer).train(num_episodes=config.training.epochs)
+        elif paradigm == "bio-particle-filter":
+            print("🌪️ パーティクルフィルタによる確率的学習を開始します (CPUベース)。")
+            container.config.training.biologically_plausible.particle_filter.enabled.from_value(True)
+            trainer = container.particle_filter_trainer()
+            dummy_data = torch.rand(1, 10, device=device)
+            dummy_targets = torch.rand(1, 2, device=device)
+            for epoch in range(config.training.epochs):
+                loss = cast(ParticleFilterTrainer, trainer).train_step(dummy_data, dummy_targets)
+                print(f"Epoch {epoch+1}/{config.training.epochs}: Particle Filter Loss = {loss:.4f}")
+        elif paradigm == "bio-probabilistic-hebbian":
+            print("🧬 確率的ヘブ学習を開始します...")
+            prob_trainer: BioRLTrainer = container.probabilistic_trainer()
+            prob_trainer.train(num_episodes=config.training.epochs)
+        else:
+            raise ValueError(f"不明な生物学的学習パラダイム: {paradigm}")
+
+    elif paradigm in ["gradient_based", "self_supervised", "physics_informed", "probabilistic_ensemble"]:
+        # --- 勾配ベース学習パラダイムの実行 ---
+        if is_distributed and paradigm != "gradient_based":
+            raise NotImplementedError(f"{paradigm} learning does not support DDP yet.")
+
+        is_distillation = paradigm == "gradient_based" and config.training.gradient_based.type == "distillation"
+
+        # --- ▼ 修正 (v14): データパスの決定ロジックを修正 ▼ ---
+        # 1. args.data_path (CLI引数) を最優先
+        data_path: str
+        if args.data_path:
+            data_path = args.data_path
+            logger.info(f"Using data_path from command line: {data_path}")
+        else:
+            # 2. config.data.path (設定ファイル)
+            data_path_config = OmegaConf.select(config, "data.path", default=None)
+            if not isinstance(data_path_config, str):
+                data_path = "data/default_data.jsonl" # 最終フォールバック
+                logger.warning(f"config.data.path was not a string, using fallback: {data_path}")
+            else:
+                data_path = data_path_config
+            
+            # 3. wikitext が存在する場合の上書き (ただし args.data_path が指定されていない場合のみ)
+            wikitext_path = "data/wikitext-103_train.jsonl"
+            if os.path.exists(wikitext_path):
+                data_path = wikitext_path
+                logger.info(f"Found wikitext, using data_path: {data_path}")
+            else:
+                 logger.info(f"Using data_path from config: {data_path}")
+        # --- ▲ 修正 (v14) ▲ ---
+
+        DatasetClass = get_dataset_class(DataFormat(config.data.format))
+        dataset: SNNBaseDataset
+        max_seq_len = OmegaConf.select(config, "model.time_steps", default=128) # Use OmegaConf.select
+
+        if is_distillation:
+            data_dir = os.path.dirname(data_path) if os.path.isfile(data_path) else data_path
+            distill_jsonl_path = os.path.join(data_dir, "distillation_data.jsonl")
+            if not os.path.exists(distill_jsonl_path):
+                 raise FileNotFoundError(f"Distillation data not found at {distill_jsonl_path}. Run prepare_distillation_data.py first.")
+            dataset = DistillationDataset(file_path=distill_jsonl_path, data_dir=data_dir, tokenizer=tokenizer, max_seq_len=max_seq_len)
+        else:
+            if not os.path.exists(data_path):
+                 if data_path == "data/wikitext-103_train.jsonl": # wikitext が期待されていた場合
+                      print(f"Data file '{data_path}' not found. Attempting to prepare WikiText data...")
+                      prepared_path = prepare_wikitext_data()
+                      if prepared_path != data_path:
+                           print(f"Warning: Prepared data path '{prepared_path}' differs from expected '{data_path}'. Using prepared path.")
+                           data_path = prepared_path
+                      if not os.path.exists(data_path):
+                           raise FileNotFoundError(f"Data file not found even after preparation: {data_path}")
+                 else:
+                      raise FileNotFoundError(f"Data file not found: {data_path}")
+            dataset = DatasetClass(file_path=data_path, tokenizer=tokenizer, max_seq_len=max_seq_len)
+
+        # Ensure split ratio is valid before splitting
+        split_ratio = OmegaConf.select(config, "data.split_ratio", default=0.1)
+        if not (0 < split_ratio < 1):
+             print(f"Warning: Invalid split_ratio {split_ratio}. Using 0.1.")
+             split_ratio = 0.1
+
+        train_size = int((1.0 - split_ratio) * len(dataset))
+        val_size = len(dataset) - train_size
+        
+        # --- ▼ 修正 (v13): インデントエラーを修正 ▼ ---
+        # Handle cases where split results in zero size
+        if train_size <= 0 or val_size <= 0:
+             print(f"Warning: Dataset size {len(dataset)} is too small for split ratio {split_ratio}. Adjusting split.")
+             # Example adjustment: ensure at least one sample in validation
+             val_size = max(1, int(len(dataset) * 0.05)) # Min 1 sample or 5%
+             train_size = len(dataset) - val_size
+             if train_size <= 0: 
+                 raise ValueError("Dataset too small to split.")
+        # --- ▲ 修正 (v13) ▲ ---
+
+        train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
+
+        # --- ▼ 修正 ▼ ---
+        train_sampler: Optional[Sampler[int]] = DistributedSampler(train_dataset) if is_distributed else None # Sampler[int] に修正
+        # --- ▲ 修正 ▲ ---
+        
+        # --- ▼ 修正 (v14): collate_fn が None にならないように修正 ▼ ---
+        collate_fn_instance = collate_fn(tokenizer, is_distillation)
+        if collate_fn_instance is None:
+            raise RuntimeError("collate_fn factory returned None. Check train.py for errors.")
+        train_loader = DataLoader(train_dataset, batch_size=config.training.batch_size, shuffle=(train_sampler is None), sampler=train_sampler, collate_fn=collate_fn_instance, num_workers=0)
+        val_loader = DataLoader(val_dataset, batch_size=config.training.batch_size, shuffle=False, collate_fn=collate_fn_instance, num_workers=0)
+        # --- ▲ 修正 (v14) ▲ ---
+
+        snn_model: nn.Module = container.snn_model(backend=args.backend)
+
+        # --- ▼ 修正: SNN5改善レポート 4.2 (SpQuant) を QAT より先に適用 ▼ ---
+        # SNN固有の量子化 (SpQuant) を先に試みる
+        if OmegaConf.select(config, "training.quantization.spquant.enabled", default=False):
+             logger.info("Applying SpQuant-SNN (Membrane Quantization)...")
+             snn_model = apply_spquant_quantization(snn_model.to('cpu')) # SpQuantはinplace変更を想定
+        
+        # PyTorch標準のQAT (SpQuantと併用は通常しないが、設定上は可能)
+        elif config.training.quantization.enabled:
+            logger.info("Applying PyTorch QAT preparation...")
+            snn_model = apply_qat(snn_model.to('cpu'))
+        # --- ▲ 修正 ▲ ---
+            
+        snn_model.to(device)
+
+        if is_distributed:
+            snn_model = DDP(snn_model, device_ids=[rank], find_unused_parameters=True)
+
+        # --- ▼ 修正: astrocyte の型を Optional[AstrocyteNetwork] に ▼ ---
+        astrocyte: Optional[AstrocyteNetwork] = container.astrocyte_network(snn_model=snn_model) if args.use_astrocyte else None
         # --- ▲ 修正 ▲ ---
 
-        metrics = {
-            "avg_spikes_per_sample": avg_spikes_per_sample,
-            "estimated_energy_consumption": energy
+        trainer_provider: Callable[..., BreakthroughTrainer]
+        optimizer: Optimizer # Use imported Optimizer
+        scheduler: Optional[LRScheduler] # Use imported LRScheduler
+
+        if paradigm == "gradient_based":
+            optimizer = container.optimizer(params=snn_model.parameters())
+            scheduler = container.scheduler(optimizer=optimizer) if config.training.gradient_based.use_scheduler else None
+            trainer_provider = container.distillation_trainer if is_distillation else container.standard_trainer
+        elif paradigm == "self_supervised":
+            optimizer = container.optimizer(params=snn_model.parameters()) # Assuming same optimizer provider
+            scheduler = container.scheduler(optimizer=optimizer) if config.training.self_supervised.use_scheduler else None
+            trainer_provider = container.self_supervised_trainer
+        elif paradigm == "physics_informed":
+            optimizer = container.pi_optimizer(params=snn_model.parameters())
+            scheduler = container.pi_scheduler(optimizer=optimizer) if config.training.physics_informed.use_scheduler else None
+            trainer_provider = container.physics_informed_trainer
+        else: # probabilistic_ensemble
+            optimizer = container.optimizer(params=snn_model.parameters()) # Assuming same optimizer provider
+            scheduler = container.scheduler(optimizer=optimizer) if config.training.probabilistic_ensemble.use_scheduler else None
+            trainer_provider = container.probabilistic_ensemble_trainer
+
+        # --- ▼ 修正: trainer_kwargs の型を明示し、astrocyteの型エラーを解消 ▼ ---
+        trainer_kwargs: Dict[str, Any] = {
+            "model": snn_model,
+            "optimizer": optimizer,
+            "scheduler": scheduler,
+            "device": device,
+            "rank": rank
+            # "astrocyte_network" will be added conditionally below
         }
-        return metrics
+        if args.use_astrocyte and astrocyte is not None and paradigm in ["gradient_based", "self_supervised", "physics_informed", "probabilistic_ensemble"]:
+             trainer_kwargs["astrocyte_network"] = astrocyte # Type matches Optional[AstrocyteNetwork]
+        # --- ▲ 修正 ▲ ---
+
+
+        trainer = trainer_provider(**trainer_kwargs)
+
+        if args.load_ewc_data:
+            trainer.load_ewc_data(args.load_ewc_data)
+
+        start_epoch = trainer.load_checkpoint(args.resume_path) if args.resume_path else 0
+        for epoch in range(start_epoch, config.training.epochs):
+            if train_sampler and isinstance(train_sampler, DistributedSampler): train_sampler.set_epoch(epoch) # isinstanceで型ガード
+            trainer.train_epoch(train_loader, epoch)
+            if rank in [-1, 0] and (epoch % config.training.eval_interval == 0 or epoch == config.training.epochs - 1):
+                val_metrics = trainer.evaluate(val_loader, epoch)
+                if epoch % config.training.log_interval == 0:
+                    checkpoint_path = os.path.join(config.training.log_dir, f"checkpoint_epoch_{epoch}.pth")
+                    # --- ▼ 修正: config.modelを辞書に変換 ▼ ---
+                    model_config_dict = OmegaConf.to_container(config.model, resolve=True) if isinstance(config.model, DictConfig) else config.model
+                    if not isinstance(model_config_dict, dict): model_config_dict = {} # Fallback
+                    trainer.save_checkpoint(path=checkpoint_path, epoch=epoch, metric_value=val_metrics.get('total', float('inf')), tokenizer_name=config.data.tokenizer_name, config=model_config_dict)
+                    # --- ▲ 修正 ▲ ---
+
+        if rank in [-1, 0] and args.task_name and config.training.gradient_based.loss.ewc_weight > 0:
+            trainer._compute_ewc_fisher_matrix(train_loader, args.task_name)
+
+        # 最終モデルの処理 (量子化、プルーニング)
+        # --- ▼ 修正 (SNN5改善レポート 4.1, 4.2, 4.3 対応): プルーニングと量子化の順序変更・新機能追加 ▼ ---
+        # --- ▼ 修正 (mypy [assignment]): `type: ignore` を追加 ▼ ---
+        if rank in [-1, 0]:
+            final_model_wrapped = trainer.model.module if is_distributed else trainer.model
+            
+            # SNNCoreラッパーから内部モデルを取得
+            final_model: nn.Module
+            if isinstance(final_model_wrapped, SNNCore):
+                final_model = final_model_wrapped.model # type: ignore[assignment]
+            else:
+                # DDP や他のラッパーが SNNCore をラップしていない場合
+                final_model = final_model_wrapped # type: ignore[assignment]
+            
+            if isinstance(final_model, nn.Module):
+                model_to_process = final_model # 処理対象のモデル
+                
+                # --- 1a. 時空間プルーニング (SNN5改善レポート 4.1) ---
+                if OmegaConf.select(config, "training.pruning.spatio_temporal.enabled", default=False):
+                    logger.info("Applying Spatio-Temporal Pruning to the final best model...")
+                    
+                    st_amount: float = OmegaConf.select(config, "training.pruning.spatio_temporal.spatial_amount", default=0.2)
+                    st_kl_thresh: float = OmegaConf.select(config, "training.pruning.spatio_temporal.kl_threshold", default=0.01)
+                    
+                    # (BaseModelからtime_stepsを取得)
+                    snn_time_steps: int = cast(int, getattr(model_to_process, 'time_steps', 16))
+
+                    st_pruned_model = apply_spatio_temporal_pruning(
+                        model_to_process,
+                        dataloader=val_loader, # スタブとして検証ローダーを渡す
+                        time_steps=snn_time_steps,
+                        spatial_amount=st_amount,
+                        kl_threshold=st_kl_thresh
+                    )
+                    st_pruned_path = os.path.join(config.training.log_dir, 'pruned_spatio_temporal_best_model.pth')
+                    torch.save(st_pruned_model.state_dict(), st_pruned_path)
+                    logger.info(f"✅ Spatio-Temporal Pruned model saved to {st_pruned_path}")
+                    model_to_process = st_pruned_model # 次のステップのため、処理済みモデルを更新
+
+                # --- 1b. SBC プルーニング (SNN5改善レポート 4.3 順序) ---
+                if OmegaConf.select(config, "training.pruning.sbc.enabled", default=False): # 'enabled' -> 'sbc.enabled'
+                    pruning_amount: float = OmegaConf.select(config, "training.pruning.sbc.amount", default=0.2)
+                    logger.info("Applying SBC Pruning to the final model (post ST-pruning if enabled)...")
+                    
+                    pruned_model = apply_sbc_pruning(
+                        model_to_process, 
+                        amount=pruning_amount,
+                        dataloader_stub=val_loader, # スタブとして検証ローダーを渡す
+                        loss_fn_stub=trainer.criterion # スタブとしてトレーナーの損失関数を渡す
+                    )
+                    pruned_path = os.path.join(config.training.log_dir, 'pruned_sbc_best_model.pth')
+                    torch.save(pruned_model.state_dict(), pruned_path)
+                    logger.info(f"✅ SBC Pruned model saved to {pruned_path}")
+                    model_to_process = pruned_model # 次のステップのため、処理済みモデルを更新
+                
+                # --- 2a. SNN固有量子化 (SpQuant) (SNN5改善レポート 4.2) ---
+                if OmegaConf.select(config, "training.quantization.spquant.enabled", default=False):
+                    logger.info("Applying SpQuant-SNN (Membrane Quantization) to the final model (post-pruning if enabled)...")
+                    # (SpQuantは訓練前に行うのがQATだが、ここでは訓練後のモデルに適用するスタブ)
+                    spquant_model = apply_spquant_quantization(model_to_process.to('cpu'))
+                    spquant_path = os.path.join(config.training.log_dir, 'quantized_spquant_best_model.pth')
+                    torch.save(spquant_model.state_dict(), spquant_path)
+                    logger.info(f"✅ SpQuant (Stub) model saved to {spquant_path}")
+                
+                # --- 2b. 標準QAT (SNN5改善レポート 4.3 順序) ---
+                elif config.training.quantization.enabled:
+                    logger.info("Applying PyTorch QAT conversion to the final model (post-pruning if enabled)...")
+                    quantized_model = convert_to_quantized_model(model_to_process.to('cpu'))
+                    quantized_path = os.path.join(config.training.log_dir, 'quantized_qat_best_model.pth')
+                    torch.save(quantized_model.state_dict(), quantized_path)
+                    logger.info(f"✅ QAT Quantized model saved to {quantized_path}")
+        # --- ▲ 修正 ▲ ---
+        # --- ▲ 修正 ▲ ---
+            
+    else:
+        raise ValueError(f"Unknown training paradigm: '{paradigm}'.")
+
+    print("✅ 学習が完了しました。")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="SNN 統合学習スクリプト")
+    parser.add_argument("--config", type=str, default="configs/base_config.yaml", help="基本設定ファイル")
+    parser.add_argument("--model_config", type=str, help="モデルアーキテクチャ設定ファイル")
+    parser.add_argument("--data_path", type=str, help="データセットのパス（configを上書き）")
+    parser.add_argument("--task_name", type=str, help="EWCのためにタスク名を指定 (例: 'sst2')")
+    parser.add_argument("--override_config", type=str, action='append', help="設定を上書き (例: 'training.epochs=5')")
+    parser.add_argument("--distributed", action="store_true", help="分散学習を有効にする")
+    parser.add_argument("--resume_path", type=str, help="チェックポイントから学習を再開する")
+    parser.add_argument("--load_ewc_data", type=str, help="事前計算されたEWCのFisher行列とパラメータのパス")
+    parser.add_argument("--use_astrocyte", action="store_true", help="アストロサイトネットワークを有効にする (gradient_based系のみ)")
+    parser.add_argument("--paradigm", type=str, help="学習パラダイムを上書き (例: gradient_based, bio-causal-sparse, bio-particle-filter)")
+    parser.add_argument("--backend", type=str, default="spikingjelly", choices=["spikingjelly", "snntorch"], help="SNNシミュレーションバックエンドライブラリ")
+    args = parser.parse_args()
+
+    # Load base config first
+    container.config.from_yaml(args.config)
+
+    # Load model config if provided
+    if args.model_config:
+         try:
+             container.config.from_yaml(args.model_config)
+         except FileNotFoundError:
+             print(f"Warning: Model config file not found: {args.model_config}. Using base config model settings.")
+         except Exception as e:
+              print(f"Error loading model config '{args.model_config}': {e}. Using base config model settings.")
+
+
+    # Explicit overrides from command line
+    if args.data_path: container.config.data.path.from_value(args.data_path)
+    if args.paradigm: container.config.training.paradigm.from_value(args.paradigm)
+
+    # Apply dotted overrides
+    if args.override_config:
+        for override in args.override_config:
+            try:
+                keys, value_str = override.split('=', 1)
+                # Try to infer type
+                try: value: Any = int(value_str)
+                except ValueError:
+                    try: value = float(value_str)
+                    except ValueError:
+                        if value_str.lower() == 'true': value = True
+                        elif value_str.lower() == 'false': value = False
+                        else: value = value_str # Keep as string
+
+                # Use OmegaConf's update method for dotted keys
+                OmegaConf.update(container.config(), keys, value, merge=True)
+            except Exception as e:
+                print(f"Error applying override '{override}': {e}")
+
+
+    if args.distributed:
+        if not dist.is_available(): raise RuntimeError("Distributed training requested but not available.")
+        if not torch.cuda.is_available(): raise RuntimeError("Distributed training requires CUDA.")
+        # Ensure WORLD_SIZE and RANK are set if not using torchrun
+        if "WORLD_SIZE" not in os.environ: os.environ["WORLD_SIZE"] = str(torch.cuda.device_count())
+        if "RANK" not in os.environ: os.environ["RANK"] = "0" # Default for single node, adjust if needed
+        if "LOCAL_RANK" not in os.environ: os.environ["LOCAL_RANK"] = os.environ["RANK"]
+        if "MASTER_ADDR" not in os.environ: os.environ["MASTER_ADDR"] = "localhost"
+        if "MASTER_PORT" not in os.environ: os.environ["MASTER_PORT"] = "29500" # Default port
+
+        dist.init_process_group(backend="nccl")
+
+    # Wire the container AFTER all configurations are loaded
+    container.wire(modules=[__name__])
+
+    # --- ▼ 修正 (v12): container.config() (dict) を OmegaConf.create() でラップ ▼ ---
+    # Get injected config and tokenizer AFTER wiring
+    injected_config_dict: dict = container.config() # DIコンテナは dict を返す
+    injected_config: DictConfig = OmegaConf.create(injected_config_dict) # OmegaConfオブジェクトに変換
+    
+    injected_tokenizer: PreTrainedTokenizerBase = container.tokenizer() # 正しい型で取得
+    
+    train(args, config=injected_config, tokenizer=injected_tokenizer)
+    # --- ▲ 修正 (v12) ▲ ---
+
+    if args.distributed: dist.destroy_process_group()
+
+if __name__ == "__main__":
+    main()

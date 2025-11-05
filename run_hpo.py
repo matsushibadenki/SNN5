@@ -29,6 +29,11 @@
 # 修正 (v6):
 # - Trial 66 のログに基づき、正則化損失が未だに発散しているため、
 #   探索範囲をさらに1000倍以上引き下げる。
+#
+# 修正 (v7):
+# - 根本原因を losses.py 側で対応（スパイク率の正規化）。
+# - それに伴い、run_hpo.py の探索範囲を、直感的で妥当な
+#   (例: 0.01 や 0.0001) 範囲に戻す。
 
 import optuna
 import argparse
@@ -70,15 +75,12 @@ def objective(trial: optuna.trial.Trial, args: argparse.Namespace) -> float:
     ce_weight = trial.suggest_float("ce_weight", 0.1, 0.5)
     distill_weight = 1.0 - ce_weight # 合わせて1になるように
     
-    # --- ▼▼▼ 修正 (v6): 探索範囲をさらに引き下げ ▼▼▼ ---
-    # ログ(Trial 66)でも spike_reg_loss が 1e+6 と発散しているため、
-    # 探索範囲を (1e-12, 1e-9) から (1e-15, 1e-12) にさらに狭める。
-    spike_reg_weight = trial.suggest_float("spike_reg_weight", 1e-15, 1e-12, log=True)
-    
-    # sparsity_loss も 1e+3 と高いため、探索範囲を
-    # (1e-10, 1e-7) から (1e-13, 1e-10) に狭める。
-    sparsity_reg_weight = trial.suggest_float("sparsity_reg_weight", 1e-13, 1e-10, log=True)
-    # --- ▲▲▲ 修正 (v6) ▲▲▲ ---
+    # --- ▼▼▼ 修正 (v7): 探索範囲を妥当な値に戻す ▼▼▼ ---
+    # losses.py でスパイク率が 0.0-1.0 に正規化されたため、
+    # 重みも 0.01 や 0.0001 といった妥当な範囲で探索する。
+    spike_reg_weight = trial.suggest_float("spike_reg_weight", 1e-3, 1e-1, log=True)
+    sparsity_reg_weight = trial.suggest_float("sparsity_reg_weight", 1e-6, 1e-3, log=True)
+    # --- ▲▲▲ 修正 (v7) ▲▲▲ ---
     
     # --- 2. 設定の上書き ---
     # 各試行にユニークな出力ディレクトリを作成

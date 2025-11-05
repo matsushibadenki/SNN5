@@ -8,10 +8,19 @@
 # 改善点(v3): benchmark runコマンドにmrpc_comparisonを追加。
 # 改善点(v4): ann2snn-cnnコマンドがscripts/convert_model.pyを呼び出すように修正。
 # 改善点(v5): HPO (Hyperparameter Optimization) コマンドを追加。
+#
+# 改善点(v6):
+# - ユーザーの要望に基づき、不要なログやキャッシュを削除する
+#   `clean` コマンドを追加。
 import typer
 from typing import Optional, List
 import subprocess
 import sys
+# --- ▼ 修正: cleanコマンドのために os と shutil をインポート ▼ ---
+import os
+import shutil
+from pathlib import Path
+# --- ▲ 修正 ▲ ---
 
 app = typer.Typer()
 agent_app = typer.Typer()
@@ -23,14 +32,13 @@ app.add_typer(benchmark_app, name="benchmark")
 convert_app = typer.Typer()
 app.add_typer(convert_app, name="convert")
 
-# --- HPOコマンドを追加 ---
 hpo_app = typer.Typer()
 app.add_typer(hpo_app, name="hpo")
-# --- ここまで ---
 
 def _run_command(command: List[str]):
     """コマンドを実行し、出力をストリーミングする。"""
     try:
+        # 修正(v2): Popenを使用してリアルタイムで出力
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, encoding='utf-8')
         if process.stdout:
             for line in iter(process.stdout.readline, ''):
@@ -208,7 +216,7 @@ def convert_ann2snn_cnn(
     command = ["python", "scripts/convert_model.py", "--method", "cnn-convert", "--ann_model_path", ann_model_path, "--output_snn_path", output_snn_path, "--snn_model_config", snn_model_config]
     _run_command(command)
 
-# --- HPOコマンド定義 ---
+# --- HPOコマンド定義 (変更なし) ---
 @hpo_app.command("run")
 def hpo_run(
     target_script: str = typer.Option("run_distillation.py", help="最適化対象の学習スクリプト"),
@@ -240,7 +248,142 @@ def hpo_run(
     if teacher_model:
         command.extend(["--teacher_model", teacher_model])
     _run_command(command)
-# --- ここまで ---
+
+# --- ▼▼▼ 修正 (v6): clean コマンドの追加 ▼▼▼ ---
+
+@app.command("clean")
+def clean(
+    yes: bool = typer.Option(False, "--yes", "-y", help="確認プロンプトをスキップして強制実行します。"),
+    keep_models: bool = typer.Option(True, "--keep-models/--delete-models", help="モデルファイル (.pth) を保持するか削除するか。デフォルトは保持。"),
+    keep_data: bool = typer.Option(True, "--keep-data/--delete-data", help="データファイル (.jsonl, .db, .csv) を保持するか削除するか。デフォルトは保持。"),
+):
+    """
+    一時的なログ、キャッシュ、中間生成物を削除してプロジェクトをクリーンアップします。
+    
+    デフォルトでは、モデル (.pth) やデータ (.jsonl, .db) は保護されます。
+    """
+    typer.echo("🧹 クリーンアップを開始します...")
+    
+    # 保護対象の拡張子 (これらは削除 *しない*)
+    protected_extensions: List[str] = [".yaml", ".md"]
+    if keep_models:
+        protected_extensions.extend([".pth", ".pt"])
+    if keep_data:
+        protected_extensions.extend([".jsonl", ".json", ".db", ".csv"])
+        
+    # 保護対象のファイル (これらは削除 *しない*)
+    protected_files: List[str] = [
+        "runs/model_registry.json", # モデル登録簿
+        "runs/hpo_study.db", # HPOデータベース
+        "workspace/web_data/.gitkeep",
+        "runs/.gitkeep",
+        "precomputed_data/.gitkeep",
+    ]
+    
+    # 削除対象のディレクトリ
+    target_dirs: List[str] = ["runs", "precomputed_data", "workspace"]
+    
+    deleted_files_count: int = 0
+    deleted_dirs_count: int = 0
+
+    typer.echo(f"保護対象の拡張子: {protected_extensions}")
+    typer.echo(f"削除対象ディレクトリ: {target_dirs}")
+
+    if not yes:
+        confirm = typer.confirm(
+            "警告: 上記ディレクトリ内の *保護対象外* のファイルとディレクトリを再帰的に削除します。\n"
+            "重要なモデルやデータを削除しないよう、--keep-models と --keep-data の設定を確認してください。\n"
+            "続行しますか？"
+        )
+        if not confirm:
+            typer.echo("キャンセルしました。")
+            raise typer.Abort()
+
+    for target_dir in target_dirs:
+        dir_path = Path(target_dir)
+        if not dir_path.exists():
+            typer.echo(f"ディレクトリが見つかりません: {target_dir}")
+            continue
+            
+        typer.echo(f"--- Processing: {target_dir} ---")
+        
+        # os.walk で再帰的に探索
+        for root, dirs, files in os.walk(dir_path, topdown=False):
+            root_path = Path(root)
+            
+            # 1. ファイルの削除
+            for file in files:
+                file_path = root_path / file
+                file_path_str = str(file_path.as_posix()) # 保護対象チェック用にposixパスを使用
+                
+                # 保護対象ファイルかチェック
+                if file_path_str in protected_files:
+                    typer.echo(f"  [保護] ファイル: {file_path}")
+                    continue
+                    
+                # 保護対象の拡張子かチェック
+                if file_path.suffix in protected_extensions:
+                    typer.echo(f"  [保護] ファイル (拡張子): {file_path}")
+                    continue
+                    
+                # 削除対象
+                try:
+                    os.remove(file_path)
+                    typer.echo(f"  [削除] ファイル: {file_path}")
+                    deleted_files_count += 1
+                except OSError as e:
+                    typer.echo(f"  [エラー] ファイル削除失敗: {file_path} ({e})")
+                    
+            # 2. ディレクトリの削除 (空になった場合のみ)
+            for d in dirs:
+                dir_to_check = root_path / d
+                dir_to_check_str = str(dir_to_check.as_posix())
+
+                # HPO試行ディレクトリ (runs/hpo_trials/trial_*) は中身ごと削除
+                if "hpo_trials" in dir_to_check_str and (d.startswith("trial_") or d.startswith("tmp_")):
+                    try:
+                        shutil.rmtree(dir_to_check)
+                        typer.echo(f"  [削除] HPO試行ディレクトリ: {dir_to_check}")
+                        deleted_dirs_count += 1
+                    except OSError as e:
+                        typer.echo(f"  [エラー] ディレクトリ削除失敗: {dir_to_check} ({e})")
+                    continue # 内部を探索済みなので continue
+                
+                # precomputed_data/logits は中身ごと削除
+                if "precomputed_data/logits" in dir_to_check_str:
+                     try:
+                        shutil.rmtree(dir_to_check)
+                        typer.echo(f"  [削除] 事前計算ロジット: {dir_to_check}")
+                        deleted_dirs_count += 1
+                     except OSError as e:
+                        typer.echo(f"  [エラー] ディレクトリ削除失敗: {dir_to_check} ({e})")
+                     continue
+
+                # workspace/web_data は中身ごと削除 (jsonlを保護しない場合)
+                if not keep_data and "workspace/web_data" in dir_to_check_str:
+                     try:
+                        shutil.rmtree(dir_to_check)
+                        typer.echo(f"  [削除] Webクロールデータ: {dir_to_check}")
+                        deleted_dirs_count += 1
+                     except OSError as e:
+                        typer.echo(f"  [エラー] ディレクトリ削除失敗: {dir_to_check} ({e})")
+                     continue
+
+                # その他のディレクトリが空かどうかチェック
+                try:
+                    if not os.listdir(dir_to_check):
+                        os.rmdir(dir_to_check)
+                        typer.echo(f"  [削除] 空ディレクトリ: {dir_to_check}")
+                        deleted_dirs_count += 1
+                except OSError as e:
+                    typer.echo(f"  [エラー] 空ディレクトリ削除失敗: {dir_to_check} ({e})")
+
+    typer.echo("--- クリーンアップ完了 ---")
+    typer.echo(f"削除されたファイル数: {deleted_files_count}")
+    typer.echo(f"削除されたディレクトリ数: {deleted_dirs_count}")
+
+# --- ▲▲▲ 修正 (v6) ▲▲▲ ---
+
 
 if __name__ == "__main__":
     app()

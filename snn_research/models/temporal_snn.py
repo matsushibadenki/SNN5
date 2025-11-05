@@ -10,7 +10,7 @@
 # - 既存の TemporalFeatureExtractor を SimpleRSNN にリネーム。
 # - mypy --strict 準拠のための型ヒントを完全実装
 #
-# 修正 (v3): SyntaxError の原因となった末尾の全角句点を削除。
+# 修正 (v3): SyntaxError の原因となった末尾の全角句点を削除
 #
 # 修正 (v4): SyntaxError: 末尾の余分な '}' を削除。
 
@@ -149,7 +149,7 @@ class SimpleRSNN(BaseModel): # TemporalFeatureExtractor -> SimpleRSNN
         # SNN Coreのインターフェースに合わせる
         # ここでは、時間全体で平均化するか、最後のステップを使うか選択できる
         # 例: 最後のタイムステップの出力をロジットとする
-        final_output = final_output_sequence[:, -1, :]
+        final_logits = final_output_sequence[:, -1, :]
 
         # 平均スパイク数を計算 (BaseModelのメソッドを利用)
         avg_spikes_val = self.get_total_spikes() / (B * T_input) if return_spikes else 0.0

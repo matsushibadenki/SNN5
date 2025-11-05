@@ -24,6 +24,8 @@
 # 修正 (v3):
 # - mypy [name-defined] (Union) エラーを解消するため、Unionをインポート。
 # - mypy [no-redef] (layer) エラーを解消するため、変数名を layer_to_reset に変更。
+#
+# 修正 (v4): SyntaxError: 末尾の余分な '}' を削除。
 
 import torch
 import torch.nn as nn

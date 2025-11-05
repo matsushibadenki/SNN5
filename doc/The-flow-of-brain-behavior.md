@@ -72,142 +72,6 @@ flowchart TB
     EI["E/Iバランス\n(興奮 ≒ 80% / 抑制 ≒ 20%)"]
     OSC["同期振動\nGamma (30–100 Hz)\nBeta (12–30 Hz)\nAlpha (8–12 Hz)\nTheta (4–8 Hz)"]
     LONG["長距離結合\n(皮質間・遅延含む)"]
-
-    ENCODING --> FF
-    FF --> REC
-    REC --> FF
-    POSTSYN --> EI
-    EI --> OSC
-    FF --> LONG
-    REC --> LONG
-  end
-
-  %% --- 情報表現層 ---
-  subgraph Info [情報表現・符号化]
-    RATE["Rate Code\n(発火頻度符号化)"]
-    TEMP["Temporal Code\n(スパイクタイミング / 位相)"]
-    POPULATION["Population Code\n(集団符号化)"]
-    SPARSE["Sparse Coding\n(省エネ・高識別性)"]
-
-    SPIKE --> RATE
-    SPIKE --> TEMP
-    RATE --> POPULATION
-    TEMP --> POPULATION
-    POPULATION --> SPARSE
-  end
-
-  %% --- 出力・復号化層 ---
-  subgraph Output [出力・復号化層]
-    DECODE["スパイク復号化\n(積分 / 投票 / フィルタ)"]
-    PERCEPT["知覚・判断"]
-    MOTOR["運動出力"]
-    FEEDBACK["フィードバック\n(誤差信号 / 感覚再入力)"]
-
-    LONG --> DECODE
-    DECODE --> PERCEPT
-    DECODE --> MOTOR
-    PERCEPT --> FEEDBACK
-    FEEDBACK --> NEUROMOD
-  end
-
-  %% --- 生物学的制約 ---
-  subgraph Meta [生物学的制約（SNNでは通常省略）]
-    NOISE["ノイズ\n(熱雑音・確率的放出)"]
-    ENERGY["代謝コスト\n(ATP消費)"]
-    GLIA["グリア細胞\n(恒常性維持・ATP供給・イオン調整)"]
-
-    NOISE -.->|膜電位変動| MEMBRANE
-    ENERGY -.->|発火制約| SPIKE
-    GLIA -.->|サポート| POSTSYN
-    GLIA -.->|ATP供給| ENERGY
-  end
-
-  %% --- フィードバックループ ---
-  FEEDBACK -.->|学習信号| STDP
-  MOTOR -.->|感覚フィードバック| RECEPTOR
-
-  %% --- スタイル定義 ---
-  classDef core fill:#e3f2fd,stroke:#1976d2,stroke-width:2px
-  classDef learning fill:#fff3e0,stroke:#f57c00,stroke-width:2px
-  classDef optional fill:#f5f5f5,stroke:#9e9e9e,stroke-width:1px,stroke-dasharray: 5 5
-
-  class MEMBRANE,SPIKE,POSTSYN,WEIGHT core
-  class STDP,LTP,LTD,NEUROMOD learning
-  class NOISE,ENERGY,GLIA optional
-  ```
-  flowchart TB
-
-  %% --- 感覚入力層 ---
-  subgraph SensoryLayer [感覚入力層]
-    SENSORY["感覚入力\n(光・音・化学・機械)"]
-    RECEPTOR["受容器応答\n(アナログ変換)"]
-    ENCODING["スパイク符号化\nRate / Temporal / Latency"]
-    SENSORY --> RECEPTOR --> ENCODING
-  end
-
-  %% --- 単一ニューロン層（LIFモデル） ---
-  subgraph Neuron [単一ニューロン（LIFモデル基準）]
-    direction TB
-    DENDRITES["樹状突起\n多数のシナプス入力\n(加重和・時定数 τ)"]
-    SOMA["細胞体\n統合点"]
-    MEMBRANE["膜電位 Vm(t)\n静止: -70 mV\n漏れ統合"]
-    THRESH["閾値判定\nVth ≈ -55 mV"]
-    SPIKE["活動電位\n(スパイク発火)"]
-    REFRAC["不応期\n(2-5 ms)\nVm ← Vreset (-65 mV)"]
-    AXON["軸索伝導\n(有髄化 / 伝導速度)"]
-    TERMINAL["軸索末端 (Presynaptic)"]
-
-    DENDRITES --> SOMA
-    SOMA --> MEMBRANE
-    MEMBRANE -->|Vm ≥ Vth| THRESH
-    THRESH --> SPIKE
-    SPIKE --> REFRAC
-    REFRAC -->|Vm ← Vreset| MEMBRANE
-    SPIKE --> AXON
-    AXON --> TERMINAL
-  end
-
-  %% --- シナプス層（興奮性・抑制性） ---
-  subgraph Synapse [シナプス（興奮性 / 抑制性）]
-    direction LR
-    DELAY["シナプス遅延\n(0.5–2 ms)"]
-    NT_E["興奮性伝達物質\nGlutamate\n(AMPA / NMDA)"]
-    NT_I["抑制性伝達物質\nGABA\n(Cl⁻流入)"]
-    POSTSYN["シナプス後電位\n(EPSP / IPSP)\n→ ΔVm(t)"]
-
-    TERMINAL --> DELAY
-    DELAY --> NT_E
-    DELAY --> NT_I
-    NT_E --> POSTSYN
-    NT_I --> POSTSYN
-    POSTSYN -->|ΔVm| MEMBRANE
-  end
-
-  %% --- 可塑性・学習機構 ---
-  subgraph Plasticity [可塑性・学習機構]
-    STDP["STDP\n(Spike-Timing-Dependent Plasticity)"]
-    LTP["LTP\n(長期増強)"]
-    LTD["LTD\n(長期抑圧)"]
-    WEIGHT["シナプス重み w\n(動的更新)"]
-    NEUROMOD["神経修飾\n(Dopamine / 報酬信号)"]
-
-    SPIKE --> STDP
-    STDP -->|Δt > 0| LTP
-    STDP -->|Δt < 0| LTD
-    LTP --> WEIGHT
-    LTD --> WEIGHT
-    NEUROMOD --> STDP
-    WEIGHT -->|伝達効率変化| NT_E
-  end
-
-  %% --- ネットワーク構造 ---
-  subgraph Network [ネットワーク構造]
-    direction TB
-    FF["フィードフォワード結合\n(層間伝播)"]
-    REC["リカレント結合\n(再帰・短期記憶)"]
-    EI["E/Iバランス\n(興奮 ≒ 80% / 抑制 ≒ 20%)"]
-    OSC["同期振動\nGamma (30–100 Hz)\nBeta (12–30 Hz)\nAlpha (8–12 Hz)\nTheta (4–8 Hz)"]
-    LONG["長距離結合\n(皮質間・遅延含む)"]
     HIERARCHY["階層構造\n(皮質6層構造 / 視床-皮質ループ)"] %% 提案5を反映
 
     ENCODING --> FF
@@ -273,6 +137,9 @@ flowchart TB
   class MEMBRANE,SPIKE,POSTSYN,WEIGHT core
   class STDP,LTP,LTD,NEUROMOD learning
   class NOISE,ENERGY,GLIA optional
+  ```
+
+  
 SNN構造への導入アイデア（改訂版）このドキュメントでは、Mermaid図の各構造要素をどのようにSpiking Neural Network (SNN) に採用できるかを、実装レベルで整理します。1. 生物構造とSNNモデルの対応表図の構成ブロックSNNモデルでの実装対応実装ライブラリ例 / 備考 (提案1, 2反映)感覚入力層 (SENSORY / ENCODING)スパイク符号化器（RateCodeEncoder, TemporalEncoder）snnTorch, BindsNET, Nengo など。詳細はPhase 1参照。単一ニューロン層 (MEMBRANE / THRESH / REFRACT)LIFニューロン or AdExモデルsnn.LIFCell()。膜時定数 τm (10-20 ms)。不応期 (2-5 ms) は絶対（発火不可）または相対（閾値上昇）で実装。シナプス (NT_E / NT_I / POSTSYN)重み付きスパイク伝達（E/Iバランス付き）シナプス時定数 τs (5-10 ms)。E/I比率（ニューロン数比 80:20 が一般的）。Dale's principle（ニューロンはE/Iどちらか一方）を実装。可塑性 (STDP / LTP / LTD / WEIGHT)Spike-Timing-Dependent Plasticity (STDP) ルール( \Delta w = A^+ e^{-\Delta t/\tau^+} - A^- e^{\Delta t/\tau^-} )。STDP時定数 τ+/τ- (例: 20 ms / 20 ms)。ネットワーク構造 (FF / REC / EI / OSC / HIERARCHY)フィードフォワード + リカレント + 階層構造CNN + Recurrent SNN / Liquid State Machine。皮質6層構造や視床-皮質ループのモデル化（高度化）。情報表現層 (RATE / TEMP / POPULATION)出力スパイク統計解析PSTH, ISI統計, 同期解析出力層 (DECODE / MOTOR)スパイク積分または投票復号化SpikeIntegrator, RateDecoderフィードバック / 報酬信号 (NEUROMOD)報酬STDP (Dopamine-like RPE)強化学習型SNNMeta層 (NOISE / ENERGY / GLIA)ノイズ注入・エネルギー正則化生物的安定性の模倣2. 構築手順（フェーズ別）🔹 Phase 1：符号化層（Encoding） (提案3反映)感覚入力をスパイク列に変換。Rate Coding (レート符号化):概要: 一定時間内のスパイク数（発火頻度）で情報の強度を表現。使い分け: 静的な情報（例: 画像認識のピクセル強度）や、時間解像度が重要でないタスク。実装例 (Poisson-like):# 入力x (0-1) に比例した発火率のポアソンスパイクを生成
 # time_steps: シミュレーションステップ数
 rate = x / x.max()

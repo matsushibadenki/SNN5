@@ -36,6 +36,8 @@
 # 修正 (v13):
 # - mypy [syntax] (Unmatched '}') エラーを解消するため、
 #   ファイル末尾の余分な '}' を削除。
+#
+# 修正 (v14): SyntaxError: 末尾の余分な '}' を削除。
 
 from typing import Dict, Any, List, cast, Union, Optional, Type, Tuple
 import yaml
@@ -428,13 +430,13 @@ class NeuromorphicCompiler:
             "target_synops_per_second": self.hardware_profile.get("ops_per_second", 1e9)
         }
         logging.info(f"Applying hardware constraints: {hw_constraints}")
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑追加終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑追加終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
         config: Dict[str, Any] = {
             "target_hardware": target_hardware,
             # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓追加開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
             "compilation_constraints": hw_constraints, # ハードウェア制約を追加
-            # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑追加終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+            # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑追加終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
             "network_summary": analyzed_structure.get("summary", {}),
             "neuron_cores": cores,
             "synaptic_connectivity": connectivity,

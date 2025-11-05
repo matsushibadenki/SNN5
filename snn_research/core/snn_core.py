@@ -11,6 +11,12 @@
 #
 # 追加 (v23):
 # - SNN5改善レポート (セクション5.3) に基づき、SpikingSSM をモデルマップに追加。
+#
+# 修正 (v24):
+# - 論文 arXiv:2511.01938v1 (Gated SNN) に基づき、
+#   snn_research/models/temporal_snn.py の変更を反映。
+# - TemporalFeatureExtractor を SimpleRSNN にリネーム。
+# - 新しい GatedSNN アーキテクチャをモデルマップに登録。
 
 import torch
 import torch.nn as nn
@@ -33,6 +39,9 @@ from .mamba_core import SpikingMamba
 from .trm_core import TinyRecursiveModel
 from .sntorch_models import SpikingTransformerSnnTorch 
 from snn_research.io.spike_encoder import DifferentiableTTFSEncoder
+# --- ▼ 修正 (v24): temporal_snn.py から GatedSNN をインポート ▼ ---
+from snn_research.models.temporal_snn import SimpleRSNN, GatedSNN
+# --- ▲ 修正 (v24) ▲ ---
 
 
 # --- ▼ 新しいアーキテクチャのインポート ▼ ---
@@ -159,7 +168,6 @@ class MultiLevelSpikeDrivenSelfAttention(nn.Module):
         elif neuron_class == ScaleAndFireNeuron:
             valid_params = ['features', 'num_levels', 'base_threshold']
         # --- ▲ SNN5改善レポートで追加したニューロンのパラメータ ▲ ---
-
         
         filtered_params: Dict[str, Any] = {k: v for k, v in neuron_params.items() if k in valid_params}
         return filtered_params
@@ -651,7 +659,7 @@ class SimpleSNN(BaseModel):
             else:
                 full_mems = torch.zeros(B, 1, self.time_steps, self.fc1.out_features, device=device) 
         else:
-            full_mems = torch.tensor(0.0, device=device) 
+            full_mems = torch.tensor(0.0, device=device)
 
         
         full_hiddens_stacked = torch.stack(full_hiddens_list, dim=1) 
@@ -1164,7 +1172,10 @@ class SNNCore(nn.Module):
                 # --- ▼ SNN5改善レポートで追加したアーキテクチャを登録 ▼ ---
                 "tskips_snn": TSkipsSNN, # type: ignore[dict-item]
                 "spiking_ssm": SpikingSSM, # type: ignore[dict-item]
-                # --- ▲ SNN5改善レポートで追加したアーキテクチャを登録 ▲ ---
+                # --- ▼ 修正 (v24): GatedSNN を登録 ▼ ---
+                "temporal_snn": SimpleRSNN, # 旧クラスを SimpleRSNN にリネーム
+                "gated_snn": GatedSNN,     # 新しい GatedSNN を登録
+                # --- ▲ 修正 (v24) ▲ ---
             }
         elif backend == "snntorch":
             model_map = { # type: ignore[assignment]
@@ -1186,6 +1197,15 @@ class SNNCore(nn.Module):
             else:
                 params['num_classes'] = vocab_size
         
+        # --- ▼ 修正 (v24): GatedSNN/SimpleRSNN のパラメータ調整 ▼ ---
+        # これらは vocab_size ではなく input_dim, output_dim を要求する
+        if model_type in ["temporal_snn", "gated_snn"]:
+            # config/models/ecg_temporal_snn.yaml などから取得
+            params['input_dim'] = config.get('input_dim', 1)
+            params['hidden_dim'] = config.get('hidden_dim', 64)
+            params['output_dim'] = config.get('output_dim', vocab_size) # デフォルトはvocab_size
+        # --- ▲ 修正 (v24) ▲ ---
+        
         self.model = model_map[model_type](vocab_size=vocab_size, neuron_config=neuron_config, **params)
         
 
@@ -1196,8 +1216,10 @@ class SNNCore(nn.Module):
         input_key: str
         if model_type in ["hybrid_cnn_snn", "spiking_cnn", "sew_resnet"]:
             input_key = "input_images"
-        elif model_type == "tskips_snn":
+        # --- ▼ 修正 (v24): GatedSNN/SimpleRSNN の入力キー ▼ ---
+        elif model_type in ["tskips_snn", "temporal_snn", "gated_snn"]:
             input_key = "input_sequence"
+        # --- ▲ 修正 (v24) ▲ ---
         elif model_type == "spiking_ssm": # SpikingSSM の入力キーを追加
             input_key = "input_ids" # SpikingSSM は input_ids を期待する
         # --- ▲ SNN5改善レポートで追加したアーキテクチャの入力キー ▲ ---
@@ -1220,9 +1242,10 @@ class SNNCore(nn.Module):
         # --- ▼ SNN5改善レポートで追加したアーキテクチャの入力キー ▼ ---
         if model_type in ["hybrid_cnn_snn", "spiking_cnn", "sew_resnet"]:
             return self.model(input_images=input_data, **forward_kwargs) # type: ignore[operator]
-        elif model_type == "tskips_snn":
+        # --- ▼ 修正 (v24): GatedSNN/SimpleRSNN の入力キー ▼ ---
+        elif model_type in ["tskips_snn", "temporal_snn", "gated_snn"]:
             return self.model(input_sequence=input_data, **forward_kwargs) # type: ignore[operator]
-        # --- ▲ SNN5改善レポートで追加したアーキテクチャの入力キー ▲ ---
+        # --- ▲ 修正 (v24) ▲ ---
         else:
              # SpikingSSM も "input_ids" を使うため、else ブロックで処理される
             return self.model(input_ids=input_data, **forward_kwargs) # type: ignore[operator]

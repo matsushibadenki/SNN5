@@ -1,143 +1,141 @@
 ```mermaid
 flowchart TB
 
-  %% \--- 感覚入力層 \---  
-  subgraph SensoryLayer \[感覚入力層\]  
-    SENSORY\["感覚入力\\n(光・音・化学・機械)"\]  
-    RECEPTOR\["受容器応答\\n(アナログ変換)"\]  
-    ENCODING\["スパイク符号化\\nRate / Temporal / Latency"\]  
-    SENSORY \--\> RECEPTOR \--\> ENCODING  
+  %% --- 感覚入力層 ---
+  subgraph SensoryLayer [感覚入力層]
+    SENSORY["感覚入力\n(光・音・化学・機械)"]
+    RECEPTOR["受容器応答\n(アナログ変換)"]
+    ENCODING["スパイク符号化\nRate / Temporal / Latency"]
+    SENSORY --> RECEPTOR --> ENCODING
   end
 
-  %% \--- 単一ニューロン層（LIFモデル） \---  
-  subgraph Neuron \[単一ニューロン（LIFモデル基準）\]  
-    direction TB  
-    DENDRITES\["樹状突起\\n多数のシナプス入力\\n(加重和・時定数 τ)"\]  
-    SOMA\["細胞体\\n統合点"\]  
-    MEMBRANE\["膜電位 Vm(t)\\n静止: \-70 mV\\n漏れ統合"\]  
-    THRESH\["閾値判定\\nVth ≈ \-55 mV"\]  
-    SPIKE\["活動電位\\n(スパイク発火)"\]  
-    REFRAC\["不応期\\n(2-5 ms)\\nVm ← Vreset (-65 mV)"\]  
-    AXON\["軸索伝導\\n(有髄化 / 伝導速度)"\]  
-    TERMINAL\["軸索末端 (Presynaptic)"\]
+  %% --- 単一ニューロン層（LIFモデル） ---
+  subgraph Neuron [単一ニューロン（LIFモデル基準）]
+    direction TB
+    DENDRITES["樹状突起\n多数のシナプス入力\n(加重和・時定数 τ)"]
+    SOMA["細胞体\n統合点"]
+    MEMBRANE["膜電位 Vm(t)\n静止: -70 mV\n漏れ統合"]
+    THRESH["閾値判定\nVth ≈ -55 mV"]
+    SPIKE["活動電位\n(スパイク発火)"]
+    REFRAC["不応期\n(2-5 ms)\nVm ← Vreset (-65 mV)"]
+    AXON["軸索伝導\n(有髄化 / 伝導速度)"]
+    TERMINAL["軸索末端 (Presynaptic)"]
 
-    DENDRITES \--\> SOMA  
-    SOMA \--\> MEMBRANE  
-    MEMBRANE \--\>|Vm ≥ Vth| THRESH  
-    THRESH \--\> SPIKE  
-    SPIKE \--\> REFRAC  
-    REFRAC \--\>|Vm ← Vreset| MEMBRANE  
-    SPIKE \--\> AXON  
-    AXON \--\> TERMINAL  
+    DENDRITES --> SOMA
+    SOMA --> MEMBRANE
+    MEMBRANE -->|Vm ≥ Vth| THRESH
+    THRESH --> SPIKE
+    SPIKE --> REFRAC
+    REFRAC -->|Vm ← Vreset| MEMBRANE
+    SPIKE --> AXON
+    AXON --> TERMINAL
   end
 
-  %% \--- シナプス層（興奮性・抑制性） \---  
-  subgraph Synapse \[シナプス（興奮性 / 抑制性）\]  
-    direction LR  
-    DELAY\["シナプス遅延\\n(0.5–2 ms)"\]  
-    NT\_E\["興奮性伝達物質\\nGlutamate\\n(AMPA / NMDA)"\]  
-    NT\_I\["抑制性伝達物質\\nGABA\\n(Cl⁻流入)"\]  
-    POSTSYN\["シナプス後電位\\n(EPSP / IPSP)\\n→ ΔVm(t)"\]
+  %% --- シナプス層（興奮性・抑制性） ---
+  subgraph Synapse [シナプス（興奮性 / 抑制性）]
+    direction LR
+    DELAY["シナプス遅延\n(0.5–2 ms)"]
+    NT_E["興奮性伝達物質\nGlutamate\n(AMPA / NMDA)"]
+    NT_I["抑制性伝達物質\nGABA\n(Cl⁻流入)"]
+    POSTSYN["シナプス後電位\n(EPSP / IPSP)\n→ ΔVm(t)"]
 
-    TERMINAL \--\> DELAY  
-    DELAY \--\> NT\_E  
-    DELAY \--\> NT\_I  
-    NT\_E \--\> POSTSYN  
-    NT\_I \--\> POSTSYN  
-    POSTSYN \--\>|ΔVm| MEMBRANE  
+    TERMINAL --> DELAY
+    DELAY --> NT_E
+    DELAY --> NT_I
+    NT_E --> POSTSYN
+    NT_I --> POSTSYN
+    POSTSYN -->|ΔVm| MEMBRANE
   end
 
-  %% \--- 可塑性・学習機構 \---  
-  subgraph Plasticity \[可塑性・学習機構\]  
-    STDP\["STDP\\n(Spike-Timing-Dependent Plasticity)"\]  
-    LTP\["LTP\\n(長期増強)"\]  
-    LTD\["LTD\\n(長期抑圧)"\]  
-    WEIGHT\["シナプス重み w\\n(動的更新)"\]  
-    NEUROMOD\["神経修飾\\n(Dopamine / 報酬信号)"\]
+  %% --- 可塑性・学習機構 ---
+  subgraph Plasticity [可塑性・学習機構]
+    STDP["STDP\n(Spike-Timing-Dependent Plasticity)"]
+    LTP["LTP\n(長期増強)"]
+    LTD["LTD\n(長期抑圧)"]
+    WEIGHT["シナプス重み w\n(動的更新)"]
+    NEUROMOD["神経修飾\n(Dopamine / 報酬信号)"]
 
-    SPIKE \--\> STDP  
-    STDP \--\>|Δt \> 0| LTP  
-    STDP \--\>|Δt \< 0| LTD  
-    LTP \--\> WEIGHT  
-    LTD \--\> WEIGHT  
-    NEUROMOD \--\> STDP  
-    WEIGHT \--\>|伝達効率変化| NT\_E  
+    SPIKE --> STDP
+    STDP -->|Δt > 0| LTP
+    STDP -->|Δt < 0| LTD
+    LTP --> WEIGHT
+    LTD --> WEIGHT
+    NEUROMOD --> STDP
+    WEIGHT -->|伝達効率変化| NT_E
   end
 
-  %% \--- ネットワーク構造 \---  
-  subgraph Network \[ネットワーク構造\]  
-    direction TB  
-    FF\["フィードフォワード結合\\n(層間伝播)"\]  
-    REC\["リカレント結合\\n(再帰・短期記憶)"\]  
-    EI\["E/Iバランス\\n(興奮 ≒ 80% / 抑制 ≒ 20%)"\]  
-    OSC\["同期振動\\nGamma (30–100 Hz)\\nBeta (12–30 Hz)\\nAlpha (8–12 Hz)\\nTheta (4–8 Hz)"\]  
-    LONG\["長距離結合\\n(皮質間・遅延含む)"\]  
-    HIERARCHY\["階層構造\\n(皮質6層構造 / 視床-皮質ループ)"\] %% 提案5を反映
+  %% --- ネットワーク構造 ---
+  subgraph Network [ネットワーク構造]
+    direction TB
+    FF["フィードフォワード結合\n(層間伝播)"]
+    REC["リカレント結合\n(再帰・短期記憶)"]
+    EI["E/Iバランス\n(興奮 ≒ 80% / 抑制 ≒ 20%)"]
+    OSC["同期振動\nGamma (30–100 Hz)\nBeta (12–30 Hz)\nAlpha (8–12 Hz)\nTheta (4–8 Hz)"]
+    LONG["長距離結合\n(皮質間・遅延含む)"]
 
-    ENCODING \--\> FF  
-    FF \--\> REC  
-    REC \--\> FF  
-    POSTSYN \--\> EI  
-    EI \--\> OSC  
-    FF \--\> LONG  
-    REC \--\> LONG  
-    FF \--\> HIERARCHY %% 階層構造へのリンク  
-    HIERARCHY \--\> FF  
+    ENCODING --> FF
+    FF --> REC
+    REC --> FF
+    POSTSYN --> EI
+    EI --> OSC
+    FF --> LONG
+    REC --> LONG
   end
 
-  %% \--- 情報表現層 \---  
-  subgraph Info \[情報表現・符号化\]  
-    RATE\["Rate Code\\n(発火頻度符号化)"\]  
-    TEMP\["Temporal Code\\n(スパイクタイミング / 位相)"\]  
-    POPULATION\["Population Code\\n(集団符号化)"\]  
-    SPARSE\["Sparse Coding\\n(省エネ・高識別性)"\]
+  %% --- 情報表現層 ---
+  subgraph Info [情報表現・符号化]
+    RATE["Rate Code\n(発火頻度符号化)"]
+    TEMP["Temporal Code\n(スパイクタイミング / 位相)"]
+    POPULATION["Population Code\n(集団符号化)"]
+    SPARSE["Sparse Coding\n(省エネ・高識別性)"]
 
-    SPIKE \--\> RATE  
-    SPIKE \--\> TEMP  
-    RATE \--\> POPULATION  
-    TEMP \--\> POPULATION  
-    POPULATION \--\> SPARSE  
+    SPIKE --> RATE
+    SPIKE --> TEMP
+    RATE --> POPULATION
+    TEMP --> POPULATION
+    POPULATION --> SPARSE
   end
 
-  %% \--- 出力・復号化層 \---  
-  subgraph Output \[出力・復号化層\]  
-    DECODE\["スパイク復号化\\n(積分 / 投票 / フィルタ)"\]  
-    PERCEPT\["知覚・判断"\]  
-    MOTOR\["運動出力"\]  
-    FEEDBACK\["フィードバック\\n(誤差信号 / 感覚再入力)"\]
+  %% --- 出力・復号化層 ---
+  subgraph Output [出力・復号化層]
+    DECODE["スパイク復号化\n(積分 / 投票 / フィルタ)"]
+    PERCEPT["知覚・判断"]
+    MOTOR["運動出力"]
+    FEEDBACK["フィードバック\n(誤差信号 / 感覚再入力)"]
 
-    LONG \--\> DECODE  
-    DECODE \--\> PERCEPT  
-    DECODE \--\> MOTOR  
-    PERCEPT \--\> FEEDBACK  
-    FEEDBACK \--\> NEUROMOD  
+    LONG --> DECODE
+    DECODE --> PERCEPT
+    DECODE --> MOTOR
+    PERCEPT --> FEEDBACK
+    FEEDBACK --> NEUROMOD
   end
 
-  %% \--- 生物学的制約 \---  
-  subgraph Meta \[生物学的制約（SNNでは通常省略）\]  
-    NOISE\["ノイズ\\n(熱雑音・確率的放出)"\]  
-    ENERGY\["代謝コスト\\n(ATP消費)"\]  
-    GLIA\["グリア細胞\\n(恒常性維持・ATP供給・イオン調整)"\]
+  %% --- 生物学的制約 ---
+  subgraph Meta [生物学的制約（SNNでは通常省略）]
+    NOISE["ノイズ\n(熱雑音・確率的放出)"]
+    ENERGY["代謝コスト\n(ATP消費)"]
+    GLIA["グリア細胞\n(恒常性維持・ATP供給・イオン調整)"]
 
-    NOISE \-.-\>|膜電位変動| MEMBRANE  
-    ENERGY \-.-\>|発火制約| SPIKE  
-    GLIA \-.-\>|サポート| POSTSYN  
-    GLIA \-.-\>|ATP供給| ENERGY  
+    NOISE -.->|膜電位変動| MEMBRANE
+    ENERGY -.->|発火制約| SPIKE
+    GLIA -.->|サポート| POSTSYN
+    GLIA -.->|ATP供給| ENERGY
   end
 
-  %% \--- フィードバックループ \---  
-  FEEDBACK \-.-\>|学習信号| STDP  
-  MOTOR \-.-\>|感覚フィードバック| RECEPTOR
+  %% --- フィードバックループ ---
+  FEEDBACK -.->|学習信号| STDP
+  MOTOR -.->|感覚フィードバック| RECEPTOR
 
-  %% \--- スタイル定義 \---  
-  classDef core fill:\#e3f2fd,stroke:\#1976d2,stroke-width:2px  
-  classDef learning fill:\#fff3e0,stroke:\#f57c00,stroke-width:2px  
-  classDef optional fill:\#f5f5f5,stroke:\#9e9e9e,stroke-width:1px,stroke-dasharray: 5 5
+  %% --- スタイル定義 ---
+  classDef core fill:#e3f2fd,stroke:#1976d2,stroke-width:2px
+  classDef learning fill:#fff3e0,stroke:#f57c00,stroke-width:2px
+  classDef optional fill:#f5f5f5,stroke:#9e9e9e,stroke-width:1px,stroke-dasharray: 5 5
 
-  class MEMBRANE,SPIKE,POSTSYN,WEIGHT core  
-  class STDP,LTP,LTD,NEUROMOD learning  
+  class MEMBRANE,SPIKE,POSTSYN,WEIGHT core
+  class STDP,LTP,LTD,NEUROMOD learning
   class NOISE,ENERGY,GLIA optional
   ```
+  
   
 # **SNN構造への導入アイデア（改訂版）**
 

@@ -13,12 +13,15 @@
 # - HPOログ(Trial 66)の分析に基づき、spike_reg_lossとsparsity_lossが発散する根本原因を修正。
 # - _get_total_neurons ヘルパーを追加し、入力された 'spikes' (平均スパイク数) を
 #   総ニューロン数で割ることで、真の 'spike_rate' (0.0-1.0) を計算するように修正。
+#
+# 修正(v7):
+# - mypy [name-defined] エラーを解消するため、Tuple をインポート。
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 # --- ▼ 修正 ▼ ---
-from typing import Dict, Optional, cast, Any, Type # Any, Type をインポート
+from typing import Dict, Optional, cast, Any, Type, Tuple
 # --- ▲ 修正 ▲ ---
 from transformers import PreTrainedTokenizerBase
 
@@ -279,7 +282,7 @@ class DistillationLoss(nn.Module):
 
 
 class SelfSupervisedLoss(nn.Module):
-    # ... (このクラスは v6 修正の対象外) ...
+    # ... (このクラスは v6 修正の対象外だが、同様の修正が必要) ...
     """
     Temporal Contrastive Learning (TCL)のための損失関数。
     時間的に隣接する隠れ状態をポジティブペアとして学習する。

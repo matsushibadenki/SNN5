@@ -12,6 +12,10 @@
 # 改善点(v6):
 # - ユーザーの要望に基づき、不要なログやキャッシュを削除する
 #   `clean` コマンドを追加。
+#
+# 改善点(v7):
+# - プロジェクト全体の簡易動作確認を行う `health-check` コマンドを追加。
+
 import typer
 from typing import Optional, List
 import subprocess
@@ -168,14 +172,32 @@ def train_ultra(override_config: Optional[List[str]] = typer.Option(None, "--ove
 
 @app.command("ui")
 def ui(
-    model_config: str = typer.Option("configs/models/small.yaml", help="使用するモデルの設定ファイル"),
-    base_config: str = typer.Option("configs/base_config.yaml", help="基本設定ファイル"), # base_config追加
+    chat_model_config: Optional[str] = typer.Option(None, help="チャットモデルのconfigパス"),
+    chat_model_path: Optional[str] = typer.Option(None, help="チャットモデルの重みパス (.pth)"),
+    cifar_model_config: Optional[str] = typer.Option(None, help="CIFARモデルのconfigパス"),
+    cifar_model_path: Optional[str] = typer.Option(None, help="CIFARモデルの重みパス (.pth)"),
+    ai_tech_model_config: Optional[str] = typer.Option(None, help="AI技術モデルのconfigパス"), # (v5) 追加
+    ai_tech_model_path: Optional[str] = typer.Option(None, help="AI技術モデルの重みパス (.pth)"), # (v5) 追加
+    summarization_model_config: Optional[str] = typer.Option(None, help="要約モデルのconfigパス"), # (v5) 追加
+    summarization_model_path: Optional[str] = typer.Option(None, help="要約モデルの重みパス (.pth)"), # (v5) 追加
+    base_config: str = typer.Option("configs/base_config.yaml", help="基本設定ファイル"),
     start_langchain: bool = typer.Option(False, "--start-langchain", help="LangChain連携版のUIを起動する"),
 ):
-    """Gradio UIを起動する。"""
+    """Gradio UIを起動する。モデルレジストリとCLI引数からモデルを動的にロードする。"""
+    
     script = "app/langchain_main.py" if start_langchain else "app/main.py"
-    # app/main.py や app/langchain_main.py は --config と --model_config を取る
-    command = ["python", script, "--config", base_config, "--model_config", model_config]
+    command = ["python", script, "--config", base_config]
+
+    # (v5) CLI引数で渡されたモデル情報をapp/main.pyに渡す
+    if chat_model_config and chat_model_path:
+        command.extend(["--chat_model_config", chat_model_config, "--chat_model_path", chat_model_path])
+    if cifar_model_config and cifar_model_path:
+        command.extend(["--cifar_model_config", cifar_model_config, "--cifar_model_path", cifar_model_path])
+    if ai_tech_model_config and ai_tech_model_path:
+        command.extend(["--ai_tech_model_config", ai_tech_model_config, "--ai_tech_model_path", ai_tech_model_path])
+    if summarization_model_config and summarization_model_path:
+        command.extend(["--summarization_model_config", summarization_model_config, "--summarization_model_path", summarization_model_path])
+        
     _run_command(command)
 
 # --- (benchmark, convert コマンドは変更なし) ---
@@ -187,11 +209,27 @@ def benchmark_run(
     batch_size: int = typer.Option(32, help="バッチサイズ"),
     learning_rate: float = typer.Option(1e-4, help="学習率"),
     output_dir: str = typer.Option("benchmarks", help="結果レポートの保存ディレクトリ"), # output_dir追加
+    # --- ▼ 修正: 評価専用モードの引数を追加 ▼ ---
+    eval_only: bool = typer.Option(False, help="[評価モード] 訓練をスキップし、指定されたモデルで評価のみを行います。"),
+    model_path: Optional[str] = typer.Option(None, help="[評価モード] 評価する学習済みモデルのパス (.pth)。"),
+    model_config: Optional[str] = typer.Option(None, help="[評価モード] 評価するモデルのアーキテクチャ設定ファイル (.yaml)。"),
+    model_type: Optional[str] = typer.Option(None, help="[評価モード] 評価するモデルのタイプ (SNNまたはANN)。")
+    # --- ▲ 修正 ▲ ---
 ):
     """ANN vs SNNの性能比較ベンチマークを実行する。"""
     command = ["python", "scripts/run_benchmark_suite.py", "--experiment", experiment, "--epochs", str(epochs), "--batch_size", str(batch_size), "--learning_rate", str(learning_rate), "--output_dir", output_dir]
     if tag:
         command.extend(["--tag", tag])
+    # --- ▼ 修正: 評価専用モードの引数を渡す ▼ ---
+    if eval_only:
+        command.append("--eval_only")
+        if model_path:
+            command.extend(["--model_path", model_path])
+        if model_config:
+            command.extend(["--model_config", model_config])
+        if model_type:
+            command.extend(["--model_type", model_type])
+    # --- ▲ 修正 ▲ ---
     _run_command(command)
 
 @benchmark_app.command("continual")
@@ -219,10 +257,10 @@ def convert_ann2snn_cnn(
 # --- HPOコマンド定義 (変更なし) ---
 @hpo_app.command("run")
 def hpo_run(
-    target_script: str = typer.Option("run_distillation.py", help="最適化対象の学習スクリプト"),
-    base_config: str = typer.Option("configs/base_config.yaml", help="基本設定ファイル"),
     model_config: str = typer.Argument(..., help="モデルアーキテクチャ設定ファイル"),
     task: str = typer.Argument(..., help="ターゲットタスク"),
+    target_script: str = typer.Option("run_distillation.py", help="最適化対象の学習スクリプト"),
+    base_config: str = typer.Option("configs/base_config.yaml", help="基本設定ファイル"),
     teacher_model: Optional[str] = typer.Option(None, help="教師モデル (run_distillation.py用)"),
     n_trials: int = typer.Option(50, help="Optunaの試行回数"),
     eval_epochs: int = typer.Option(3, help="各試行で実行するエポック数"),
@@ -248,6 +286,16 @@ def hpo_run(
     if teacher_model:
         command.extend(["--teacher_model", teacher_model])
     _run_command(command)
+
+# --- ▼▼▼ 修正 (v7): health-check コマンドの追加 ▼▼▼ ---
+@app.command("health-check")
+def health_check():
+    """
+    プロジェクトの主要機能（学習、RL、認知、効率）の簡易動作確認（健全性チェック）を実行します。
+    """
+    command = ["python", "scripts/run_project_health_check.py"]
+    _run_command(command)
+# --- ▲▲▲ 修正 (v7) ▲▲▲ ---
 
 # --- ▼▼▼ 修正 (v6): clean コマンドの追加 ▼▼▼ ---
 
@@ -308,7 +356,7 @@ def clean(
         typer.echo(f"--- Processing: {target_dir} ---")
         
         # os.walk で再帰的に探索
-        for root, dirs, files in os.walk(dir_path, topdown=False):
+        for root, dirs, files in os.walk(target_dir, topdown=False):
             root_path = Path(root)
             
             # 1. ファイルの削除

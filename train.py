@@ -469,7 +469,6 @@ def main() -> None:
             except Exception as e:
                 print(f"Error applying override '{override}': {e}")
     # --- ▼ 修正 (v_syn): 498行目の余分な '}' を削除 ▼ ---
-    # (削除) }
     # --- ▲ 修正 (v_syn) ▲ ---
 
 

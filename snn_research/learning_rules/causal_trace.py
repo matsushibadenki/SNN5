@@ -41,7 +41,7 @@ class CausalTraceCreditAssignmentEnhancedV2(RewardModulatedSTDP):
         self.context_modulation_strength = context_modulation_strength
         self.competition_k_ratio = competition_k_ratio
         self.rule_based_lr_factor = rule_based_lr_factor
-        # --- ▲ V2 新属性 ▲ ---
+        # --- ▲ V2 新属性 ▼ ---
         print("🧠 V2 Enhanced Causal Trace Credit Assignment rule initialized.")
         print(f"   - Context Modulation Strength: {self.context_modulation_strength}")
         print(f"   - Competition Ratio (Top K%): {self.competition_k_ratio * 100:.1f}%")

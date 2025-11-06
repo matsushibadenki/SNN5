@@ -7,6 +7,8 @@
 # - SNNのタイムステップを推論の再帰ステップとして活用する基本構造は維持。
 #
 # 修正 (v2): SyntaxError: 末尾の余分な '}' を削除。
+#
+# 修正 (v3): SyntaxError: 末尾の余分な '}' を削除。
 
 import torch
 import torch.nn as nn
@@ -184,3 +186,7 @@ class TinyRecursiveModel(BaseModel): # クラス名を GatedTinyRecursiveModel �
 
         # SNN Coreのインターフェースに合わせて (B, L=1, V) で返す
         return final_logits.unsqueeze(1), avg_spikes, mem
+
+# --- ▼ 修正 (v3): ファイル末尾の余分な '}' を削除 ▼ ---
+# }
+# --- ▲ 修正 (v3) ▲ ---

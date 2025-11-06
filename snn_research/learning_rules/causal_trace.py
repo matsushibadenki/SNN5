@@ -2,8 +2,8 @@
 # コードの最も最初には、ファイルパス、ファイルの内容を示したタイトル、機能の説明を詳細に記述してください。 修正内容は記載する必要はありません。
 # Title: 進化版 因果追跡クレジット割り当て学習則 (V2)
 # Description:
-# - CausalTraceCreditAssignmentEnhanced を基盤とし、さらなる機能向上を目指した実装。
-# - 文脈依存のクレジット変調、パス依存性（簡易版）、競合的クレジット割り当て、高レベル因果連携の概念を取り入れる。
+# - CausalTraceCreditAssignmentEnhanced を基盤とし、さらなる機能向上を目指した実装
+# - 文脈依存のクレジット変調、パス依存性（簡易版）、競合的クレジット割り当て、高レベル因果連携の概念を取り入れる
 
 import torch
 from typing import Dict, Any, Optional, Tuple
@@ -195,3 +195,4 @@ class CausalTraceCreditAssignmentEnhancedV2(RewardModulatedSTDP):
     def get_causal_contribution(self) -> Optional[torch.Tensor]:
         """長期的な因果的貢献度を返す。"""
         return self.causal_contribution
+}

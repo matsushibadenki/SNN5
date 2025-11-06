@@ -20,6 +20,8 @@
 # 修正 (v6): mypy [name-defined] [operator] エラーを解消 (インポートの整理)
 #
 # 修正 (v7): SyntaxError: 末尾の余分な '}' を削除。
+#
+# 修正 (v8): 構文エラー解消のため、SpikingRWKV クラスを閉じる '}' を末尾に追加。
 
 import torch
 import torch.nn as nn

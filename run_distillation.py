@@ -3,18 +3,7 @@
 # Title: 知識蒸留実行スクリプト
 # Description: KnowledgeDistillationManagerを使用して、知識蒸留プロセスを開始します。
 #              設定ファイルとコマンドライン引数からパラメータを読み込みます。
-#
-# 修正 (v6): HPO連携時の設定読み込みと適用のロジックを dependency-injector に
-#             合わせて修正。OmegaConf.update の誤用を修正。
-#
-# 修正 (v7): mypyエラー [arg-type], [call-arg] を修正。
-#            - container.tokenizer.provided を渡すように変更。
-#            - task.prepare_data に data_dir="data" を渡すように変更。
-#
-# 修正 (v8): mypyエラー [arg-type] を修正。
-#            - container.tokenizer.provided を container.tokenizer() に変更。
-#            - DIコンテナの .provided は ProvidedInstance を返し、
-#              () 呼び出しで実際のインスタンスを取得するため。
+
 
 import argparse
 import asyncio

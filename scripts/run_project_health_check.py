@@ -70,7 +70,7 @@ def _run_check(command: List[str], check_name: str) -> bool:
         logger.error(f"--- ❌ 失敗: {check_name} (予期せぬエラー: {e}) ---")
         return False
 
-def main():
+def main() -> None:
     logger.info("="*30 + " 🩺 SNNプロジェクト健全性チェック開始 " + "="*30)
     
     checks: List[Tuple[bool, str]] = []

@@ -436,13 +436,13 @@ class NeuromorphicCompiler:
             "target_synops_per_second": self.hardware_profile.get("ops_per_second", 1e9)
         }
         logging.info(f"Applying hardware constraints: {hw_constraints}")
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑追加終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑追加終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
         config: Dict[str, Any] = {
             "target_hardware": target_hardware,
             # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓追加開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
             "compilation_constraints": hw_constraints, # ハードウェア制約を追加
-            # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑追加終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+            # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑追加終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
             "network_summary": analyzed_structure.get("summary", {}),
             "neuron_cores": cores,
             "synaptic_connectivity": connectivity,
@@ -764,5 +764,3 @@ class NeuromorphicCompiler:
         }
         print("--- ✅ シミュレーション完了 ---")
         return report
-
-# Pythonのクラスや関数のスコープに波括弧を使うことはありません。

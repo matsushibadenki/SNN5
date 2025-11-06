@@ -144,5 +144,3 @@ class SpikingTransformerSnnTorch(BaseModel):
              mem = torch.tensor(0.0, device=input_ids.device)
         
         return output, avg_spikes, mem
-
-}

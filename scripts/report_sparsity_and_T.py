@@ -1,5 +1,4 @@
 # ファイルパス: scripts/report_sparsity_and_T.py
-# (新規作成)
 #
 # Title: SNNモデル スパース性(s)・タイムステップ(T) 診断レポート
 #
@@ -8,25 +7,7 @@
 # 指定されたSNNモデルの2つの重要な効率指標を計測・レポートします。
 #   1. T (Time-steps): 推論レイテンシ
 #   2. s (Sparsity): 平均スパイク率（エネルギー効率）
-#
-# 修正 (v2): mypyエラー [name-defined], [assignment], [attr-defined] を修正。
-#
-# 修正 (v3):
-# - 健全性チェック (health-check) での `AttributeError: 'dict' object has no attribute 'training'` エラーを解消。
-# - `container.config()` が返す `dict` を `OmegaConf.create()` でラップして `DictConfig` として使用。
-# - `cfg.training.epochs.from_value(1)` のような `dependency-injector` プロバイダへの
-#   不正なアクセスを、`OmegaConf.update(cfg, ...)` に修正。
-#
-# 修正 (v4):
-# - `train.py` と同様に、DIコンテナの `@inject` を削除し、`main` 関数から
-#   `OmegaConf.create(container.config())` で生成した `DictConfig` を
-#   明示的に `measure_sparsity` に渡すように変更。
-# - これにより、`report_sparsity_and_T.py` 内で `container.config()` (dict) が
-#   `DictConfig` として扱われる問題を根本的に解決。
-#
-# 修正 (v5):
-# - `AttributeError: 'DynamicContainer' object has no attribute 'collate_fn_factory'` を修正。
-# - `train.py` から `collate_fn` をインポートして使用するように変更。
+
 
 import argparse
 import torch
@@ -47,7 +28,7 @@ from snn_research.training.trainers import BreakthroughTrainer
 from snn_research.core.snn_core import SNNCore
 from snn_research.data.datasets import get_dataset_class, SNNBaseDataset, DataFormat
 from snn_research.benchmark.tasks import BenchmarkTask # Type[BenchmarkTask] のためにインポート（ただし未使用）
-# --- ▼ 修正 (v5): train.py から collate_fn をインポート ▼ ---
+# --- ▼ 修正 (v5): collate_fn を train.py からインポート ▼ ---
 from train import collate_fn as text_collate_fn
 # --- ▲ 修正 (v5) ▲ ---
 
@@ -219,7 +200,7 @@ def main() -> None:
     logger.info(f"  L (平均推論レイテンシ / Cutoff): {avg_latency:.2f} ステップ")
     logger.info("-" * (64 + 26))
     
-    # 戦略的インサイト (doc/SNN開発：SNN5プロジェクト改善のための情報収集.md 1.3 に基づく)
+    # 戦略的インサイト (doc/SNN開発：SNN5プロジェクト改善のための情報収集_追案.md 1.3 に基づく)
     logger.info("【戦略的インサイト (SNN5改善レポート 1.3に基づく)】")
     is_efficient: bool = True
     if avg_sparsity > 0.07: # 93%スパース性 (7%スパイク率) の閾値

@@ -596,4 +596,4 @@ class SelfEvolvingAgentMaster(AutonomousAgent):
             logging.info(f"✨ {evo_result}")
         else: logging.info(f"✅ Perf ({current_perf:.2f}) sufficient.")
 
-# Pythonのクラスや関数のスコープに波括弧を使うことはありません。
+# Pythonのコードはクラスや関数のスコープに波括弧を使うことはありません。

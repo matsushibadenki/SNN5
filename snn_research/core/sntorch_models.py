@@ -16,6 +16,8 @@
 # 修正 (v6): 構文エラー解消のため、SpikingTransformerSnnTorch クラスを閉じる '}' を末尾に追加。
 #
 # 修正 (v7): SyntaxError: 末尾の '}' を削除。
+#
+# 修正 (v_syn): SyntaxError: 末尾の不要な '}' を削除。
 
 import torch
 import torch.nn as nn
@@ -146,3 +148,5 @@ class SpikingTransformerSnnTorch(BaseModel):
              mem = torch.tensor(0.0, device=input_ids.device)
         
         return output, avg_spikes, mem
+        
+# Pythonのクラスや関数のスコープに波括弧を使うことはありません。

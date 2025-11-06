@@ -5,6 +5,8 @@
 # ANNからSNNへの変換プロセスにおける性能を最大化するための、
 # 高度な正規化およびキャリブレーション技術を提供する。
 # 堅牢な重みコピー、パーセンタイルベースの閾値キャリブレーションを実装。
+#
+# 修正 (v_syn): SyntaxError: unmatched '}' を解消するため、末尾の '}' を削除。
 
 import torch
 import torch.nn as nn
@@ -116,3 +118,7 @@ def calibrate_thresholds_by_percentile(
             logging.info(f"  - Layer '{name}': Threshold = {threshold:.4f}")
 
     return thresholds
+
+# --- ▼ 修正 (v_syn): SyntaxError の原因である '}' を削除 ▼ ---
+# }
+# --- ▲ 修正 (v_syn) ▲ ---

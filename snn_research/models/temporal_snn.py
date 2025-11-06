@@ -297,5 +297,3 @@ class GatedSNN(BaseModel):
         mem = torch.tensor(0.0, device=device)
 
         return final_logits, avg_spikes, mem
-
-}

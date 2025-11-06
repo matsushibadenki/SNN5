@@ -24,6 +24,9 @@ from snn_research.core.base import BaseModel, SNNLayerNorm
 from snn_research.core.neurons import AdaptiveLIFNeuron, IzhikevichNeuron
 from spikingjelly.activation_based import functional as SJ_F # type: ignore
 
+import logging
+logger = logging.getLogger(__name__)
+
 # --- 1. TSM (Temporal-wise Spiking Mechanism) ---
 # 設計思想.md 引用[90]の「入力の変動性を捉える」機構
 

@@ -24,6 +24,8 @@
 # 修正 (v8): 構文エラー解消のため、SpikingRWKV クラスを閉じる '}' を末尾に追加。
 #
 # 修正 (v9): SyntaxError: 末尾の '}' を削除。
+#
+# 修正 (v_syn): SyntaxError: 末尾の不要な '}' を削除。
 
 import torch
 import torch.nn as nn

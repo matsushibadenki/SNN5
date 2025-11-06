@@ -267,5 +267,3 @@ class HybridSNNTransformer(BaseModel):
              return output.unsqueeze(2), avg_spikes, mem
 
         return output, avg_spikes, mem
-
-# Pythonのクラスや関数のスコープに波括弧を使うことはありません。

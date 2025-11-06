@@ -11,6 +11,8 @@
 # スパイクを生成するプロセスを実装する。
 #
 # mypy --strict 準拠。
+#
+# 修正 (v_syn): SyntaxError: 末尾の不要な '}' を削除。
 
 import torch
 import torch.nn as nn

@@ -6,6 +6,8 @@
 # 改善 (v2):
 # - spikingjelly.activation_based.base.MemoryModule を継承。
 # - set_stateful および reset メソッドを実装し、functional.reset_net に対応。
+#
+# 修正 (v_syn): SyntaxError: 末尾の不要な '}' を削除。
 
 import torch
 import torch.nn as nn

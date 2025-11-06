@@ -28,12 +28,8 @@ from app.containers import TrainingContainer
 from snn_research.data.datasets import get_dataset_class, DistillationDataset, DataFormat, SNNBaseDataset
 from snn_research.training.trainers import BreakthroughTrainer, ParticleFilterTrainer
 from snn_research.training.bio_trainer import BioRLTrainer
-# --- ▼ 修正 (SpQuant量子化をインポート) ▼ ---
 from snn_research.training.quantization import apply_qat, convert_to_quantized_model, apply_spquant_quantization
-# --- ▲ 修正 ▲ ---
-# --- ▼ 修正 (SBCと時空間プルーニングをインポート) ▼ ---
 from snn_research.training.pruning import apply_sbc_pruning, apply_spatio_temporal_pruning
-# --- ▲ 修正 ▲ ---
 from scripts.data_preparation import prepare_wikitext_data
 from snn_research.core.snn_core import SNNCore
 # --- ▼ 修正 (v15): collate_fn を app/utils からインポート ▼ ---
@@ -52,7 +48,6 @@ logger = logging.getLogger(__name__)
 container = TrainingContainer()
 
 
-# --- ▼ 修正 (v14): collate_fn のインデントを修正 (クラスの外に出す) ▼ ---
 def collate_fn(tokenizer: PreTrainedTokenizerBase, is_distillation: bool) -> Callable[[List[Any]], Any]:
     """
     データローダー用の Collate 関数。
@@ -135,8 +130,8 @@ def collate_fn(tokenizer: PreTrainedTokenizerBase, is_distillation: bool) -> Cal
             padded_logits = torch.cat([padded_logits, pad], dim=1)
             
         return padded_inputs, attention_mask, padded_targets, padded_logits
-# --- ▲ 修正 (v14) ▲ ---
-
+    
+    return collate # <-- [修正] この行を追加
 
 # --- ▼ 修正 (v12): @inject を削除し、config: DictConfig を明示的に受け取る ▼ ---
 def train(

@@ -13,8 +13,6 @@
 # 修正 (v3): SyntaxError の原因となった末尾の全角句点を削除
 #
 # 修正 (v4): SyntaxError: 末尾の余分な '}' を削除。
-#
-# 修正 (v5): 構文エラー解消のため、クラスを閉じる `}` を末尾に復元
 
 import torch
 import torch.nn as nn
@@ -297,4 +295,3 @@ class GatedSNN(BaseModel):
         mem = torch.tensor(0.0, device=device)
 
         return final_logits, avg_spikes, mem
-}

@@ -131,7 +131,7 @@ def collate_fn(tokenizer: PreTrainedTokenizerBase, is_distillation: bool) -> Cal
             
         return padded_inputs, attention_mask, padded_targets, padded_logits
     
-    return collate # <-- [修正] この行を追加
+    return collate
 
 # --- ▼ 修正 (v12): @inject を削除し、config: DictConfig を明示的に受け取る ▼ ---
 def train(

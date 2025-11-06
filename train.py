@@ -439,10 +439,9 @@ def main() -> None:
     parser.add_argument("--backend", type=str, default="spikingjelly", choices=["spikingjelly", "snntorch"], help="SNNシミュレーションバックエンドライブラリ")
     args = parser.parse_args()
 
-    # Load base config first
+    # 1. DIコンテナに設定ファイルをロード
     container.config.from_yaml(args.config)
 
-    # Load model config if provided
     if args.model_config:
          try:
              container.config.from_yaml(args.model_config)
@@ -451,17 +450,24 @@ def main() -> None:
          except Exception as e:
               print(f"Error loading model config '{args.model_config}': {e}. Using base config model settings.")
 
+    # --- ▼▼▼ 修正 (TypeError: unhashable type: 'slice' 対策) ▼▼▼ ---
+    
+    # 2. DIコンテナがロードした設定 (dict) を取得し、OmegaConfオブジェクトに変換
+    injected_config_dict: dict = container.config() 
+    injected_config: DictConfig = OmegaConf.create(injected_config_dict) 
 
-    # Explicit overrides from command line
-    if args.data_path: container.config.data.path.from_value(args.data_path)
-    if args.paradigm: container.config.training.paradigm.from_value(args.paradigm)
+    # 3. CLI引数による設定の上書き (OmegaConfオブジェクトに対して行う)
+    if args.data_path: 
+        OmegaConf.update(injected_config, "data.path", args.data_path, merge=True)
+    if args.paradigm: 
+        OmegaConf.update(injected_config, "training.paradigm", args.paradigm, merge=True)
 
-    # Apply dotted overrides
+    # 4. Dotted overrides (OmegaConfオブジェクトに対して行う)
     if args.override_config:
         for override in args.override_config:
             try:
                 keys, value_str = override.split('=', 1)
-                # Try to infer type
+                # 型を推論
                 try: value: Any = int(value_str)
                 except ValueError:
                     try: value = float(value_str)
@@ -470,40 +476,51 @@ def main() -> None:
                         elif value_str.lower() == 'false': value = False
                         else: value = value_str # Keep as string
 
-                # Use OmegaConf's update method for dotted keys
-                OmegaConf.update(container.config(), keys, value, merge=True)
+                # OmegaConfオブジェクトを直接更新
+                OmegaConf.update(injected_config, keys, value, merge=True)
             except Exception as e:
                 print(f"Error applying override '{override}': {e}")
-    # --- ▼ 修正 (v_syn): 498行目の余分な '}' を削除 ▼ ---
-    # --- ▲ 修正 (v_syn) ▲ ---
+    
+    # 5. 修正された OmegaConf オブジェクト (injected_config) を
+    #    DIコンテナの *新しい* 設定として再度適用する
+    updated_config_dict = OmegaConf.to_container(injected_config, resolve=True)
+    if isinstance(updated_config_dict, dict):
+        # --- ▼ 修正: strict=False 引数を削除 ▼ ---
+        container.config.from_dict(updated_config_dict)
+        # --- ▲ 修正 ▲ ---
+    else:
+        raise TypeError("Updated config is not a dictionary.")
 
-
+    # (分散学習の初期化)
     if args.distributed:
         if not dist.is_available(): raise RuntimeError("Distributed training requested but not available.")
         if not torch.cuda.is_available(): raise RuntimeError("Distributed training requires CUDA.")
-        # Ensure WORLD_SIZE and RANK are set if not using torchrun
         if "WORLD_SIZE" not in os.environ: os.environ["WORLD_SIZE"] = str(torch.cuda.device_count())
-        if "RANK" not in os.environ: os.environ["RANK"] = "0" # Default for single node, adjust if needed
+        if "RANK" not in os.environ: os.environ["RANK"] = "0"
         if "LOCAL_RANK" not in os.environ: os.environ["LOCAL_RANK"] = os.environ["RANK"]
         if "MASTER_ADDR" not in os.environ: os.environ["MASTER_ADDR"] = "localhost"
-        if "MASTER_PORT" not in os.environ: os.environ["MASTER_PORT"] = "29500" # Default port
+        if "MASTER_PORT" not in os.environ: os.environ["MASTER_PORT"] = "29500"
 
         dist.init_process_group(backend="nccl")
 
-    # Wire the container AFTER all configurations are loaded
+    # 6. Wire the container AFTER all configurations are loaded and applied
     container.wire(modules=[__name__])
-
-    # --- ▼ 修正 (v12): container.config() (dict) を OmegaConf.create() でラップ ▼ ---
-    # Get injected config and tokenizer AFTER wiring
-    injected_config_dict: dict = container.config() # DIコンテナは dict を返す
-    injected_config: DictConfig = OmegaConf.create(injected_config_dict) # OmegaConfオブジェクトに変換
     
-    injected_tokenizer: PreTrainedTokenizerBase = container.tokenizer() # 正しい型で取得
+    # 7. 注入されたコンポーネントを取得
+    injected_tokenizer: PreTrainedTokenizerBase = container.tokenizer()
     
+    # train 関数には最新の DictConfig オブジェクトを渡す
     train(args, config=injected_config, tokenizer=injected_tokenizer)
-    # --- ▲ 修正 (v12) ▲ ---
+    
+    # --- ▲▲▲ 修正 ▲▲▲ ---
 
     if args.distributed: dist.destroy_process_group()
 
 if __name__ == "__main__":
-    main()
+    # --- ▼ 修正: main() 全体に try...except を追加し、スタックトレースを補足 ▼ ---
+    try:
+        main()
+    except Exception as e:
+        logger.error(f"❌ 致命的なエラーが発生しました: {e}", exc_info=True)
+        sys.exit(1) # エラー終了コード
+    # --- ▲ 修正 ▲ ---

@@ -48,7 +48,8 @@ except ImportError:
     def fallback_collate_fn_def(tokenizer: PreTrainedTokenizerBase, is_distillation: bool) -> Callable[[List[Any]], Any]:
         return _fallback_collate
     
-    TextCollateFnDef: TypeAlias = Callable[[PreTrainedTokenizerBase, bool], Callable[[List[Any]], Any]]    collate_fn_orig_factory = fallback_collate_fn_def
+    TextCollateFnDef: TypeAlias = Callable[[PreTrainedTokenizerBase, bool], Callable[[List[Any]], Any]]
+    collate_fn_orig_factory = fallback_collate_fn_def
 # --- ▲▲▲ 修正 (v9) ▲▲▲ ---
 
 

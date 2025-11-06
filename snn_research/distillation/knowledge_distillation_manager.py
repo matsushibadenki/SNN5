@@ -17,18 +17,15 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset, Subset
 from transformers import AutoTokenizer, AutoModelForCausalLM, PreTrainedTokenizerBase
-from typing import Dict, Any, Optional, List, Callable, Tuple, cast
+# --- ▼ 修正: TypeAlias, Sized, asyncio をインポート ▼ ---
+from typing import Dict, Any, Optional, List, Callable, Tuple, cast, TypeAlias, Sized
 import os
 import json
 import logging
+import asyncio
+# --- ▲ 修正 ▲ ---
 from omegaconf import DictConfig
-
 from snn_research.distillation.model_registry import ModelRegistry
-from snn_research.training.trainers import DistillationTrainer
-from snn_research.benchmark.metrics import calculate_accuracy
-# ◾️◾️◾️ 修正: [name-defined] mypyエラー回避のため、型ヒントをインポート ◾️◾️◾️
-from torch.optim.lr_scheduler import LRScheduler
-# ◾️◾️◾️ 修正終わり ◾️◾️◾️
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +34,9 @@ try:
     # collate_fn は app/utils.py に定義されている
     from app.utils import collate_fn as text_collate_fn
     # 型定義
-    TextCollateFnDef = Callable[[PreTrainedTokenizerBase, bool], Callable[[List[Any]], Any]]
+    # --- ▼ 修正: TypeAlias を使用 ▼ ---
+    TextCollateFnDef: TypeAlias = Callable[[PreTrainedTokenizerBase, bool], Callable[[List[Any]], Any]]
+    # --- ▲ 修正 ▲ ---
     collate_fn_orig_factory: TextCollateFnDef = cast(TextCollateFnDef, text_collate_fn)
     logger.info("Successfully imported collate_fn from app.utils.py.")
 except ImportError:
@@ -49,8 +48,7 @@ except ImportError:
     def fallback_collate_fn_def(tokenizer: PreTrainedTokenizerBase, is_distillation: bool) -> Callable[[List[Any]], Any]:
         return _fallback_collate
     
-    TextCollateFnDef = Callable[[PreTrainedTokenizerBase, bool], Callable[[List[Any]], Any]]
-    collate_fn_orig_factory = fallback_collate_fn_def
+    TextCollateFnDef: TypeAlias = Callable[[PreTrainedTokenizerBase, bool], Callable[[List[Any]], Any]]    collate_fn_orig_factory = fallback_collate_fn_def
 # --- ▲▲▲ 修正 (v9) ▲▲▲ ---
 
 
@@ -91,9 +89,6 @@ class KnowledgeDistillationManager:
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
             
-        # ◾️◾️◾️ 修正(mypy v8): energy.py への移管に伴い削除 ◾️◾️◾️
-        # self.energy_metrics = EnergyMetrics(...)
-        # ◾️◾️◾️ 修正終わり ◾️◾️◾️
 
     async def _get_or_load_teacher_model(self) -> nn.Module:
         """
@@ -151,6 +146,9 @@ class KnowledgeDistillationManager:
         # ◾️◾️◾️ 修正終わり ◾️◾️◾️
         
         try:
+            # --- ▼ 修正: Dataset型を明示 ▼ ---
+            distill_train_dataset: Dataset 
+            # --- ▲ 修正 ▲ ---
             train_dataset_raw = SimpleTextDataset(
                 file_path=unlabeled_data_path,
                 tokenizer=self.tokenizer,
@@ -522,9 +520,11 @@ class _DistillationWrapperDataset(Dataset):
         # ◾️◾️◾️ 修正終わり ◾️◾️◾️
         
         logger.info(f"DistillationWrapperDataset initialized for {len(self.original_dataset)} samples.")
-
+        
     def __len__(self) -> int:
-        return len(self.original_dataset) # type: ignore[arg-type]
+        # --- ▼ 修正: cast(Sized, ...) を追加 ▼ ---
+        return len(cast(Sized, self.original_dataset)) 
+        # --- ▲ 修正 ▲ ---
 
     @torch.no_grad()
     def __getitem__(self, idx: int) -> Tuple[Any, torch.Tensor]:

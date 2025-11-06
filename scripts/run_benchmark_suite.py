@@ -1,21 +1,6 @@
 # ファイルパス: scripts/run_benchmark_suite.py
 # Title: 統合ベンチマークスイート
 # Description: 複数のベンチマーク実験を体系的に実行し、結果をリーダーボード形式でレポートに追記する。
-# 改善点(v2): MRPCタスクの比較実験を追加。
-# 改善点(v3): 継続学習評価のため、--model_path と --eval_only を追加。
-#             訓練済みモデルを指定し、評価のみを実行できるようにする。
-#
-# 修正 (v4):
-# - 健全性チェック (health-check) での `omegaconf.errors.ConfigAttributeError: Missing key model` エラーを解消。
-# - `train_and_evaluate_model` が `cifar10_spikingcnn_config.yaml` のような
-#   `model:` キーを持たない設定ファイルをロードする際、
-#   `run_distillation.py` と同様に `{'model': ...}` でラップするように修正。
-#
-# 修正 (v5):
-# - 健全性チェック (health-check) での `TypeError: train_and_evaluate_model() got multiple values for argument 'eval_only'` を修正。
-# - `run_experiment_by_name` 内での `train_and_evaluate_model` 呼び出し（`args.model_type` がない場合）において、
-#   `eval_only` が位置引数とキーワード引数の両方で渡される可能性があるバグを修正。
-#   `vocab_size` までの引数を位置引数とし、それ以降をキーワード引数として明示的に渡すように変更。
 
 import argparse
 import time

@@ -57,10 +57,11 @@ def train_and_evaluate_model(
             cfg_raw: DictConfig = OmegaConf.load(model_config_path)
             cfg_model: DictConfig
             if "model" in cfg_raw:
-                cfg_model = cast(DictConfig, cfg_raw.model) # <-- [修正] cast を追加
+                cfg_model = cast(DictConfig, cfg_raw.model) # 以前説明した if ブロック
             else:
                 # cifar10_spikingcnn_config.yaml のようなファイルの場合、
                 # cfg_raw自体がモデル設定だと見なす
+                cfg_model = cfg_raw
                 
 
             # モデルタイプ（SNNかANNか）に基づいてロード処理を変更

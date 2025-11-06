@@ -14,6 +14,8 @@
 # 修正 (v5): SyntaxError: 末尾の余分な '}' を削除。
 #
 # 修正 (v6): 構文エラー解消のため、SpikingTransformerSnnTorch クラスを閉じる '}' を末尾に追加。
+#
+# 修正 (v7): SyntaxError: 末尾の '}' を削除。
 
 import torch
 import torch.nn as nn

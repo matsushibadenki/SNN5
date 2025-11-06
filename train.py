@@ -1,5 +1,11 @@
 # ファイルパス: train.py
 # matsushibadenki/snn3/train.py
+# (v14 修正版)
+#
+# 修正 (v14):
+# - health-check ログで検出された `TypeError: 'NoneType' object is not subscriptable` を修正。
+# - `collate_fn` (L86) が TrainingContainer クラス内にネストされていたインデントエラーを修正。
+# - データパスの決定ロジック (L263-L277) を修正し、`args.data_path` が最優先されるように変更。
 
 import argparse
 import os
@@ -31,7 +37,12 @@ from snn_research.training.pruning import apply_sbc_pruning, apply_spatio_tempor
 from scripts.data_preparation import prepare_wikitext_data
 from snn_research.core.snn_core import SNNCore
 # --- ▼ 修正 (v15): collate_fn を app/utils からインポート ▼ ---
-from app.utils import get_auto_device, collate_fn
+# (v14の修正により train.py 自身が collate_fn を定義するため、
+#  app.utils からのインポートは不要になるが、依存関係の整理として v15 で app/utils に移動された)
+# (ここでは v14 の修正を適用するため、app/utilsからのインポートはコメントアウトし、
+#  このファイル内で定義する)
+# from app.utils import get_auto_device, collate_fn
+from app.utils import get_auto_device
 # --- ▲ 修正 (v15) ▲ ---
 # ◾️◾️◾️ 追加: logging ◾️◾️◾️
 import logging

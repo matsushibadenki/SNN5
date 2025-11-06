@@ -14,7 +14,7 @@
 import torch
 from tqdm import tqdm  # type: ignore
 # --- ▼ 修正 (v2): List, Dict をインポート ▼ ---
-from typing import Dict, List
+from typing import Dict, List, Any # Any をインポート
 # --- ▲ 修正 (v2) ▲ ---
 
 from snn_research.agent.reinforcement_learner_agent import ReinforcementLearnerAgent
@@ -26,7 +26,7 @@ class BioRLTrainer:
         self.agent = agent
         self.env = env
 
-    def train(self, num_episodes: int) -> Dict[str, float]:
+    def train(self, num_episodes: int) -> Dict[str, Any]: # Dict[str, float] を Dict[str, Any] に変更
         """強化学習の学習ループを実行する。"""
         progress_bar = tqdm(range(num_episodes))
         total_rewards: List[float] = [] # 報酬履歴をリストで保持

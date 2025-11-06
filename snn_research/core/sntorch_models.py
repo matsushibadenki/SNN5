@@ -12,6 +12,8 @@
 # 修正(v4): 構文エラー解消のため、末尾の余分な '}' を削除。
 #
 # 修正 (v5): SyntaxError: 末尾の余分な '}' を削除。
+#
+# 修正 (v6): 構文エラー解消のため、SpikingTransformerSnnTorch クラスを閉じる '}' を末尾に追加。
 
 import torch
 import torch.nn as nn
@@ -142,3 +144,5 @@ class SpikingTransformerSnnTorch(BaseModel):
              mem = torch.tensor(0.0, device=input_ids.device)
         
         return output, avg_spikes, mem
+
+}

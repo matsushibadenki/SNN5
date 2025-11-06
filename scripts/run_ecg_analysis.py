@@ -3,12 +3,7 @@
 # Title: ECG異常検出 デモアプリケーション
 # Description:
 # - ダミーのECGデータを生成し、SNNモデルで異常/正常の分類を実行するデモ。
-#
-# 改善 (v2):
-# - `doc/ROADMAP.md` (v10.0) P5.2 に基づき、
-#   旧来の `temporal_snn` に加え、`tskips_snn` や `spiking_ssm` などの
-#   SOTA時系列アーキテクチャで分析を実行できるよう、
-#   モデルロードと入力データ整形ロジックを強化する。
+
 
 import argparse
 import torch
@@ -205,7 +200,7 @@ def main() -> None:
             input_key = "input_images"
             logger.info(f"   Input reshaped for SpikingCNN: {model_input.shape}")
         
-        elif architecture_type in ["temporal_snn", "tskips_snn", "spiking_ssm"]:
+        elif architecture_type in ["temporal_snn", "tskips_snn", "spiking_ssm", "gated_snn"]: # gated_snn を追加
              # (B, T, F)
              model_input = ecg_data
              # TSkipsSNN と SpikingSSM の入力キーを判定
@@ -213,6 +208,8 @@ def main() -> None:
                  input_key = "input_sequence"
              elif architecture_type == "spiking_ssm":
                  input_key = "input_ids" # (注: 本来は Embedding 層だが、デモのためテンソルを直接渡す)
+             elif architecture_type == "gated_snn": # gated_snn のキー
+                 input_key = "input_sequence"
              else: # temporal_snn
                  input_key = "input_sequence" # (temporal_snn.py は kwargs を使わないため、SNNCoreが自動で判定)
                  # (temporal_snn.py は BaseModel を継承しているため、
@@ -287,4 +284,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

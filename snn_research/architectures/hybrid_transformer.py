@@ -10,6 +10,8 @@
 # - ANNドメインとSNNドメインの境界にはアダプタ層を挿入します。
 # mypy --strict 準拠。
 # 修正: mypy [call-overload] エラー解消のため、型ヒントを nn.Module から具体的なクラス (nn.Linearなど) に修正。
+#
+# 修正 (v_syn): SyntaxError: 末尾の不要な '}' を削除。
 
 import torch
 import torch.nn as nn
@@ -265,3 +267,5 @@ class HybridSNNTransformer(BaseModel):
              return output.unsqueeze(2), avg_spikes, mem
 
         return output, avg_spikes, mem
+
+# Pythonのクラスや関数のスコープに波括弧を使うことはありません。

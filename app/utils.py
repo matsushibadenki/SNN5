@@ -129,6 +129,8 @@ def collate_fn(tokenizer: PreTrainedTokenizerBase, is_distillation: bool) -> Cal
             padded_logits = torch.cat([padded_logits, pad], dim=1)
             
         return padded_inputs, attention_mask, padded_targets, padded_logits
+    
+    return collate
 # --- ▲ 修正 (v5) ▲ ---
 
 

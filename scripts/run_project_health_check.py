@@ -74,7 +74,7 @@ def main() -> None:
     logger.info("="*30 + " 🩺 SNNプロジェクト健全性チェック開始 " + "="*30)
     
     checks: List[Tuple[bool, str]] = []
-    
+        
     # 1. 簡易学習テスト (Gradient-based)
     # configs/smoke_test_config.yaml (epoch=1, batch=2) を使用
     check1_cmd = [

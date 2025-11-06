@@ -12,9 +12,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from pathlib import Path
 import sys
-# --- ▼ 修正: 必要な型ヒントを追加 ▼ ---
-from typing import Dict, List, Any, Optional, Callable, Sized, cast
-# --- ▲ 修正 ▲ ---
+from typing import Dict, List, Any, Optional, Callable, Sized, cast, Union
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
@@ -23,7 +21,7 @@ from app.utils import get_auto_device
 from transformers import AutoTokenizer
 # --- ▼ 修正: SNNCoreをインポート（モデルロード用） ▼ ---
 from snn_research.core.snn_core import SNNCore
-from omegaconf import OmegaConf, DictConfig # DictConfig をインポート
+from omegaconf import OmegaConf, DictConfig, ListConfig
 # --- ▲ 修正 ▲ ---
 
 def train_and_evaluate_model(
@@ -54,18 +52,22 @@ def train_and_evaluate_model(
         # SNNCoreコンテナ経由でモデルをロード
         try:
             # --- ▼ 修正 (v4): 'model:' キーがないコンフィグに対応 ▼ ---
-            cfg_raw: DictConfig = OmegaConf.load(model_config_path)
+            cfg_raw: Union[DictConfig, ListConfig, Any] = OmegaConf.load(model_config_path)
             cfg_model: DictConfig
-            if "model" in cfg_raw:
-                # --- ▼ 修正: [assignment] エラー解消のため cast を追加 ▼ ---
-                cfg_model = cast(DictConfig, cfg_raw.model)
-                # --- ▲ 修正 ▲ ---
+            if isinstance(cfg_raw, DictConfig) and "model" in cfg_raw:
+                model_node = cfg_raw.model
+                if not isinstance(model_node, (DictConfig, dict)): # dict も許容
+                    raise TypeError(f"Config file {model_config_path} 'model' key is not a dictionary (DictConfig).")
+                cfg_model = cast(DictConfig, model_node) # cast で型を確定
+            elif isinstance(cfg_raw, DictConfig):
+                    # 64行目: cfg_raw 自体がモデル設定の場合 (cfg_raw は DictConfig であることが保証されている)
+                    cfg_model = cfg_raw
             else:
                 # cifar10_spikingcnn_config.yaml のようなファイルの場合、
                 # cfg_raw自体がモデル設定だと見なす
-                cfg_model = cfg_raw
-            # --- ▲ 修正 (v4) ▲ ---
-
+                # --- ▼ mypy [assignment] エラー修正 ▼ ---
+                raise TypeError(f"Config file {model_config_path} loaded as a ListConfig, expected DictConfig.")
+                
             # モデルタイプ（SNNかANNか）に基づいてロード処理を変更
             if model_type == 'SNN':
                 # vocab_sizeはタスクに応じて設定

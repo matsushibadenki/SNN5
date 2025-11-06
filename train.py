@@ -41,6 +41,92 @@ logger = logging.getLogger(__name__)
 container = TrainingContainer()
 
 
+# --- ▼ 修正 (v14): collate_fn のインデントを修正 (クラスの外に出す) ▼ ---
+def collate_fn(tokenizer: PreTrainedTokenizerBase, is_distillation: bool) -> Callable[[List[Any]], Any]:
+    """
+    データローダー用の Collate 関数。
+    """
+    def collate(batch: List[Any]) -> Any:
+        padding_val = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
+        inputs: List[torch.Tensor] = []
+        targets: List[torch.Tensor] = []
+        logits: List[torch.Tensor] = [] # Only used if is_distillation
+
+        # Handle different batch item types (dict from HF, tuple from SNNBaseDataset)
+        for item in batch:
+            if isinstance(item, dict):
+                # Ensure keys exist and are tensors or tensor-like
+                inp = item.get('input_ids')
+                tgt = item.get('labels') # Assuming 'labels' key
+                if inp is None or tgt is None: continue # Skip invalid items
+                inputs.append(torch.tensor(inp) if not isinstance(inp, torch.Tensor) else inp)
+                targets.append(torch.tensor(tgt) if not isinstance(tgt, torch.Tensor) else tgt)
+                if is_distillation:
+                    lg = item.get('teacher_logits')
+                    if lg is not None: logits.append(torch.tensor(lg) if not isinstance(lg, torch.Tensor) else lg)
+                    else: logits.append(torch.empty(0)) # Placeholder if missing
+
+            elif isinstance(item, tuple) and len(item) >= 2:
+                # Ensure elements are tensors or tensor-like
+                inp = item[0]
+                tgt = item[1]
+                if not isinstance(inp, (torch.Tensor, list, tuple)) or not isinstance(tgt, (torch.Tensor, list, tuple)): continue
+                inputs.append(torch.tensor(inp) if not isinstance(inp, torch.Tensor) else inp)
+                targets.append(torch.tensor(tgt) if not isinstance(tgt, torch.Tensor) else tgt)
+                if is_distillation:
+                    if len(item) >= 3:
+                         lg = item[2]
+                         if lg is not None: logits.append(torch.tensor(lg) if not isinstance(lg, torch.Tensor) else lg)
+                         else: logits.append(torch.empty(0))
+                    else: logits.append(torch.empty(0))
+            else:
+                print(f"Warning: Skipping unsupported batch item type: {type(item)}")
+                continue # Skip unsupported item types
+
+        if not inputs or not targets: # If batch becomes empty after filtering
+            # Return empty structures that match expected types
+            if is_distillation:
+                return torch.empty((0, 0), dtype=torch.long), torch.empty((0, 0), dtype=torch.long), torch.empty((0, 0), dtype=torch.long), torch.empty((0, 0, 0), dtype=torch.float32)
+            else:
+                # 辞書形式を返す (標準のcollate_fnが期待する形式)
+                return {
+                    "input_ids": torch.nn.utils.rnn.pad_sequence(inputs, batch_first=True, padding_value=padding_val),
+                    "attention_mask": torch.nn.utils.rnn.pad_sequence([torch.ones_like(i) for i in inputs], batch_first=True, padding_value=0),
+                    "labels": torch.nn.utils.rnn.pad_sequence(targets, batch_first=True, padding_value=-100)
+                }
+
+        # --- 標準 (非蒸留) の collate ロジック (辞書を返す) ---
+        if not is_distillation:
+            padded_inputs = torch.nn.utils.rnn.pad_sequence(inputs, batch_first=True, padding_value=padding_val)
+            padded_targets = torch.nn.utils.rnn.pad_sequence(targets, batch_first=True, padding_value=-100)
+            attention_mask = torch.ones_like(padded_inputs)
+            attention_mask[padded_inputs == padding_val] = 0
+            return {
+                "input_ids": padded_inputs,
+                "attention_mask": attention_mask,
+                "labels": padded_targets
+            }
+        
+        # --- 蒸留 (タプルを返す) ---
+        padded_inputs = torch.nn.utils.rnn.pad_sequence(inputs, batch_first=True, padding_value=padding_val)
+        padded_targets = torch.nn.utils.rnn.pad_sequence(targets, batch_first=True, padding_value=-100)
+        padded_logits = torch.nn.utils.rnn.pad_sequence(logits, batch_first=True, padding_value=0.0)
+        attention_mask = torch.ones_like(padded_inputs)
+        attention_mask[padded_inputs == padding_val] = 0
+        
+        # ターゲットとロジットのシーケンス長を合わせる
+        seq_len = padded_inputs.shape[1]
+        if padded_targets.shape[1] < seq_len:
+            pad = torch.full((padded_targets.shape[0], seq_len - padded_targets.shape[1]), -100, dtype=padded_targets.dtype, device=padded_targets.device)
+            padded_targets = torch.cat([padded_targets, pad], dim=1)
+        if padded_logits.shape[1] < seq_len:
+            pad = torch.full((padded_logits.shape[0], seq_len - padded_logits.shape[1], padded_logits.shape[2]), 0.0, dtype=padded_logits.dtype, device=padded_logits.device)
+            padded_logits = torch.cat([padded_logits, pad], dim=1)
+            
+        return padded_inputs, attention_mask, padded_targets, padded_logits
+# --- ▲ 修正 (v14) ▲ ---
+
+
 # --- ▼ 修正 (v12): @inject を削除し、config: DictConfig を明示的に受け取る ▼ ---
 def train(
     args: argparse.Namespace,
@@ -164,13 +250,13 @@ def train(
         train_sampler: Optional[Sampler[int]] = DistributedSampler(train_dataset) if is_distributed else None # Sampler[int] に修正
         # --- ▲ 修正 ▲ ---
         
-        # --- ▼ 修正 (v15): collate_fn をインポートして使用 ▼ ---
+        # --- ▼ 修正 (v14): collate_fn が None にならないように修正 ▼ ---
         collate_fn_instance = collate_fn(tokenizer, is_distillation)
         if collate_fn_instance is None:
-            raise RuntimeError("collate_fn factory returned None. Check app/utils.py for errors.")
+            raise RuntimeError("collate_fn factory returned None. Check train.py for errors.")
         train_loader = DataLoader(train_dataset, batch_size=config.training.batch_size, shuffle=(train_sampler is None), sampler=train_sampler, collate_fn=collate_fn_instance, num_workers=0)
         val_loader = DataLoader(val_dataset, batch_size=config.training.batch_size, shuffle=False, collate_fn=collate_fn_instance, num_workers=0)
-        # --- ▲ 修正 (v15) ▲ ---
+        # --- ▲ 修正 (v14) ▲ ---
 
         snn_model: nn.Module = container.snn_model(backend=args.backend)
 
@@ -324,6 +410,7 @@ def train(
                     torch.save(quantized_model.state_dict(), quantized_path)
                     logger.info(f"✅ QAT Quantized model saved to {quantized_path}")
         # --- ▲ 修正 ▲ ---
+        # --- ▲ 修正 ▲ ---
             
     else:
         raise ValueError(f"Unknown training paradigm: '{paradigm}'.")
@@ -381,6 +468,9 @@ def main() -> None:
                 OmegaConf.update(container.config(), keys, value, merge=True)
             except Exception as e:
                 print(f"Error applying override '{override}': {e}")
+    # --- ▼ 修正 (v_syn): 498行目の余分な '}' を削除 ▼ ---
+    # (削除) }
+    # --- ▲ 修正 (v_syn) ▲ ---
 
 
     if args.distributed:

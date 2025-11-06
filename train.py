@@ -1,11 +1,19 @@
 # ファイルパス: train.py
-# matsushibadenki/snn3/train.py
-# (v14 修正版)
+# Title: 統合学習スクリプト
+# Description: 代理勾配、知識蒸留、生物学的学習則など、プロジェクトの主要な学習パラダイムを実行するためのエントリーポイント。
+#              DIコンテナ(dependency_injector)と設定ファイル(OmegaConf)を使用して、トレーナー、モデル、データローダーを動的に構築・管理します。
 #
 # 修正 (v14):
 # - health-check ログで検出された `TypeError: 'NoneType' object is not subscriptable` を修正。
 # - `collate_fn` (L86) が TrainingContainer クラス内にネストされていたインデントエラーを修正。
 # - データパスの決定ロジック (L263-L277) を修正し、`args.data_path` が最優先されるように変更。
+#
+# 修正 (v_health_check_fix):
+# - `TypeError: unhashable type: 'slice'` および `NameError: name 'sys' is not defined` を解消。
+# - `main()` 関数内の設定ロードロジックを、OmegaConfですべての設定をマージしてから
+#   DIコンテナに渡す堅牢な方法に変更。
+# - `import sys` をファイル先頭に追加。
+# - `if __name__ == "__main__":` ブロックのインデントを修正。
 
 import argparse
 import os
@@ -13,6 +21,7 @@ import torch
 import torch.distributed as dist
 import torch.nn as nn
 from torch.nn.parallel import DistributedDataParallel as DDP
+import sys # 修正: sys をインポート
 # --- ▼ 修正: [annotation-unchecked] noteを解消するため、型ヒントを追加。 ▼ ---
 from torch.utils.data import DataLoader, random_split, DistributedSampler, Dataset, Sampler
 from dependency_injector.wiring import inject, Provide
@@ -439,55 +448,66 @@ def main() -> None:
     parser.add_argument("--backend", type=str, default="spikingjelly", choices=["spikingjelly", "snntorch"], help="SNNシミュレーションバックエンドライブラリ")
     args = parser.parse_args()
 
-    # 1. DIコンテナに設定ファイルをロード
-    container.config.from_yaml(args.config)
+    # --- ▼▼▼ 修正 (TypeError: unhashable type: 'slice' 対策 v3) ▼▼▼ ---
 
-    if args.model_config:
-         try:
-             container.config.from_yaml(args.model_config)
-         except FileNotFoundError:
-             print(f"Warning: Model config file not found: {args.model_config}. Using base config model settings.")
-         except Exception as e:
-              print(f"Error loading model config '{args.model_config}': {e}. Using base config model settings.")
-
-    # --- ▼▼▼ 修正 (TypeError: unhashable type: 'slice' 対策) ▼▼▼ ---
+    # 1. DIコンテナを初期化 (この時点では config は空)
+    container = TrainingContainer()
     
-    # 2. DIコンテナがロードした設定 (dict) を取得し、OmegaConfオブジェクトに変換
-    injected_config_dict: dict = container.config() 
-    injected_config: DictConfig = OmegaConf.create(injected_config_dict) 
+    # 2. OmegaConf ですべての設定をゼロから構築
+    try:
+        # 基本設定をロード
+        base_cfg = OmegaConf.load(args.config)
+        
+        # モデル設定をロード (存在する場合)
+        model_cfg = OmegaConf.create({}) # 空のモデル設定
+        if args.model_config:
+            try:
+                model_cfg = OmegaConf.load(args.model_config)
+            except FileNotFoundError:
+                print(f"Warning: Model config file not found: {args.model_config}.")
+            except Exception as e:
+                print(f"Error loading model config '{args.model_config}': {e}.")
 
-    # 3. CLI引数による設定の上書き (OmegaConfオブジェクトに対して行う)
+        # 3. 基本設定とモデル設定をマージ
+        #    (注: モデル設定ファイルに 'model:' キーがない場合も考慮)
+        cfg_model_node = model_cfg.get('model', model_cfg)
+        merged_cfg = OmegaConf.merge(base_cfg, {'model': cfg_model_node})
+
+    except FileNotFoundError as e:
+        print(f"❌ エラー: 基本設定ファイルが見つかりません: {e.filename}")
+        sys.exit(1) # sys がインポートされていれば動作する
+    except Exception as e:
+        print(f"❌ エラー: 設定ファイルの読み込みに失敗しました: {e}")
+        sys.exit(1) # sys がインポートされていれば動作する
+
+    # 4. CLI引数による設定の上書き (OmegaConfオブジェクトに対して行う)
     if args.data_path: 
-        OmegaConf.update(injected_config, "data.path", args.data_path, merge=True)
+        OmegaConf.update(merged_cfg, "data.path", args.data_path, merge=True)
     if args.paradigm: 
-        OmegaConf.update(injected_config, "training.paradigm", args.paradigm, merge=True)
+        OmegaConf.update(merged_cfg, "training.paradigm", args.paradigm, merge=True)
 
-    # 4. Dotted overrides (OmegaConfオブジェクトに対して行う)
+    # 5. Dotted overrides (OmegaConfオブジェクトに対して行う)
     if args.override_config:
         for override in args.override_config:
             try:
                 keys, value_str = override.split('=', 1)
-                # 型を推論
-                try: value: Any = int(value_str)
+                value: Any
+                try: value = int(value_str)
                 except ValueError:
                     try: value = float(value_str)
                     except ValueError:
                         if value_str.lower() == 'true': value = True
                         elif value_str.lower() == 'false': value = False
-                        else: value = value_str # Keep as string
-
-                # OmegaConfオブジェクトを直接更新
-                OmegaConf.update(injected_config, keys, value, merge=True)
+                        else: value = value_str
+                OmegaConf.update(merged_cfg, keys, value, merge=True)
             except Exception as e:
                 print(f"Error applying override '{override}': {e}")
     
-    # 5. 修正された OmegaConf オブジェクト (injected_config) を
-    #    DIコンテナの *新しい* 設定として再度適用する
-    updated_config_dict = OmegaConf.to_container(injected_config, resolve=True)
+    # 6. 最終的な設定 (DictConfig) を DIコンテナに適用する
+    #    (OmegaConf.to_container で dict に変換してから渡す)
+    updated_config_dict = OmegaConf.to_container(merged_cfg, resolve=True)
     if isinstance(updated_config_dict, dict):
-        # --- ▼ 修正: strict=False 引数を削除 ▼ ---
-        container.config.from_dict(updated_config_dict)
-        # --- ▲ 修正 ▲ ---
+        container.config.from_dict(updated_config_dict) # 修正: strict=False を削除
     else:
         raise TypeError("Updated config is not a dictionary.")
 
@@ -503,24 +523,24 @@ def main() -> None:
 
         dist.init_process_group(backend="nccl")
 
-    # 6. Wire the container AFTER all configurations are loaded and applied
+    # 7. Wire the container AFTER all configurations are loaded and applied
     container.wire(modules=[__name__])
     
-    # 7. 注入されたコンポーネントを取得
+    # 8. 注入されたコンポーネントを取得
     injected_tokenizer: PreTrainedTokenizerBase = container.tokenizer()
     
-    # train 関数には最新の DictConfig オブジェクトを渡す
-    train(args, config=injected_config, tokenizer=injected_tokenizer)
+    # train 関数には最新の DictConfig オブジェクト (merged_cfg) を渡す
+    train(args, config=merged_cfg, tokenizer=injected_tokenizer)
     
     # --- ▲▲▲ 修正 ▲▲▲ ---
 
     if args.distributed: dist.destroy_process_group()
 
+
+# 修正: main() を try...except で囲み、インデントを修正
 if __name__ == "__main__":
-    # --- ▼ 修正: main() 全体に try...except を追加し、スタックトレースを補足 ▼ ---
     try:
         main()
     except Exception as e:
         logger.error(f"❌ 致命的なエラーが発生しました: {e}", exc_info=True)
-        sys.exit(1) # エラー終了コード
-    # --- ▲ 修正 ▲ ---
+        sys.exit(1) # グローバルスコープで sys がインポートされていれば動作

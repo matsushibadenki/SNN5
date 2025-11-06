@@ -14,6 +14,7 @@
 # - (v9 以前のmypyエラー修正コメントは省略)
 #
 # 修正 (v10): mypy エラー [name-defined], [assignment], [arg-type], [misc], [no-redef], [list-item] を修正
+# 修正 (v11): mypy エラー [syntax] (インデント) を修正
 
 import torch
 import torch.nn as nn
@@ -60,7 +61,7 @@ except ImportError:
         return _fallback_collate
     
     # --- ▼ 修正: [no-redef] [misc] [list-item] エラー解消のため、重複定義を削除 ▼ ---
-    # TextCollateFnDef: TypeAlias = Callable[[PreTrainedTokenizerBase, bool], Callable[[List[Any]], Any]]
+    # (TextCollateFnDef は 43行目で定義済み)
     collate_fn_orig_factory = fallback_collate_fn_def
     # --- ▲ 修正 ▲ ---
 # --- ▲▲▲ 修正 (v9) ▲▲▲ ---
@@ -421,12 +422,14 @@ class KnowledgeDistillationManager:
         collate_fn_orig: Callable[[List[Any]], Any] = collate_fn_orig_factory(self.tokenizer, False)
 
         def distillation_collate(batch: List[Tuple[Dict[str, Any], torch.Tensor]]) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+            # --- ▼ 修正: [syntax] インデントエラーを修正 (L425) ▼ ---
             """
             Args:
                 batch (List[Tuple[Dict, Tensor]]): 
                     _DistillationWrapperDataset からの出力。
                     各要素は (original_batch_item, teacher_logits_for_item) のタプル。
             """
+            # --- ▲ 修正 ▲ ---
             
             original_batch_items: List[Dict[str, Any]] = [item[0] for item in batch]
             teacher_logits_list: List[torch.Tensor] = [item[1] for item in batch]

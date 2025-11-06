@@ -118,7 +118,3 @@ def calibrate_thresholds_by_percentile(
             logging.info(f"  - Layer '{name}': Threshold = {threshold:.4f}")
 
     return thresholds
-
-# --- ▼ 修正 (v_syn): SyntaxError の原因である '}' を削除 ▼ ---
-# }
-# --- ▲ 修正 (v_syn) ▲ ---

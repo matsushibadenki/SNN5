@@ -1,33 +1,5 @@
 # ファイルパス: train.py
 # matsushibadenki/snn3/train.py
-# (更新)
-# 新しい統合学習実行スクリプト (完全版)
-#
-# (v1-v11 修正履歴は省略)
-#
-# 修正 (v12):
-# - 健全性チェック (health-check) での `AttributeError: 'dict' object has no attribute 'training'` エラーを解消。
-# - DIコンテナ (@inject) が返す config オブジェクトは DictConfig ではなく標準の dict であるため、
-#   @inject を削除し、main() 関数内で container.config() から dict を取得後、
-#   OmegaConf.create() で明示的に DictConfig に変換してから train() 関数に渡すように変更。
-#
-# 修正 (v13):
-# - health-check ログで検出された `IndentationError: unexpected indent` を修正。
-#   `if train_size <= 0:` ブロックのインデントを元に戻す。
-#
-# 修正 (v14):
-# - health-check ログで検出された `TypeError: 'NoneType' object is not subscriptable` を修正。
-# - `collate_fn` (L86) が TrainingContainer クラス内にネストされていたインデントエラーを修正。
-# - データパスの決定ロジック (L263-L277) を修正し、`args.data_path` が最優先されるように変更。
-#
-# 修正 (v15):
-# - 循環インポートを解消するため、collate_fn を app/utils.py に移動し、
-#   ここからはインポートして使用するよう変更。
-#
-# 修正 (v16):
-# - SyntaxError: 末尾の余分な '}' を削除。
-#
-# 修正 (v17): SyntaxError: 末尾の余分な '}' を削除。(再修正)
 
 import argparse
 import os
@@ -67,10 +39,6 @@ logger = logging.getLogger(__name__)
 
 # DIコンテナのセットアップ
 container = TrainingContainer()
-
-# --- ▼ 修正 (v15): collate_fn のローカル定義を削除 ▼ ---
-# (L86-L156 の collate_fn 定義を削除)
-# --- ▲ 修正 (v15) ▲ ---
 
 
 # --- ▼ 修正 (v12): @inject を削除し、config: DictConfig を明示的に受け取る ▼ ---
@@ -355,7 +323,6 @@ def train(
                     quantized_path = os.path.join(config.training.log_dir, 'quantized_qat_best_model.pth')
                     torch.save(quantized_model.state_dict(), quantized_path)
                     logger.info(f"✅ QAT Quantized model saved to {quantized_path}")
-        # --- ▲ 修正 ▲ ---
         # --- ▲ 修正 ▲ ---
             
     else:

@@ -26,6 +26,8 @@
 # - mypy [no-redef] (layer) エラーを解消するため、変数名を layer_to_reset に変更。
 #
 # 修正 (v4): SyntaxError: 末尾の余分な '}' を削除。
+#
+# 修正 (v5): 構文エラー解消のため、クラスを閉じる `}` を末尾に復元
 
 import torch
 import torch.nn as nn
@@ -339,3 +341,4 @@ class SpikingSSM(BaseModel):
         mem: torch.Tensor = torch.tensor(0.0, device=device) 
 
         return output, avg_spikes, mem
+}

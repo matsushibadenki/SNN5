@@ -169,6 +169,9 @@ class S4DLIFBlock(sj_base.MemoryModule):
         
         return y_t_out, h_t_spike # 次のレイヤーへの入力, 次のステップの状態
 
+# --- ▼ 修正: 構文エラーの原因となった '}' を削除 ▼ ---
+# } # <-- この行を削除
+# --- ▲ 修正 ▲ ---
 
 class SpikingSSM(BaseModel):
     """

@@ -61,7 +61,7 @@ def main():
             raise TypeError("Loaded config is not a dictionary.")
             
     except FileNotFoundError as e:
-        print(f"❌ エラー: 設定ファイルが見つかりません: {e.file_name}")
+        print(f"❌ エラー: 設定ファイルが見つかりません: {e.filename}")
         sys.exit(1)
     except Exception as e:
         print(f"❌ エラー: 設定ファイルの読み込みに失敗しました: {e}")

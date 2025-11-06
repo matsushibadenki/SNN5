@@ -40,6 +40,8 @@
 # 修正 (v14): SyntaxError: 末尾の余分な '}' を削除。
 #
 # 修正 (v15): 構文エラー解消のため、クラスを閉じる `}` を末尾に復元
+#
+# 修正 (v16): 構文エラー解消のため、末尾の '}' を削除。
 
 from typing import Dict, Any, List, cast, Union, Optional, Type, Tuple
 import yaml
@@ -760,4 +762,3 @@ class NeuromorphicCompiler:
         }
         print("--- ✅ シミュレーション完了 ---")
         return report
-}

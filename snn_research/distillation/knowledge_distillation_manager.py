@@ -12,31 +12,42 @@
 # - 循環インポートエラーを解消するため、collate_fn のインポート元を
 #   `train.py` から `app/utils.py` に変更。
 # - (v9 以前のmypyエラー修正コメントは省略)
+#
+# 修正 (v10): mypy エラー [name-defined], [assignment], [arg-type], [misc], [no-redef], [list-item] を修正
 
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset, Subset
 from transformers import AutoTokenizer, AutoModelForCausalLM, PreTrainedTokenizerBase
-# --- ▼ 修正: TypeAlias, Sized, asyncio をインポート ▼ ---
+# --- ▼ 修正: 必要な型ヒントをインポート ▼ ---
 from typing import Dict, Any, Optional, List, Callable, Tuple, cast, TypeAlias, Sized
 import os
 import json
 import logging
-import asyncio
+import asyncio # [name-defined] asyncio をインポート
 # --- ▲ 修正 ▲ ---
 from omegaconf import DictConfig
+
 from snn_research.distillation.model_registry import ModelRegistry
+# --- ▼ 修正: [name-defined] DistillationTrainer をインポート ▼ ---
+from snn_research.training.trainers import DistillationTrainer
+# --- ▲ 修正 ▲ ---
+from snn_research.benchmark.metrics import calculate_accuracy
+# ◾️◾️◾️ 修正: [name-defined] mypyエラー回避のため、型ヒントをインポート ◾️◾️◾️
+from torch.optim.lr_scheduler import LRScheduler
+# ◾️◾️◾️ 修正終わり ◾️◾️◾️
 
 logger = logging.getLogger(__name__)
+
+# --- ▼ 修正: 型エイリアスを TypeAlias を使ってファイル先頭で定義 ▼ ---
+TextCollateFnDef: TypeAlias = Callable[[PreTrainedTokenizerBase, bool], Callable[[List[Any]], Any]]
+# --- ▲ 修正 ▲ ---
 
 # --- ▼▼▼ 修正 (v9): インポート元を train.py から app.utils.py に変更 ▼▼▼ ---
 try:
     # collate_fn は app/utils.py に定義されている
     from app.utils import collate_fn as text_collate_fn
-    # 型定義
-    # --- ▼ 修正: TypeAlias を使用 ▼ ---
-    TextCollateFnDef: TypeAlias = Callable[[PreTrainedTokenizerBase, bool], Callable[[List[Any]], Any]]
-    # --- ▲ 修正 ▲ ---
+    
     collate_fn_orig_factory: TextCollateFnDef = cast(TextCollateFnDef, text_collate_fn)
     logger.info("Successfully imported collate_fn from app.utils.py.")
 except ImportError:
@@ -48,8 +59,10 @@ except ImportError:
     def fallback_collate_fn_def(tokenizer: PreTrainedTokenizerBase, is_distillation: bool) -> Callable[[List[Any]], Any]:
         return _fallback_collate
     
-    TextCollateFnDef: TypeAlias = Callable[[PreTrainedTokenizerBase, bool], Callable[[List[Any]], Any]]
+    # --- ▼ 修正: [no-redef] [misc] [list-item] エラー解消のため、重複定義を削除 ▼ ---
+    # TextCollateFnDef = Callable[[PreTrainedTokenizerBase, bool], Callable[[List[Any]], Any]]
     collate_fn_orig_factory = fallback_collate_fn_def
+    # --- ▲ 修正 ▲ ---
 # --- ▲▲▲ 修正 (v9) ▲▲▲ ---
 
 
@@ -60,7 +73,7 @@ class KnowledgeDistillationManager:
     def __init__(
         self,
         student_model: nn.Module,
-        trainer: DistillationTrainer,
+        trainer: DistillationTrainer, # <-- [name-defined] 修正 (インポート追加)
         model_registry: ModelRegistry,
         device: str,
         config: DictConfig, # ◾️ config を追加
@@ -90,6 +103,9 @@ class KnowledgeDistillationManager:
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
             
+        # ◾️◾️◾️ 修正(mypy v8): energy.py への移管に伴い削除 ◾️◾️◾️
+        # self.energy_metrics = EnergyMetrics(...)
+        # ◾️◾️◾️ 修正終わり ◾️◾️◾️
 
     async def _get_or_load_teacher_model(self) -> nn.Module:
         """
@@ -147,21 +163,18 @@ class KnowledgeDistillationManager:
         # ◾️◾️◾️ 修正終わり ◾️◾️◾️
         
         try:
-            # --- ▼ 修正: Dataset型を明示 ▼ ---
-            distill_train_dataset: Dataset 
-            # --- ▲ 修正 ▲ ---
             train_dataset_raw = SimpleTextDataset(
                 file_path=unlabeled_data_path,
                 tokenizer=self.tokenizer,
                 max_seq_len=self.config.model.time_steps() # type: ignore[attr-defined] # configがDictConfigであることを期待
             )
             # データセットが小さすぎる場合のフォールバック
-            if len(train_dataset_raw) < 10:
-                 print(f"⚠️ Warning: Dataset at '{unlabeled_data_path}' is too small ({len(train_dataset_raw)} samples).")
-                 if len(train_dataset_raw) == 0:
+            if len(cast(Sized, train_dataset_raw)) < 10:
+                 print(f"⚠️ Warning: Dataset at '{unlabeled_data_path}' is too small ({len(cast(Sized, train_dataset_raw))} samples).")
+                 if len(cast(Sized, train_dataset_raw)) == 0:
                      return {"error": "No data found in the provided file."}
                  # データを複製して最小限のバッチ数を確保
-                 train_dataset_raw = torch.utils.data.ConcatDataset([train_dataset_raw] * (10 // len(train_dataset_raw) + 1)) # type: ignore[assignment]
+                 train_dataset_raw = torch.utils.data.ConcatDataset([train_dataset_raw] * (10 // len(cast(Sized, train_dataset_raw)) + 1)) # type: ignore[assignment]
 
 
             # 蒸留用にデータセットをラップし、教師モデルのロジットを事前計算
@@ -339,7 +352,9 @@ class KnowledgeDistillationManager:
             device=self.device
         )
         
+        # --- ▼ 修正: [assignment] エラー解消のため型ヒントを Dataset に変更 ▼ ---
         distill_val_dataset: Dataset
+        # --- ▲ 修正 ▲ ---
         if val_dataset:
             distill_val_dataset = _DistillationWrapperDataset(
                 original_dataset=val_dataset,
@@ -351,8 +366,10 @@ class KnowledgeDistillationManager:
         else:
             # 検証セットがない場合、訓練セットから10%を拝借 (簡易的)
             try:
-                train_size = int(0.9 * len(distill_train_dataset))
-                val_size = len(distill_train_dataset) - train_size
+                # --- ▼ 修正: [arg-type] エラー解消のため cast を追加 ▼ ---
+                train_size = int(0.9 * len(cast(Sized, distill_train_dataset)))
+                val_size = len(cast(Sized, distill_train_dataset)) - train_size
+                # --- ▲ 修正 ▲ ---
                 if val_size == 0 and train_size > 0:
                      train_size -= 1
                      val_size = 1
@@ -520,11 +537,11 @@ class _DistillationWrapperDataset(Dataset):
         
         # ◾️◾️◾️ 修正終わり ◾️◾️◾️
         
-        logger.info(f"DistillationWrapperDataset initialized for {len(self.original_dataset)} samples.")
-        
+        logger.info(f"DistillationWrapperDataset initialized for {len(cast(Sized, self.original_dataset))} samples.")
+
     def __len__(self) -> int:
-        # --- ▼ 修正: cast(Sized, ...) を追加 ▼ ---
-        return len(cast(Sized, self.original_dataset)) 
+        # --- ▼ 修正: [arg-type] エラー解消のため cast を追加 ▼ ---
+        return len(cast(Sized, self.original_dataset))
         # --- ▲ 修正 ▲ ---
 
     @torch.no_grad()

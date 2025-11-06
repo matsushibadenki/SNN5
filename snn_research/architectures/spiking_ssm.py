@@ -26,6 +26,8 @@
 # - mypy [no-redef] (layer) エラーを解消するため、変数名を layer_to_reset に変更。
 #
 # 修正 (v4): SyntaxError: 末尾の余分な '}' を削除。
+#
+# 修正 (v_syn): SyntaxError: 末尾の不要な '}' を削除。
 
 import torch
 import torch.nn as nn

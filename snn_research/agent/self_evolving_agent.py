@@ -19,6 +19,8 @@
 # 修正 (v11): 588行目の余分な '}' を削除 (SyntaxError: unmatched '}')
 #
 # 修正 (v12): SyntaxError: 末尾の余分な '}' を削除。(再修正)
+#
+# 修正 (v13): 構文エラー解消のため、SelfEvolvingAgentMaster クラスを閉じる '}' を末尾に追加。
 
 from typing import Dict, Any, Optional, List, Tuple, cast, Callable, Collection
 import os
@@ -587,5 +589,3 @@ class SelfEvolvingAgentMaster(AutonomousAgent):
             logging.info(f"📉 Perf ({current_perf:.2f}) < threshold ({self.evolution_threshold})."); evo_result = self.evolve(perf, state)
             logging.info(f"✨ {evo_result}")
         else: logging.info(f"✅ Perf ({current_perf:.2f}) sufficient.")
-
-}

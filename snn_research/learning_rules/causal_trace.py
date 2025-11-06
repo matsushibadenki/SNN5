@@ -195,4 +195,3 @@ class CausalTraceCreditAssignmentEnhancedV2(RewardModulatedSTDP):
     def get_causal_contribution(self) -> Optional[torch.Tensor]:
         """長期的な因果的貢献度を返す。"""
         return self.causal_contribution
-}

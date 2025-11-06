@@ -76,10 +76,9 @@ def extract_metric_from_log(log: str, metric_name: str) -> Optional[float]:
     return None
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="SNN Continual Learning Experiment using EWC")
-    parser.add_argument("--epochs_task_a", type=int, default=3, help="Epochs for training on Task A (SST-2).")
-    parser.add_argument("--epochs_task_b", type=int, default=3, help="Epochs for training on Task B (MRPC).")
+    parser.add_argument("--epochs_task_a", type=int, default=3, help="Epochs for training on Task A (SST-2).")    parser.add_argument("--epochs_task_b", type=int, default=3, help="Epochs for training on Task B (MRPC).")
     parser.add_argument("--model_config", type=str, default="configs/models/small.yaml", help="Model architecture config file.")
     parser.add_argument("--output_dir", type=str, default="benchmarks/continual_learning", help="Directory to save results and models.")
     # --- ▼ 修正: 評価専用モードの引数を追加 ▼ ---

@@ -425,21 +425,24 @@ class AutonomousAgent:
                     student_config=student_model_config
                 )
 
-                model_id = new_model_info.get('model_id') if new_model_info else "unknown"
+                # --- ▼ 修正: model_id を安全に文字列化 ▼ ---
+                model_id_val = new_model_info.get('model_id') if new_model_info else None
+                model_id_str = str(model_id_val) if model_id_val is not None else "unknown"
                 reward_val = 1.0 if new_model_info and "error" not in new_model_info else -0.8
+                
                 self.memory.record_experience(
                     state=self.current_state,
                     action="on_demand_learning",
                     result=new_model_info if new_model_info else {"error": "Training pipeline failed to return info"},
                     reward={"external": reward_val},
-                    expert_used=[model_id] if model_id != "unknown" else [],
+                    expert_used=[model_id_str] if model_id_str != "unknown" else [], # 修正: model_id_str を使用
                     decision_context={"reason": "Attempted to create a new expert for the task."},
                     causal_snapshot=f"On-demand learning for '{task_description}' completed."
                  )
+                # --- ▲ 修正 ▲ ---
                 self.current_state["last_action"] = "on_demand_learning"
                 # --- ▼ 修正 ▼ ---
                 self.current_state["last_result"] = new_model_info if new_model_info else {"error": "Training pipeline failed"}
-                # --- ▲ 修正 ▲ ---
                 return new_model_info
 
             except Exception as e:

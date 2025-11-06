@@ -22,6 +22,8 @@
 # 修正 (v7): SyntaxError: 末尾の余分な '}' を削除。
 #
 # 修正 (v8): 構文エラー解消のため、SpikingRWKV クラスを閉じる '}' を末尾に追加。
+#
+# 修正 (v9): SyntaxError: 末尾の '}' を削除。
 
 import torch
 import torch.nn as nn
@@ -203,6 +205,7 @@ class SpikingRWKV(BaseModel):
         super().__init__()
         self.d_model = d_model
         self.num_layers = num_layers
+        self.time_steps = time_steps # SNNCore互換性のためのダミー
         
         if neuron_config is None:
             neuron_config = {'type': 'lif', 'tau_mem': 10.0, 'base_threshold': 1.0}
@@ -309,6 +312,7 @@ class SpikingRWKV(BaseModel):
         logits: torch.Tensor = self.output_projection(x_norm_final)
         
         # --- 互換性のため (logits, avg_spikes, mem) を返す ---
+        # (T_snn ではなく T_seq で割る)
         avg_spikes_val: float = self.get_total_spikes() / (B * T_seq) if return_spikes else 0.0
         avg_spikes: torch.Tensor = torch.tensor(avg_spikes_val, device=device)
         mem: torch.Tensor = torch.tensor(0.0, device=device) 

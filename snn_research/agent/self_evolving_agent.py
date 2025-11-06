@@ -13,6 +13,8 @@
 # 修正 (v7): mypy [syntax] error: Unmatched '}' を修正 (538行目付近の不要な '}' を削除)
 # 修正 (v8): 538行目の不要な '}' を削除 (mypy [syntax] error)
 # 修正 (v9): 588行目の余分な '}' を削除 (mypy [syntax] error)
+#
+# 修正 (v10): 構文エラー解消のため、クラスを閉じる `}` を末尾に復元
 
 from typing import Dict, Any, Optional, List, Tuple, cast, Callable, Collection
 import os
@@ -537,10 +539,6 @@ class SelfEvolvingAgentMaster(AutonomousAgent):
                     scores[i] = score
                 return scores
             
-            # --- ▼ 修正 (v9): 538行目付近の不要な '}' を削除 ▼ ---
-            # (この行にあった '}' を削除)
-            # --- ▲ 修正 (v9) ▲ ---
-    
             best_params_np, best_score = optimize_with_hseo(
                 objective_function=objective_function,
                 dim=len(valid_param_keys),
@@ -586,6 +584,4 @@ class SelfEvolvingAgentMaster(AutonomousAgent):
             logging.info(f"✨ {evo_result}")
         else: logging.info(f"✅ Perf ({current_perf:.2f}) sufficient.")
 
-# --- ▼ 修正 (v9): 588行目の余分な '}' を削除 ▼ ---
-# (この行にあった '}' を削除)
-# --- ▲ 修正 (v9) ▲ ---
+} # <-- この `}` が修正 v9 で削除されたものと推測されます

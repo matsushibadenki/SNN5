@@ -26,8 +26,6 @@
 # - mypy [no-redef] (layer) エラーを解消するため、変数名を layer_to_reset に変更。
 #
 # 修正 (v4): SyntaxError: 末尾の余分な '}' を削除。
-#
-# 修正 (v5): 構文エラー解消のため、クラスを閉じる `}` を末尾に復元
 
 import torch
 import torch.nn as nn
@@ -79,7 +77,7 @@ class S4DLIFBlock(sj_base.MemoryModule):
         neuron_params: Dict[str, Any],
         d_conv: int = 4, # 畳み込み
         **kwargs: Any
-    ):
+    ) -> None:
         super().__init__()
         self.d_model = d_model
         self.d_state = d_state
@@ -341,4 +339,3 @@ class SpikingSSM(BaseModel):
         mem: torch.Tensor = torch.tensor(0.0, device=device) 
 
         return output, avg_spikes, mem
-}

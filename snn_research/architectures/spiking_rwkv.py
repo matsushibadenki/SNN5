@@ -20,8 +20,6 @@
 # 修正 (v6): mypy [name-defined] [operator] エラーを解消 (インポートの整理)
 #
 # 修正 (v7): SyntaxError: 末尾の余分な '}' を削除。
-#
-# 修正 (v8): 構文エラー解消のため、クラスを閉じる `}` を末尾に復元
 
 import torch
 import torch.nn as nn
@@ -314,4 +312,3 @@ class SpikingRWKV(BaseModel):
         mem: torch.Tensor = torch.tensor(0.0, device=device) 
 
         return logits, avg_spikes, mem
-}

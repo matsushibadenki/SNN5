@@ -26,6 +26,8 @@
 #
 # 修正 (v16):
 # - SyntaxError: 末尾の余分な '}' を削除。
+#
+# 修正 (v17): SyntaxError: 末尾の余分な '}' を削除。(再修正)
 
 import argparse
 import os
@@ -443,6 +445,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-# --- ▼ 修正 (v16): ファイル末尾の余分な '}' を削除 ▼ ---
-# } 
-# --- ▲ 修正 (v16) ▲ ---

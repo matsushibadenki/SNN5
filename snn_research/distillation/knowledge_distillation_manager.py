@@ -344,7 +344,9 @@ class KnowledgeDistillationManager:
         teacher_model_instance = asyncio.run(self._get_or_load_teacher_model())
 
         # 蒸留用データセットラッパー
-        distill_train_dataset = _DistillationWrapperDataset(
+        # --- ▼ 修正: [assignment] エラー解消のため型ヒントを Dataset に変更 ▼ ---
+        distill_train_dataset: Dataset = _DistillationWrapperDataset(
+        # --- ▲ 修正 ▲ ---
             original_dataset=train_dataset,
             teacher_model=teacher_model_instance,
             tokenizer=self.tokenizer,
@@ -352,9 +354,7 @@ class KnowledgeDistillationManager:
             device=self.device
         )
         
-        # --- ▼ 修正: [assignment] エラー解消のため型ヒントを Dataset に変更 ▼ ---
         distill_val_dataset: Dataset
-        # --- ▲ 修正 ▲ ---
         if val_dataset:
             distill_val_dataset = _DistillationWrapperDataset(
                 original_dataset=val_dataset,

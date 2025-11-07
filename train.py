@@ -454,14 +454,20 @@ def main() -> None:
         # モデル設定をロード (存在する場合)
         if args.model_config:
             try:
-                model_cfg = OmegaConf.load(args.model_config) # micro.yaml
-                # (注: モデル設定ファイルに 'model:' キーがない場合も考慮)
-                cfg_model_node = model_cfg.get('model', model_cfg)
-                # container.config.model (providers.Configuration) に辞書をマージ
-                # (OmegaConf.to_container で dict に変換)
-                model_config_dict = OmegaConf.to_container(cfg_model_node, resolve=True)
+                model_cfg = OmegaConf.load(args.model_config) # L358
+
+                # model_cfg が None でないことを確認する
+                if model_cfg is None:
+                    logger.warning(f"モデル設定ファイル '{args.model_config}' が空または無効(null)です。モデル設定のロードをスキップします。")
+                    cfg_model_node = None
+                else:
+                    # model_cfg が None でない場合のみ .get() を呼び出す
+                    cfg_model_node = model_cfg.get('model', model_cfg) # L360
+                
+                model_config_dict = OmegaConf.to_container(cfg_model_node, resolve=True) # L363
+                
                 if isinstance(model_config_dict, dict):
-                    container.config.model.from_dict(model_config_dict)
+                    container.config.model.from_dict(model_config_dict) # L365
                 else:
                     logger.warning(f"Model config node loaded from {args.model_config} is not a dict, skipping merge.")
 

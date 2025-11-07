@@ -192,8 +192,16 @@ class TrainingContainer(containers.DeclarativeContainer):
     grid_world_env = providers.Factory(GridWorldEnv, device=device)
     bio_rl_trainer = providers.Factory(BioRLTrainer, agent=bio_rl_agent, env=grid_world_env)
     
-    particle_filter_trainer = providers.Factory(ParticleFilterTrainer, base_model=providers.Factory(BioSNN, layer_sizes=[10, 5, 2], neuron_params={'tau_mem': 10.0, 'v_threshold': 1.0, 'v_reset': 0.0, 'v_rest': 0.0}, synaptic_rule=providers.Object(None), homeostatic_rule=providers.Object(None)), config=config, device=device) # BioSNNの引数を修正
+    particle_filter_trainer = providers.Factory(
+        ParticleFilterTrainer, 
+        base_model=providers.Factory(BioSNN, layer_sizes=[10, 5, 2], neuron_params={'tau_mem': 10.0, 'v_threshold': 1.0, 'v_reset': 0.0, 'v_rest': 0.0}, synaptic_rule=providers.Object(None), homeostatic_rule=providers.Object(None)), 
+        # --- ▼ 修正 (v_health_check_fix_v9) ▼ ---
+        config=config.provided, # config -> config.provided
+        # --- ▲ 修正 (v_health_check_fix_v9) ▲ ---
+        device=device
+    )
     planner_snn = providers.Factory(PlannerSNN, vocab_size=providers.Callable(len, tokenizer), d_model=config.model.d_model, d_state=config.model.d_state, num_layers=config.model.num_layers, time_steps=config.model.time_steps, n_head=config.model.n_head, num_skills=10, neuron_config=config.model.neuron)
+    d_model=config.model.d_model, d_state=config.model.d_state, num_layers=config.model.num_layers, time_steps=config.model.time_steps, n_head=config.model.n_head, num_skills=10, neuron_config=config.model.neuron)
     planner_optimizer = providers.Factory(AdamW, lr=config.training.planner.learning_rate)
     planner_loss = providers.Factory(PlannerLoss)
     model_registry: providers.Provider[ModelRegistry] = providers.Selector(

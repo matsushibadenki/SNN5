@@ -455,25 +455,32 @@ def main() -> None:
         # モデル設定をロード (存在する場合)
         if args.model_config:
             try:
-                model_cfg = OmegaConf.load(args.model_config) # L358
+                cfg_raw = OmegaConf.load(args.model_config) # L460
 
                 # model_cfg が None でないことを確認する
-                if model_cfg is None:
+                if cfg_raw is None:
                     logger.warning(f"モデル設定ファイル '{args.model_config}' が空または無効(null)です。モデル設定のロードをスキップします。")
                     cfg_model_node = None
+                # --- ▼ 修正 (v_health_check_fix_v8): [arg-type] L466 ▼ ---
+                elif isinstance(cfg_raw, DictConfig):
+                    # cfg_raw 自体が DictConfig の場合 .get() を使用
+                    cfg_model_node = cfg_raw.get('model', cfg_raw) # L466
+                # --- ▲ 修正 ▲ ---
                 else:
-                    # model_cfg が None でない場合のみ .get() を呼び出す
-                    cfg_model_node = model_cfg.get('model', model_cfg) # L360
+                    # ListConfig やその他の型の場合
+                    raise TypeError(f"Model config file {args.model_config} loaded as {type(cfg_raw)}, expected DictConfig.")
+
+                model_config_dict = OmegaConf.to_container(cfg_model_node, resolve=True) # L463
                 
-                model_config_dict = OmegaConf.to_container(cfg_model_node, resolve=True) # L363
-                
+                # --- ▼ 修正 (v_health_check_fix_v8): [arg-type] L471 ▼ ---
                 if isinstance(model_config_dict, dict):
-                    container.config.model.from_dict(model_config_dict) # L365
+                    # from_dict は Dict[str, Any] を期待する
+                    container.config.model.from_dict(cast(Dict[str, Any], model_config_dict)) # L471
+                # --- ▲ 修正 ▲ ---
                 else:
                     logger.warning(f"Model config node loaded from {args.model_config} is not a dict, skipping merge.")
 
-            except FileNotFoundError:
-                print(f"Warning: Model config file not found: {args.model_config}.")
+            except FileNotFoundError:                print(f"Warning: Model config file not found: {args.model_config}.")
             except Exception as e:
                 print(f"Error loading model config '{args.model_config}': {e}.")
 

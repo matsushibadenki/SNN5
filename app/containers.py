@@ -229,7 +229,13 @@ class AppContainer(containers.DeclarativeContainer):
     _registry_path_provider = providers.Callable(
         # cfg引数にはconfigプロバイダーの「値」(dictまたはDictConfig)が渡される
         # したがって cfg() ではなく cfg.get() を使う
-        lambda cfg: cfg.get('model_registry', {}).get('file', {}).get('path', "runs/model_registry.json"),
+        # --- ▼▼▼ 修正: cfgがNoneの場合のフォールバックを追加 ▼▼▼ ---
+        lambda cfg: (
+            cfg.get('model_registry', {}).get('file', {}).get('path', "runs/model_registry.json")
+            if cfg is not None and isinstance(cfg, dict) 
+            else "runs/model_registry.json" # cfgがNoneの場合のフォールバック
+        ),
+        # --- ▲▲▲ 修正 ▲▲▲ ---
         cfg=config
     )
     

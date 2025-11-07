@@ -14,6 +14,11 @@
 #   DIコンテナに渡す堅牢な方法に変更。
 # - `import sys` をファイル先頭に追加。
 # - `if __name__ == "__main__":` ブロックのインデントを修正。
+#
+# 修正 (v_health_check_fix_v2):
+# - `OSError: None is not a local folder` エラーを解消するため、
+#   `container.tokenizer()` の呼び出しを削除し、
+#   `main` 関数内で設定ロード後に `AutoTokenizer` を手動でインスタンス化するように変更。
 
 import argparse
 import os
@@ -26,7 +31,7 @@ import sys # 修正: sys をインポート
 from torch.utils.data import DataLoader, random_split, DistributedSampler, Dataset, Sampler
 from dependency_injector.wiring import inject, Provide
 from typing import Optional, Tuple, List, Dict, Any, Callable, cast, Union, TYPE_CHECKING
-from transformers import PreTrainedTokenizerBase
+from transformers import PreTrainedTokenizerBase, AutoTokenizer # AutoTokenizer をインポート
 from omegaconf import DictConfig, OmegaConf # DictConfig, OmegaConf をインポート
 from torch.optim import Optimizer # Optimizerをインポート
 from torch.optim.lr_scheduler import LRScheduler # LRSchedulerをインポート
@@ -448,30 +453,34 @@ def main() -> None:
     parser.add_argument("--backend", type=str, default="spikingjelly", choices=["spikingjelly", "snntorch"], help="SNNシミュレーションバックエンドライブラリ")
     args = parser.parse_args()
 
-    # --- ▼▼▼ 修正 (TypeError: unhashable type: 'slice' 対策 v3) ▼▼▼ ---
+    # --- ▼▼▼ 修正 (health-check エラー対策 v-final-2) ▼▼▼
 
     # 1. DIコンテナを初期化 (この時点では config は空)
     container = TrainingContainer()
     
-    # 2. OmegaConf ですべての設定をゼロから構築
+    # 2. 設定ファイルを直接コンテナにロード (from_yaml)
     try:
         # 基本設定をロード
-        base_cfg = OmegaConf.load(args.config)
+        container.config.from_yaml(args.config) # smoke_test_config.yaml
         
         # モデル設定をロード (存在する場合)
-        model_cfg = OmegaConf.create({}) # 空のモデル設定
         if args.model_config:
             try:
-                model_cfg = OmegaConf.load(args.model_config)
+                model_cfg = OmegaConf.load(args.model_config) # micro.yaml
+                # (注: モデル設定ファイルに 'model:' キーがない場合も考慮)
+                cfg_model_node = model_cfg.get('model', model_cfg)
+                # container.config.model (providers.Configuration) に辞書をマージ
+                # (OmegaConf.to_container で dict に変換)
+                model_config_dict = OmegaConf.to_container(cfg_model_node, resolve=True)
+                if isinstance(model_config_dict, dict):
+                    container.config.model.from_dict(model_config_dict)
+                else:
+                    logger.warning(f"Model config node loaded from {args.model_config} is not a dict, skipping merge.")
+
             except FileNotFoundError:
                 print(f"Warning: Model config file not found: {args.model_config}.")
             except Exception as e:
                 print(f"Error loading model config '{args.model_config}': {e}.")
-
-        # 3. 基本設定とモデル設定をマージ
-        #    (注: モデル設定ファイルに 'model:' キーがない場合も考慮)
-        cfg_model_node = model_cfg.get('model', model_cfg)
-        merged_cfg = OmegaConf.merge(base_cfg, {'model': cfg_model_node})
 
     except FileNotFoundError as e:
         print(f"❌ エラー: 基本設定ファイルが見つかりません: {e.filename}")
@@ -480,13 +489,13 @@ def main() -> None:
         print(f"❌ エラー: 設定ファイルの読み込みに失敗しました: {e}")
         sys.exit(1) # sys がインポートされていれば動作する
 
-    # 4. CLI引数による設定の上書き (OmegaConfオブジェクトに対して行う)
+    # 4. CLI引数による設定の上書き (Provider API を使用)
     if args.data_path: 
-        OmegaConf.update(merged_cfg, "data.path", args.data_path, merge=True)
+        container.config.data.path.from_value(args.data_path)
     if args.paradigm: 
-        OmegaConf.update(merged_cfg, "training.paradigm", args.paradigm, merge=True)
+        container.config.training.paradigm.from_value(args.paradigm)
 
-    # 5. Dotted overrides (OmegaConfオブジェクトに対して行う)
+    # 5. Dotted overrides (Provider API を使用)
     if args.override_config:
         for override in args.override_config:
             try:
@@ -499,18 +508,17 @@ def main() -> None:
                         if value_str.lower() == 'true': value = True
                         elif value_str.lower() == 'false': value = False
                         else: value = value_str
-                OmegaConf.update(merged_cfg, keys, value, merge=True)
+                
+                # DIコンテナのプロバイダを直接上書き
+                key_parts = keys.split('.')
+                config_provider = container.config
+                for part in key_parts:
+                    config_provider = getattr(config_provider, part)
+                config_provider.from_value(value)
+                
             except Exception as e:
                 print(f"Error applying override '{override}': {e}")
     
-    # 6. 最終的な設定 (DictConfig) を DIコンテナに適用する
-    #    (OmegaConf.to_container で dict に変換してから渡す)
-    updated_config_dict = OmegaConf.to_container(merged_cfg, resolve=True)
-    if isinstance(updated_config_dict, dict):
-        container.config.from_dict(updated_config_dict) # 修正: strict=False を削除
-    else:
-        raise TypeError("Updated config is not a dictionary.")
-
     # (分散学習の初期化)
     if args.distributed:
         if not dist.is_available(): raise RuntimeError("Distributed training requested but not available.")
@@ -523,14 +531,35 @@ def main() -> None:
 
         dist.init_process_group(backend="nccl")
 
-    # 7. Wire the container AFTER all configurations are loaded and applied
+    # 7. Wire the container
     container.wire(modules=[__name__])
     
-    # 8. 注入されたコンポーネントを取得
-    injected_tokenizer: PreTrainedTokenizerBase = container.tokenizer()
+    # 8. Tokenizer を手動でインスタンス化 (最重要修正)
+    #    container.tokenizer() を呼び出さず、最新の config から直接ロードする
     
-    # train 関数には最新の DictConfig オブジェクト (merged_cfg) を渡す
-    train(args, config=merged_cfg, tokenizer=injected_tokenizer)
+    # 8a. 最新の config 辞書を取得
+    latest_config_dict = container.config()
+    cfg_omega = OmegaConf.create(latest_config_dict)
+    
+    # 8b. tokenizer_name を安全に取得
+    tokenizer_name = OmegaConf.select(cfg_omega, "data.tokenizer_name", default=None)
+    
+    if tokenizer_name is None:
+        logger.error("config.data.tokenizer_name が設定されていません。'gpt2' をフォールバックとして使用します。")
+        tokenizer_name = "gpt2"
+
+    logger.info(f"Tokenizer '{tokenizer_name}' をロードしています...")
+    try:
+        injected_tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+    except Exception as e:
+        logger.error(f"Tokenizer '{tokenizer_name}' のロードに失敗しました: {e}")
+        # エラーログで None が指定されたことが示されているため、ここで明示的に None をチェック
+        if tokenizer_name is None:
+             logger.error("tokenizer_name が None のため、OSErrorが発生しました。")
+        raise e # エラーを再スローして問題を明確にする
+
+    # 9. train 関数に、インスタンス化した tokenizer と最新の config を渡す
+    train(args, config=cfg_omega, tokenizer=injected_tokenizer)
     
     # --- ▲▲▲ 修正 ▲▲▲ ---
 

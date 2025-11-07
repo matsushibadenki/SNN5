@@ -141,7 +141,6 @@ def train(
     config: DictConfig, # type: ignore[has-type]
     tokenizer: PreTrainedTokenizerBase, # type: ignore[has-type]
 ) -> None:
-# --- ▲ 修正 (v12) ▲ ---
     """学習プロセスを実行するメイン関数"""
     is_distributed = args.distributed
     rank = int(os.environ.get("LOCAL_RANK", -1))
@@ -444,9 +443,11 @@ def main() -> None:
     # --- ▼▼▼ 修正 (health-check エラー対策 v-final-3) ▼▼▼
 
     # 1. DIコンテナを初期化
-    container = TrainingContainer()
+    # --- ▼ 修正 (v_health_check_fix_v4): L353をコメントアウト ---
+    # container = TrainingContainer() # L353: このローカルインスタンス化が原因
+    # --- ▲ 修正 (v_health_check_fix_v4) ---
     
-    # 2. 設定ファイルを直接コンテナにロード
+    # 2. 設定ファイルを直接コンテナにロード (グローバルの container を使用)
     try:
         # 基本設定をロード
         container.config.from_yaml(args.config) # smoke_test_config.yaml

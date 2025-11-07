@@ -26,3 +26,14 @@
 
 ---
 
+## 📊 Run at: 2025-11-07 23:07:26 (Tag: default)
+
+**Configuration:** Mode: Train+Eval, Epochs: 1, Batch Size: 4, LR: 0.0001
+
+|   accuracy |   avg_spikes |   estimated_energy_j | model   |   eval_time_sec | run_date            | tag     | mode       |
+|-----------:|-------------:|---------------------:|:--------|----------------:|:--------------------|:--------|:-----------|
+|     0.4645 |            0 |                    0 | ANN     |         11.0396 | 2025-11-07 23:07:26 | default | Train+Eval |
+|     0.1    |            0 |                    0 | SNN     |        476.746  | 2025-11-07 23:07:26 | default | Train+Eval |
+
+---
+

@@ -81,10 +81,13 @@ def main() -> None:
         PYTHON_EXEC, "train.py",
         "--config", "configs/smoke_test_config.yaml",
         "--model_config", "configs/models/micro.yaml",
-        "--paradigm", "gradient_based"
+        "--paradigm", "gradient_based",
+        # --- ▼ 修正 (v_health_check_fix_v5): data_path を明示的に指定 ▼ ---
+        "--data_path", "data/smoke_test_data.jsonl"
+        # --- ▲ 修正 (v_health_check_fix_v5) ▲ ---
     ]
     checks.append((_run_check(check1_cmd, "1. 代理勾配学習 (gradient_based)"), "代理勾配学習"))
-
+    
     # 2. 簡易ベンチマーク (ANN vs SNN)
     # --- ▼ 修正(v2): --eval_only を削除し、実際に最小限の訓練を実行 ▼ ---
     check2_cmd = [

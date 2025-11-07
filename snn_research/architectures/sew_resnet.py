@@ -18,15 +18,25 @@
 # 指摘されています。
 #
 # mypy --strict 準拠。
+#
+# 修正 (v2): mypy [name-defined] エラーを解消するため、loggingをインポート。
 
 import torch
 import torch.nn as nn
 from typing import Tuple, Dict, Any, Type, Optional, List, cast
+# --- ▼ 修正 ▼ ---
+import logging
+# --- ▲ 修正 ▲ ---
 
 # SNNのコアコンポーネントをインポート
 from snn_research.core.base import BaseModel, SNNLayerNorm
 from snn_research.core.neurons import AdaptiveLIFNeuron, IzhikevichNeuron
 from spikingjelly.activation_based import functional as SJ_F # type: ignore
+
+# --- ▼ 修正 ▼ ---
+# ロガー設定
+logger = logging.getLogger(__name__)
+# --- ▲ 修正 ▲ ---
 
 class SEWResidualBlock(nn.Module):
     """

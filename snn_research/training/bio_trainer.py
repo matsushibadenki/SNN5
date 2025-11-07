@@ -60,9 +60,7 @@ class BioRLTrainer:
         final_avg_reward: float = sum(total_rewards) / num_episodes if num_episodes > 0 else 0.0
         print(f"Training finished. Final average reward: {final_avg_reward:.4f}")
         
-        # --- ▼ 修正 (v2): 報酬履歴を返す ▼ ---
         return {
             "final_average_reward": final_avg_reward,
             "rewards_history": total_rewards # health-checkでのプロット用
         }
-        # --- ▲ 修正 (v2) ▲ ---

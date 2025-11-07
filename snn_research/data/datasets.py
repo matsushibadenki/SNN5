@@ -2,12 +2,12 @@
 # 各種データ形式に対応するデータセットクラス
 # 
 # 機能:
-# - Hugging Face Tokenizer を使用するように全面的に刷新。
-# - 旧来の独自Vocabularyクラスを廃止し、標準的なNLPパイプラインとの互換性を向上。
-# - データ形式に応じたテキスト抽出ロジックを提供。
-# - 事前計算されたロジットを読み込むDistillationDatasetを新設。
-# - mypyエラーを解消するため、SNNBaseDatasetの型ヒントを修正。
-# - 大規模データセットに対応するため、遅延読み込み（Lazy Loading）を実装。
+# - Hugging Face Tokenizer を使用するように全面的に刷新
+# - 旧来の独自Vocabularyクラスを廃止し、標準的なNLPパイプラインとの互換性を向上
+# - データ形式に応じたテキスト抽出ロジックを提供
+# - 事前計算されたロジットを読み込むDistillationDatasetを新設
+# - mypyエラーを解消するため、SNNBaseDatasetの型ヒントを修正
+# - 大規模データセットに対応するため、遅延読み込み（Lazy Loading）を実装
 
 import torch
 from torch.utils.data import Dataset
@@ -35,8 +35,8 @@ def load_jsonl_data(file_path: str) -> Iterator[Dict[str, Any]]:
 # --- データセットクラス ---
 class SNNBaseDataset(Dataset):
     """
-    大規模なJSONLファイルをメモリ効率良く扱うための、新しいデータセット基底クラス。
-    ファイル全体をメモリに読み込む代わりに、各行のオフセットをキャッシュします。
+    大規模なJSONLファイルをメモリ効率良く扱うための、新しいデータセット基底クラス
+    ファイル全体をメモリに読み込む代わりに、各行のオフセットをキャッシュします
     """
     def __init__(self, file_path: str, tokenizer: PreTrainedTokenizerBase, max_seq_len: int):
         if not os.path.exists(file_path):
@@ -123,8 +123,8 @@ class InstructionDataset(SNNBaseDataset):
 
 class DistillationDataset(SNNBaseDataset):
     """
-    事前計算された教師モデルのロジットを読み込むためのデータセット。
-    こちらもメモリ効率の良い読み込み方式を継承。
+    事前計算された教師モデルのロジットを読み込むためのデータセット
+    こちらもメモリ効率の良い読み込み方式を継承
     """
     def __init__(self, file_path: str, data_dir: str, tokenizer: PreTrainedTokenizerBase, max_seq_len: int):
         super().__init__(file_path, tokenizer, max_seq_len)

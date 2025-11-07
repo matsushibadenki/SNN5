@@ -71,6 +71,8 @@ from snn_research.agent.self_evolving_agent import SelfEvolvingAgentMaster # Mas
 from snn_research.cognitive_architecture.physics_evaluator import PhysicsEvaluator
 from snn_research.cognitive_architecture.symbol_grounding import SymbolGrounding
 
+import logging
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from .adapters.snn_langchain_adapter import SNNLangChainAdapter
@@ -108,6 +110,32 @@ class TrainingContainer(containers.DeclarativeContainer):
     task_registry = providers.Object(TASK_REGISTRY)
     device = providers.Factory(get_auto_device)
     tokenizer = providers.Factory(AutoTokenizer.from_pretrained, pretrained_model_name_or_path=config.data.tokenizer_name)
+    
+    @providers.Factory
+    def tokenizer(config_provider=config):
+        """
+        DIコンテナから呼び出される際に、最新の設定を読み込んで
+        Tokenizerをインスタンス化するファクトリ。
+        """
+        
+        # このファクトリが呼び出された時点（train.py L376でsnn_modelが
+        # 解決される際など）で config_provider() を実行し、
+        # 最新の設定辞書を取得する。
+        config_dict = config_provider() 
+        
+        # OmegaConf.create で DictConfig に変換し、安全にアクセス
+        cfg = OmegaConf.create(config_dict)
+        
+        # OmegaConf.select を使って安全に値を取得
+        # smoke_test_config.yaml の "gpt2" が読み込まれるはず
+        tokenizer_name = OmegaConf.select(cfg, "data.tokenizer_name", default=None)
+        
+        if tokenizer_name is None:
+            logger.error("config.data.tokenizer_name is None in tokenizer factory. Defaulting to 'gpt2'.")
+            tokenizer_name = "gpt2"
+            
+        return AutoTokenizer.from_pretrained(pretrained_model_name_or_path=tokenizer_name)
+    
     snn_model = providers.Factory(SNNCore, config=config.model, vocab_size=tokenizer.provided.vocab_size)
     astrocyte_network = providers.Factory(AstrocyteNetwork, snn_model=snn_model)
     meta_cognitive_snn: providers.Provider[MetaCognitiveSNN] = providers.Factory(MetaCognitiveSNN, **(config.training.meta_cognition.to_dict() or {}))

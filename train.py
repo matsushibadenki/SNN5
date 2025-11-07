@@ -3,22 +3,10 @@
 # Description: 代理勾配、知識蒸留、生物学的学習則など、プロジェクトの主要な学習パラダイムを実行するためのエントリーポイント。
 #              DIコンテナ(dependency_injector)と設定ファイル(OmegaConf)を使用して、トレーナー、モデル、データローダーを動的に構築・管理します。
 #
-# 修正 (v14):
-# - health-check ログで検出された `TypeError: 'NoneType' object is not subscriptable` を修正。
-# - `collate_fn` (L86) が TrainingContainer クラス内にネストされていたインデントエラーを修正。
-# - データパスの決定ロジック (L263-L277) を修正し、`args.data_path` が最優先されるように変更。
-#
-# 修正 (v_health_check_fix):
-# - `TypeError: unhashable type: 'slice'` および `NameError: name 'sys' is not defined` を解消。
-# - `main()` 関数内の設定ロードロジックを、OmegaConfですべての設定をマージしてから
-#   DIコンテナに渡す堅牢な方法に変更。
-# - `import sys` をファイル先頭に追加。
-# - `if __name__ == "__main__":` ブロックのインデントを修正。
-#
-# 修正 (v_health_check_fix_v2):
-# - `OSError: None is not a local folder` エラーを解消するため、
-#   `container.tokenizer()` の呼び出しを削除し、
-#   `main` 関数内で設定ロード後に `AutoTokenizer` を手動でインスタンス化するように変更。
+# (v_health_check_fix_v3):
+# - `app/containers.py` の `tokenizer` プロバイダが遅延評価されるように
+#   修正されたことを受け、`main` 関数内の tokenizer 手動ロード処理を削除し、
+#   DIコンテナからの注入 (container.tokenizer()) に戻す。
 
 import argparse
 import os
@@ -48,7 +36,7 @@ from scripts.data_preparation import prepare_wikitext_data
 from snn_research.core.snn_core import SNNCore
 # --- ▼ 修正 (v15): collate_fn を app/utils からインポート ▼ ---
 # (v14の修正により train.py 自身が collate_fn を定義するため、
-#  app.utils からのインポートは不要になるが、依存関係の整理として v15 で app/utils に移動された)
+#  app/utils からのインポートは不要になるが、依存関係の整理として v15 で app/utils に移動された)
 # (ここでは v14 の修正を適用するため、app/utilsからのインポートはコメントアウトし、
 #  このファイル内で定義する)
 # from app.utils import get_auto_device, collate_fn
@@ -453,12 +441,12 @@ def main() -> None:
     parser.add_argument("--backend", type=str, default="spikingjelly", choices=["spikingjelly", "snntorch"], help="SNNシミュレーションバックエンドライブラリ")
     args = parser.parse_args()
 
-    # --- ▼▼▼ 修正 (health-check エラー対策 v-final-2) ▼▼▼
+    # --- ▼▼▼ 修正 (health-check エラー対策 v-final-3) ▼▼▼
 
-    # 1. DIコンテナを初期化 (この時点では config は空)
+    # 1. DIコンテナを初期化
     container = TrainingContainer()
     
-    # 2. 設定ファイルを直接コンテナにロード (from_yaml)
+    # 2. 設定ファイルを直接コンテナにロード
     try:
         # 基本設定をロード
         container.config.from_yaml(args.config) # smoke_test_config.yaml
@@ -484,18 +472,18 @@ def main() -> None:
 
     except FileNotFoundError as e:
         print(f"❌ エラー: 基本設定ファイルが見つかりません: {e.filename}")
-        sys.exit(1) # sys がインポートされていれば動作する
+        sys.exit(1)
     except Exception as e:
         print(f"❌ エラー: 設定ファイルの読み込みに失敗しました: {e}")
-        sys.exit(1) # sys がインポートされていれば動作する
+        sys.exit(1)
 
-    # 4. CLI引数による設定の上書き (Provider API を使用)
+    # 4. CLI引数による設定の上書き
     if args.data_path: 
         container.config.data.path.from_value(args.data_path)
     if args.paradigm: 
         container.config.training.paradigm.from_value(args.paradigm)
 
-    # 5. Dotted overrides (Provider API を使用)
+    # 5. Dotted overrides
     if args.override_config:
         for override in args.override_config:
             try:
@@ -509,7 +497,6 @@ def main() -> None:
                         elif value_str.lower() == 'false': value = False
                         else: value = value_str
                 
-                # DIコンテナのプロバイダを直接上書き
                 key_parts = keys.split('.')
                 config_provider = container.config
                 for part in key_parts:
@@ -534,32 +521,21 @@ def main() -> None:
     # 7. Wire the container
     container.wire(modules=[__name__])
     
-    # 8. Tokenizer を手動でインスタンス化 (最重要修正)
-    #    container.tokenizer() を呼び出さず、最新の config から直接ロードする
-    
-    # 8a. 最新の config 辞書を取得
-    latest_config_dict = container.config()
-    cfg_omega = OmegaConf.create(latest_config_dict)
-    
-    # 8b. tokenizer_name を安全に取得
-    tokenizer_name = OmegaConf.select(cfg_omega, "data.tokenizer_name", default=None)
-    
-    if tokenizer_name is None:
-        logger.error("config.data.tokenizer_name が設定されていません。'gpt2' をフォールバックとして使用します。")
-        tokenizer_name = "gpt2"
-
-    logger.info(f"Tokenizer '{tokenizer_name}' をロードしています...")
+    # 8. Tokenizer をDIコンテナから取得 (app/containers.py の遅延評価ファクトリを信頼)
     try:
-        injected_tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+        injected_tokenizer: PreTrainedTokenizerBase = container.tokenizer()
+        logger.info(f"Tokenizer '{injected_tokenizer.name_or_path}' をDIコンテナから正常にロードしました。")
     except Exception as e:
-        logger.error(f"Tokenizer '{tokenizer_name}' のロードに失敗しました: {e}")
-        # エラーログで None が指定されたことが示されているため、ここで明示的に None をチェック
-        if tokenizer_name is None:
-             logger.error("tokenizer_name が None のため、OSErrorが発生しました。")
-        raise e # エラーを再スローして問題を明確にする
+        logger.error(f"DIコンテナからの Tokenizer 取得に失敗しました: {e}", exc_info=True)
+        # エラーが継続しているため、フォールバックを追加
+        tokenizer_name_fallback = container.config.data.tokenizer_name() # provider()で値を取得試行
+        if tokenizer_name_fallback is None:
+             logger.error("container.config.data.tokenizer_name() も None を返しました。'gpt2' を使用します。")
+             tokenizer_name_fallback = "gpt2"
+        injected_tokenizer = AutoTokenizer.from_pretrained(tokenizer_name_fallback)
 
     # 9. train 関数に、インスタンス化した tokenizer と最新の config を渡す
-    train(args, config=cfg_omega, tokenizer=injected_tokenizer)
+    train(args, config=OmegaConf.create(container.config()), tokenizer=injected_tokenizer)
     
     # --- ▲▲▲ 修正 ▲▲▲ ---
 

@@ -112,8 +112,24 @@ class BreakthroughTrainer:
         else:
             self.model.eval()
 
-        # (v24修正: batch[0]がNoneでないことを期待する)
-        input_ids, target_ids = [t.to(self.device) for t in batch[:2]]
+        # --- ▼ 修正 (v_health_check_fix_v5): バッチ形式の判別 ▼ ---
+        input_ids: torch.Tensor
+        target_ids: torch.Tensor
+
+        if isinstance(batch, dict):
+            # collate_fn (train.py L110) が辞書を返す場合
+            input_ids = batch.get('input_ids')
+            target_ids = batch.get('labels')
+            if input_ids is None or target_ids is None:
+                 raise ValueError("Batch dictionary must contain 'input_ids' and 'labels'.")
+            input_ids = input_ids.to(self.device)
+            target_ids = target_ids.to(self.device)
+        elif isinstance(batch, (list, tuple)) and len(batch) >= 2:
+            # DistillationTrainer (L626) がタプルを返す場合
+            input_ids, target_ids = [t.to(self.device) for t in batch[:2]]
+        else:
+            raise TypeError(f"Unsupported batch type: {type(batch)}")
+        # --- ▲ 修正 (v_health_check_fix_v5) ▲ ---
         
         hooks: List[torch.utils.hooks.RemovableHandle] = []
         if not is_train and self.enable_visualization and self.rank in [-1, 0] and hasattr(self, 'recorder'):

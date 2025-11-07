@@ -136,7 +136,13 @@ class TrainingContainer(containers.DeclarativeContainer):
             
         return AutoTokenizer.from_pretrained(pretrained_model_name_or_path=tokenizer_name)
     
-    snn_model = providers.Factory(SNNCore, config=config.model, vocab_size=tokenizer.provided.vocab_size)
+    # SNNCore が config 引数としてプロバイダオブジェクト(Configuration)ではなく、
+    # 解決された値(dict)を受け取るように .provided を使用します。
+    snn_model = providers.Factory(
+        SNNCore,
+        config=config.model.provided, # .provided を追加
+        vocab_size=tokenizer.provided.vocab_size
+    )
     astrocyte_network = providers.Factory(AstrocyteNetwork, snn_model=snn_model)
     meta_cognitive_snn: providers.Provider[MetaCognitiveSNN] = providers.Factory(MetaCognitiveSNN, **(config.training.meta_cognition.to_dict() or {}))
     optimizer = providers.Factory(AdamW, lr=config.training.gradient_based.learning_rate)

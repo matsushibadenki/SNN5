@@ -120,9 +120,15 @@ class PredictiveCodingLayer(nn.Module):
         state_update, inf_mem = self.inference_neuron(self.inference_fc(self.norm_error(prediction_error)))
         updated_state = top_down_state * 0.9 + state_update * 0.1
         
-        combined_mem = gen_mem + inf_mem 
+        # --- ▼ 修正 (v_health_check_fix_v6) ▼ ---
+        # L140: gen_mem (B, d_model) と inf_mem (B, d_state) のサイズが異なるため加算できない
+        # combined_mem = gen_mem + inf_mem
+        
+        # 結合 (torch.cat) に修正する
+        combined_mem = torch.cat((gen_mem, inf_mem), dim=1) # (B, d_model + d_state)
+        # --- ▲ 修正 (v_health_check_fix_v6) ▲ ---
+        
         return updated_state, prediction_error, combined_mem
-
 class MultiLevelSpikeDrivenSelfAttention(nn.Module):
     # (変更なし)
     neuron_out: nn.Module 

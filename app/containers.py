@@ -109,15 +109,18 @@ class TrainingContainer(containers.DeclarativeContainer):
     config = providers.Configuration()
     task_registry = providers.Object(TASK_REGISTRY)
     device = providers.Factory(get_auto_device)
-    tokenizer = providers.Factory(AutoTokenizer.from_pretrained, pretrained_model_name_or_path=config.data.tokenizer_name)
+    
+    # --- ▼ 修正 (v_health_check_fix_v8): [no-redef] L112の重複定義を削除 ▼ ---
+    # tokenizer = providers.Factory(AutoTokenizer.from_pretrained, pretrained_model_name_or_path=config.data.tokenizer_name) # L112: 削除
     
     @providers.Factory
-    def tokenizer(config_provider=config):
+    def tokenizer(config_provider=config): # L114: こちらを残す
+    # --- ▲ 修正 ▲ ---
         """
         DIコンテナから呼び出される際に、最新の設定を読み込んで
         Tokenizerをインスタンス化するファクトリ。
         """
-        
+                
         # このファクトリが呼び出された時点（train.py L376でsnn_modelが
         # 解決される際など）で config_provider() を実行し、
         # 最新の設定辞書を取得する。
@@ -159,15 +162,18 @@ class TrainingContainer(containers.DeclarativeContainer):
     synaptic_learning_rule = providers.Factory(
         get_bio_learning_rule,
         name=config.training.biologically_plausible.learning_rule, # "CAUSAL_TRACE"
-        params=config.training.biologically_plausible # パラメータ辞書全体を渡す
+        # --- ▼ 修正 (v_health_check_fix_v8): .provided を使用 ▼ ---
+        params=config.training.biologically_plausible.provided 
+        # --- ▲ 修正 ▲ ---
     )
     
     # 2. 恒常性維持ルール (例: BCM)
-    #    base_config.yaml の "bcm" ブロックを参照する
     homeostatic_learning_rule = providers.Factory(
         get_bio_learning_rule,
-        name="BCM", # ハードコード (またはconfigで指定)
-        params=config.training.biologically_plausible # BCMパラメータもこの配下にあると仮定
+        name="BCM", 
+        # --- ▼ 修正 (v_health_check_fix_v8): .provided を使用 ▼ ---
+        params=config.training.biologically_plausible.provided
+        # --- ▲ 修正 ▲ ---
     )
     
     # --- ▲ 改善 (v6) ▲ ---
@@ -186,22 +192,52 @@ class TrainingContainer(containers.DeclarativeContainer):
     grid_world_env = providers.Factory(GridWorldEnv, device=device)
     bio_rl_trainer = providers.Factory(BioRLTrainer, agent=bio_rl_agent, env=grid_world_env)
     
-    # ( ... 残りのプロバイダは変更なし ...)
     particle_filter_trainer = providers.Factory(ParticleFilterTrainer, base_model=providers.Factory(BioSNN, layer_sizes=[10, 5, 2], neuron_params={'tau_mem': 10.0, 'v_threshold': 1.0, 'v_reset': 0.0, 'v_rest': 0.0}, synaptic_rule=providers.Object(None), homeostatic_rule=providers.Object(None)), config=config, device=device) # BioSNNの引数を修正
     planner_snn = providers.Factory(PlannerSNN, vocab_size=providers.Callable(len, tokenizer), d_model=config.model.d_model, d_state=config.model.d_state, num_layers=config.model.num_layers, time_steps=config.model.time_steps, n_head=config.model.n_head, num_skills=10, neuron_config=config.model.neuron)
     planner_optimizer = providers.Factory(AdamW, lr=config.training.planner.learning_rate)
     planner_loss = providers.Factory(PlannerLoss)
     model_registry: providers.Provider[ModelRegistry] = providers.Selector(
-        providers.Callable(lambda cfg: cfg.get("model_registry", {}).get("provider", "file"), config.provided),
+        # --- ▼ 修正 (v_health_check_fix_v8): .provided を使用 ▼ ---
+        providers.Callable(
+            lambda cfg: cfg.get("model_registry", {}).get("provider", "file"), 
+            cfg=config.provided # config.provided を lambda の cfg 引数に注入
+        ),
+        # --- ▲ 修正 ▲ ---
         file=providers.Singleton(SimpleModelRegistry, registry_path=config.model_registry.file.path.or_none()),
         distributed=providers.Singleton(DistributedModelRegistry, registry_path=config.model_registry.file.path.or_none())
     )
-    probabilistic_neuron_params: providers.Provider[Dict[str, Any]] = providers.Factory(lambda cfg: cfg.training.biologically_plausible.probabilistic_neuron.to_dict() if cfg.training.biologically_plausible.probabilistic_neuron() else {}, config.provided)
-    probabilistic_learning_rule: providers.Provider[Optional[BioLearningRule]] = providers.Factory(lambda cfg: ProbabilisticHebbian(learning_rate=cfg.training.biologically_plausible.probabilistic_hebbian.learning_rate.as_float(), weight_decay=cfg.training.biologically_plausible.probabilistic_hebbian.weight_decay.as_float()) if cfg.training.biologically_plausible.probabilistic_hebbian() else None, config.provided)
-    probabilistic_model = providers.Factory(BioSNN, layer_sizes=[10, 5, 2], neuron_params=probabilistic_neuron_params, synaptic_rule=probabilistic_learning_rule, homeostatic_rule=providers.Object(None), sparsification_config=config.training.biologically_plausible.adaptive_causal_sparsification) # BioSNNの引数を修正
-    probabilistic_agent = providers.Factory(ReinforcementLearnerAgent, input_size=4, output_size=4, device=device, synaptic_rule=probabilistic_learning_rule, homeostatic_rule=providers.Object(None)) # Agentの引数を修正
+    # --- ▼ 修正 (v_health_check_fix_v8): .provided と .get() を使用 ▼ ---
+    probabilistic_neuron_params: providers.Provider[Dict[str, Any]] = providers.Factory(
+        lambda cfg: cfg.get('training', {}).get('biologically_plausible', {}).get('probabilistic_neuron', {}), 
+        cfg=config.provided
+    )
+    probabilistic_learning_rule: providers.Provider[Optional[BioLearningRule]] = providers.Factory(
+        lambda cfg: ProbabilisticHebbian(
+            learning_rate=cfg.get('training', {}).get('biologically_plausible', {}).get('probabilistic_hebbian', {}).get('learning_rate', 0.01), 
+            weight_decay=cfg.get('training', {}).get('biologically_plausible', {}).get('probabilistic_hebbian', {}).get('weight_decay', 0.0)
+        ) if cfg.get('training', {}).get('biologically_plausible', {}).get('probabilistic_hebbian') else None, 
+        cfg=config.provided
+    )
+    probabilistic_model = providers.Factory(
+        BioSNN, 
+        layer_sizes=[10, 5, 2], 
+        neuron_params=probabilistic_neuron_params.provider, # .provider (Factory) を渡す
+        synaptic_rule=probabilistic_learning_rule.provider, # .provider (Factory) を渡す
+        homeostatic_rule=providers.Object(None), 
+        sparsification_config=config.training.biologically_plausible.adaptive_causal_sparsification.provided
+    )
+    probabilistic_agent = providers.Factory(
+        ReinforcementLearnerAgent, 
+        input_size=4, output_size=4, device=device, 
+        synaptic_rule=probabilistic_learning_rule.provider, # .provider (Factory) を渡す
+        homeostatic_rule=providers.Object(None)
+    )
     probabilistic_trainer = providers.Factory(BioRLTrainer, agent=probabilistic_agent, env=grid_world_env)
-    bio_learning_rule = providers.Factory( get_bio_learning_rule, name=config.training.biologically_plausible.learning_rule, params=config.training.biologically_plausible )
+    bio_learning_rule = providers.Factory(
+        get_bio_learning_rule, 
+        name=config.training.biologically_plausible.learning_rule, 
+        params=config.training.biologically_plausible.provided
+    )
 
 class AgentContainer(containers.DeclarativeContainer):
     config = providers.Configuration()

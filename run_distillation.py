@@ -17,6 +17,11 @@
 #   ViT (224x224) のミスマッチを解消するため、
 #   タスクが 'cifar10' の場合、データローダーが参照する
 #   `config.data.img_size` も 32 に上書きするロジックを追加 (L129)。
+#
+# 修正 (v_hpo_fix_tensor_size_mismatch_v2):
+# - CIFAR10Task.prepare_data が config を直接参照しないため、
+#   container.config から img_size を取得し、kwargs 経由で
+#   task.prepare_data に渡すよう修正 (L220)。
 
 
 import argparse
@@ -222,9 +227,13 @@ async def main() -> None:
     task = TaskClass(tokenizer=container.tokenizer(), device=device, hardware_profile={})
     # --- ▲ 修正(v8) ▲ ---
     
-    # --- ▼ 修正(v7): [call-arg] data_dir を追加 ▼ ---
-    train_dataset, val_dataset = task.prepare_data(data_dir="data")
-    # --- ▲ 修正(v7) ▲ ---
+    # --- ▼ 修正(v_hpo_fix_tensor_size_mismatch_v2): kwargsでimg_sizeを渡す ▼ ---
+    data_kwargs = {}
+    if args.task == 'cifar10':
+        data_kwargs['img_size'] = container.config.data.img_size()
+
+    train_dataset, val_dataset = task.prepare_data(data_dir="data", **data_kwargs)
+    # --- ▲ 修正(v_hpo_fix_tensor_size_mismatch_v2) ▲ ---
 
     # 知識蒸留用にデータセットをラップ
     # --- ▼ 修正 (v_async_fix): await を追加 ▼ ---

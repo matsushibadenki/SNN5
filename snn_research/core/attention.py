@@ -25,6 +25,10 @@
 #
 # 修正 (v6):
 # - mypy [name-defined] F をインポート
+#
+# 修正 (v_hpo_fix_attribute_error):
+# - AttributeError: 'super' object has no attribute 'set_stateful' を修正。
+# - super().set_stateful(stateful) を self.stateful = stateful に変更。
 
 import torch
 import torch.nn as nn
@@ -191,7 +195,10 @@ class SpikeDrivenSelfAttention(base.MemoryModule):
 
     def set_stateful(self, stateful: bool):
         """内部ニューロンのステートフルモードを設定する。"""
-        super().set_stateful(stateful)
+        # --- ▼ 修正 (v_hpo_fix_attribute_error) ▼ ---
+        # super().set_stateful(stateful) # 誤り
+        self.stateful = stateful # 正しい
+        # --- ▲ 修正 (v_hpo_fix_attribute_error) ▲ ---
         self.lif_q.set_stateful(stateful)
         self.lif_k.set_stateful(stateful)
         self.lif_v.set_stateful(stateful)
@@ -337,7 +344,10 @@ class DynamicTemporalAttention(base.MemoryModule):
         return out
 
     def set_stateful(self, stateful: bool):
-        super().set_stateful(stateful)
+        # --- ▼ 修正 (v_hpo_fix_attribute_error) ▼ ---
+        # super().set_stateful(stateful) # 誤り
+        self.stateful = stateful # 正しい
+        # --- ▲ 修正 (v_hpo_fix_attribute_error) ▲ ---
         self.lif_q.set_stateful(stateful)
         self.lif_k.set_stateful(stateful)
         self.lif_v.set_stateful(stateful)

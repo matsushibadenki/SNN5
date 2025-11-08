@@ -24,6 +24,10 @@
 # - DIコンテナから渡された config は解決済みの値 (dict) を OmegaConf に
 #   変換したものであるため、.log_dir() のような関数呼び出しを
 #   .log_dir のような属性アクセスに修正。
+#
+# 修正 (v_hpo_fix_key_error):
+# - _DistillationWrapperDataset が 'input_ids' だけでなく 'input_images' も
+#   処理できるように修正 (L560-L580)。
 
 import torch
 import torch.nn as nn
@@ -513,36 +517,18 @@ class _DistillationWrapperDataset(Dataset):
         self.tokenizer = tokenizer
         self.device = device
         
-        # ◾️◾️◾️ 修正: [assignment] エラーを修正 ◾️◾️◾️
-        # collate_fn_orig_factory が TextCollateFnDef 型であることを明示
-        # (is_distillation=False を渡して、テキスト処理用の collate_fn を取得)
         self.collate_fn_orig: Callable[[List[Any]], Any] = collate_fn_orig_factory(tokenizer, False)
-        # ◾️◾️◾️ 修正終わり ◾️◾️◾️
         
-        # ◾️◾️◾️ 修正: mypyエラー [call-arg] を修正 ◾️◾️◾️
-        # (collate_fn_orig_factory は既に collate_fn インスタンスではなくファクトリなので、
-        #  再度呼び出す必要はない、という mypy の指摘だったが、
-        #  ファクトリの定義 (TextCollateFnDef) が (Tokenizer, bool) -> Callable なので、
-        #  L537 の呼び出しは正しい。mypyの型推論エラーの可能性が高い。)
-        
-        # (v9 修正): collate_fn が None の場合のフォールバック
         if self.collate_fn_orig is None:
              logger.error("Failed to get original collate_fn from factory. Using default fallback.")
-             # デフォルトの collate_fn (辞書を返す) を使うが、
-             # このラッパーは collate_fn_orig が辞書を返すことを前提としている
-             # 暫定的にエラーを発生させる
              def error_collate(batch):
                  raise RuntimeError("collate_fn was None during _DistillationWrapperDataset init.")
              self.collate_fn_orig = error_collate
         
-        # ◾️◾️◾️ 修正終わり ◾️◾️◾️
-        
         logger.info(f"DistillationWrapperDataset initialized for {len(cast(Sized, self.original_dataset))} samples.")
 
     def __len__(self) -> int:
-        # --- ▼ 修正: [arg-type] エラー解消のため cast を追加 ▼ ---
         return len(cast(Sized, self.original_dataset))
-        # --- ▲ 修正 ▲ ---
 
     @torch.no_grad()
     def __getitem__(self, idx: int) -> Tuple[Any, torch.Tensor]:
@@ -550,27 +536,45 @@ class _DistillationWrapperDataset(Dataset):
         元のアイテムと、それに対する教師モデルのロジットを返す。
         """
         # 1. 元のデータセットからアイテムを取得
-        # (SST2Taskなどは辞書 {'text': ..., 'label': ...} を返す)
         original_item: Any = self.original_dataset[idx]
         
         # 2. collate_fn を使って、単一アイテムをバッチ形式のテンソルに変換
-        #    (collate_fn は辞書 {'input_ids': (B, T), ...} を返すと期待)
-        # --- ▼ 修正 (v9): collate_fn が None でないことを確認 ▼ ---
         if self.collate_fn_orig is None:
              raise RuntimeError("collate_fn_orig is None, cannot process item.")
-        # --- ▲ 修正 (v9) ▲ ---
         
         collated_batch: Dict[str, torch.Tensor] = self.collate_fn_orig([original_item])
         
         # 3. 教師モデルでロジットを計算
-        input_ids = collated_batch['input_ids'].to(self.device)
-        attention_mask = collated_batch['attention_mask'].to(self.device)
         
-        teacher_outputs = self.teacher_model(input_ids=input_ids, attention_mask=attention_mask)
-        teacher_logits: torch.Tensor = teacher_outputs.logits # (B=1, SeqLen, VocabSize)
+        # --- ▼ 修正 (v_hpo_fix_key_error): 'input_ids' と 'input_images' の両方に対応 ▼ ---
+        teacher_logits: torch.Tensor
         
+        if 'input_ids' in collated_batch:
+            # --- Text Task ---
+            input_ids = collated_batch['input_ids'].to(self.device)
+            attention_mask = collated_batch.get('attention_mask')
+            if attention_mask is not None:
+                attention_mask = attention_mask.to(self.device)
+            
+            teacher_outputs = self.teacher_model(input_ids=input_ids, attention_mask=attention_mask)
+            teacher_logits = teacher_outputs.logits # (B=1, SeqLen, VocabSize)
+        
+        elif 'input_images' in collated_batch:
+            # --- Image Task (e.g., CIFAR-10) ---
+            input_images = collated_batch['input_images'].to(self.device)
+            # ResNetモデルはキーワード引数なしでテンソルを受け取る
+            teacher_logits = self.teacher_model(input_images) # (B=1, NumClasses)
+            
+            # (B, C) -> (B, 1, C) に拡張し、テキストタスク (B, S, V) と形状を合わせる
+            if teacher_logits.dim() == 2:
+                teacher_logits = teacher_logits.unsqueeze(1) # (B=1, 1, NumClasses)
+        
+        else:
+            raise KeyError(f"Neither 'input_ids' nor 'input_images' found in collated batch. Keys: {collated_batch.keys()}")
+        # --- ▲ 修正 (v_hpo_fix_key_error) ▲ ---
+
         # 4. CPUに移動し、バッチ次元を削除
-        teacher_logits_cpu = teacher_logits.squeeze(0).cpu().to(torch.float16) # (SeqLen, VocabSize)
+        teacher_logits_cpu = teacher_logits.squeeze(0).cpu().to(torch.float16) # (SeqLen or 1, VocabSize or NumClasses)
         
         # (元のアイテム, 教師ロジット) のタプルを返す
         return original_item, teacher_logits_cpu

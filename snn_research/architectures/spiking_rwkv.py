@@ -25,7 +25,7 @@
 #
 # 修正 (v9): SyntaxError: 末尾の '}' を削除。
 #
-# 修正 (v_syn): SyntaxError: 末尾の余分な '}' を削除。
+# 修正 (v_syn): SyntaxError: 末尾の不要な '}' を削除。
 #
 # 修正 (v_hpo_fix_attribute_error):
 # - AttributeError: 'super' object has no attribute 'set_stateful' を修正。

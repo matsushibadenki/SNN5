@@ -29,6 +29,9 @@
 # 修正 (v_hpo_fix_attribute_error):
 # - AttributeError: 'super' object has no attribute 'set_stateful' を修正。
 # - super().set_stateful(stateful) を self.stateful = stateful に変更。
+#
+# 修正 (v_hpo_fix_mem_error):
+# - _xnor_similarity の O(N^2 * Dh) メモリ問題を O(N^2) に修正。
 
 import torch
 import torch.nn as nn
@@ -111,8 +114,15 @@ class SpikeDrivenSelfAttention(base.MemoryModule):
 
     def _xnor_similarity(self, q_spikes: torch.Tensor, k_spikes: torch.Tensor) -> torch.Tensor:
         """
-        指令4 (doc/SNN開発：基本設計思想.md 引用[83]) に基づくXNORベースの類似度計算。
-        乗算を回避し、ビット演算（XNOR）と加算（popcount）で類似度を計算する。
+        (修正 v_hpo_fix_mem_error)
+        指令4 (doc/SNN開発：基本思想.md 引用[83]) に基づくXNORベースの類似度計算。
+        O(N^2 * Dh) のメモリを消費する中間テンソルを
+        O(N^2) の行列積 (matmul) に置き換え、メモリ使用量を削減する。
+
+        q, k は 0/1 のスパイクと仮定。
+        sum(1 - (q-k)^2) = sum(1 - (q^2 - 2qk + k^2))
+                       = sum(1 - q - k + 2qk)  (since q^2=q, k^2=k for binary)
+                       = Dh - sum(q) - sum(k) + 2 * sum(qk)
         
         Args:
             q_spikes (torch.Tensor): (B, H, N, Dh) スパイク
@@ -121,12 +131,32 @@ class SpikeDrivenSelfAttention(base.MemoryModule):
         Returns:
             torch.Tensor: (B, H, N, N) 類似度スコア
         """
-        q_ext: torch.Tensor = q_spikes.unsqueeze(3) # (B, H, N, 1, Dh)
-        k_ext: torch.Tensor = k_spikes.unsqueeze(2) # (B, H, 1, N, Dh)
         
-        xnor_matrix: torch.Tensor = 1.0 - torch.pow(q_ext - k_ext, 2)
+        # --- ▼ 修正 (v_hpo_fix_mem_error): メモリ効率の良い計算に置換 ▼ ---
         
-        attn_scores: torch.Tensor = xnor_matrix.sum(dim=-1) # (B, H, N, N)
+        # O(N^2 * Dh) の計算 (メモリオーバーの原因)
+        # q_ext: torch.Tensor = q_spikes.unsqueeze(3) # (B, H, N, 1, Dh)
+        # k_ext: torch.Tensor = k_spikes.unsqueeze(2) # (B, H, 1, N, Dh)
+        # xnor_matrix: torch.Tensor = 1.0 - torch.pow(q_ext - k_ext, 2)
+        # attn_scores: torch.Tensor = xnor_matrix.sum(dim=-1) # (B, H, N, N)
+        
+        # O(N^2) の計算 (メモリ効率化)
+        Dh = q_spikes.shape[-1]
+        
+        # 1. sum(qk)
+        # (B, H, N, Dh) @ (B, H, Dh, N) -> (B, H, N, N)
+        qk_dot = torch.matmul(q_spikes, k_spikes.transpose(-1, -2))
+        
+        # 2. sum(q)
+        q_popcount = q_spikes.sum(dim=-1, keepdim=True) # (B, H, N, 1)
+        
+        # 3. sum(k)
+        k_popcount = k_spikes.sum(dim=-1, keepdim=True).transpose(-1, -2) # (B, H, 1, N)
+        
+        # 4. Dh - sum(q) - sum(k) + 2 * sum(qk)
+        # (q_popcount と k_popcount は (B, H, N, N) にブロードキャストされる)
+        attn_scores = Dh - q_popcount - k_popcount + (2 * qk_dot)
+        # --- ▲ 修正 (v_hpo_fix_mem_error) ▲ ---
         
         return attn_scores
 

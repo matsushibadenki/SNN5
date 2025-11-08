@@ -18,10 +18,10 @@
 #   タスクが 'cifar10' の場合、データローダーが参照する
 #   `config.data.img_size` も 32 に上書きするロジックを追加 (L129)。
 #
-# 修正 (v_hpo_fix_tensor_size_mismatch_v2):
-# - CIFAR10Task.prepare_data が config を直接参照しないため、
-#   container.config から img_size を取得し、kwargs 経由で
-#   task.prepare_data に渡すよう修正 (L220)。
+# 修正 (v_hpo_fix_type_error):
+# - TypeError (unexpected keyword argument 'img_size') を解消するため、
+#   img_size を task.prepare_data() ではなく、
+#   TaskClass() のコンストラクタに渡すよう修正 (L226-L233)。
 
 
 import argparse
@@ -223,17 +223,24 @@ async def main() -> None:
     if not TaskClass:
         raise ValueError(f"Task '{args.task}' not found.")
         
-    # --- ▼ 修正(v8): [arg-type] .provided -> () に変更 ▼ ---
-    task = TaskClass(tokenizer=container.tokenizer(), device=device, hardware_profile={})
-    # --- ▲ 修正(v8) ▲ ---
-    
-    # --- ▼ 修正(v_hpo_fix_tensor_size_mismatch_v2): kwargsでimg_sizeを渡す ▼ ---
-    data_kwargs = {}
+    # --- ▼ 修正 (v_hpo_fix_type_error): img_size を __init__ に渡す ▼ ---
+    task_init_kwargs: Dict[str, Any] = {
+        "tokenizer": container.tokenizer(),
+        "device": device,
+        "hardware_profile": {}
+    }
     if args.task == 'cifar10':
-        data_kwargs['img_size'] = container.config.data.img_size()
+        # CIFAR10Task が img_size を __init__ で受け取ることを期待
+        task_init_kwargs['img_size'] = container.config.data.img_size()
 
-    train_dataset, val_dataset = task.prepare_data(data_dir="data", **data_kwargs)
-    # --- ▲ 修正(v_hpo_fix_tensor_size_mismatch_v2) ▲ ---
+    task = TaskClass(**task_init_kwargs)
+    # --- ▲ 修正 (v_hpo_fix_type_error) ▲ ---
+    
+    
+    # --- ▼ 修正(v_hpo_fix_type_error): kwargs を削除 ▼ ---
+    # data_kwargs = {} # 削除
+    train_dataset, val_dataset = task.prepare_data(data_dir="data")
+    # --- ▲ 修正(v_hpo_fix_type_error) ▲ ---
 
     # 知識蒸留用にデータセットをラップ
     # --- ▼ 修正 (v_async_fix): await を追加 ▼ ---

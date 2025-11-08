@@ -17,6 +17,14 @@
 #   snn_research/models/temporal_snn.py の変更を反映。
 # - TemporalFeatureExtractor を SimpleRSNN にリネーム。
 # - 新しい GatedSNN アーキテクチャをモデルマップに登録。
+#
+# 修正 (v_hpo_fix_value_error):
+# - HPOで "spiking_transformer" と "cifar10" が組み合わされた際のエラーを修正。
+# - `SpikingTransformerV2` をインポートし、model_mapで "spiking_transformer" が
+#   V2モデルを指すように変更。
+# - SNNCore.__init__ に V2 へのパラメータマッピングロジックを追加。
+# - SNNCore.forward で入力テンソルの次元をチェックし、V2モデルに
+#   `input_images` または `input_ids` として正しく渡すよう修正。
 
 import torch
 import torch.nn as nn
@@ -53,7 +61,9 @@ from snn_research.architectures.hybrid_neuron_network import HybridSpikingCNN
 # --- ▼ SNN5改善レポートで追加したアーキテクチャをインポート ▼ ---
 from snn_research.architectures.tskips_snn import TSkipsSNN
 from snn_research.architectures.spiking_ssm import SpikingSSM # SpikingSSM をインポート
-# --- ▲ SNN5改善レポートで追加したアーキテクチャをインポート ▲ ---
+# --- ▼ 修正 (v_hpo_fix_value_error): SpikingTransformerV2 をインポート ▼ ---
+from snn_research.architectures.spiking_transformer_v2 import SpikingTransformerV2
+# --- ▲ 修正 (v_hpo_fix_value_error) ▲ ---
 
 
 logger = logging.getLogger(__name__)
@@ -425,13 +435,15 @@ class BreakthroughSNN(BaseModel):
              output = self.output_projection(final_hidden_states)
         
         total_spikes: float = self.get_total_spikes()
-        avg_spikes_val: float = total_spikes / (seq_len * self.time_steps * batch_size) if return_spikes else 0.0
+        avg_spikes_val: float = total_spikes / (seq_len * self.time_steps * batch_size) if return_spikes else 0.0 
         avg_spikes: torch.Tensor = torch.tensor(avg_spikes_val, device=device)
         
         mem_to_return = full_mems if return_full_mems else torch.tensor(0.0, device=device)
         return output, avg_spikes, mem_to_return
 
-class SpikingTransformer(BaseModel):
+# --- ▼ 修正 (v_hpo_fix_value_error): 古いTransformerをリネーム ▼ ---
+class SpikingTransformer_OldTextOnly(BaseModel):
+# --- ▲ 修正 (v_hpo_fix_value_error) ▲ ---
     # (変更なし)
     all_mems_history: List[torch.Tensor]
     def __init__(self, vocab_size: int, d_model: int, n_head: int, num_layers: int, time_steps: int, neuron_config: Dict[str, Any], **kwargs: Any):
@@ -1160,12 +1172,29 @@ class SNNCore(nn.Module):
         params.pop('path', None)
         neuron_config: Dict[str, Any] = params.pop('neuron', {})
 
+        # --- ▼ 修正 (v_hpo_fix_value_error): パラメータマッピングロジックを追加 ▼ ---
+        if model_type == "spiking_transformer":
+            if "num_layers" in params and "num_encoder_layers" not in params:
+                params["num_encoder_layers"] = params.pop("num_layers")
+            if "d_model" in params and "dim_feedforward" not in params:
+                params["dim_feedforward"] = params["d_model"] * 4 # Default FFN expansion
+            if "n_head" in params and "nhead" not in params:
+                params["nhead"] = params.pop("n_head")
+            # Add defaults for V2's image params if not present
+            if "img_size" not in params: params["img_size"] = 224 # Default for cifar10/imagenet
+            if "patch_size" not in params: params["patch_size"] = 16
+            if "in_channels" not in params: params["in_channels"] = 3
+        # --- ▲ 修正 (v_hpo_fix_value_error) ▲ ---
+
         
         model_map: Dict[str, Type[BaseModel]]
         if backend == "spikingjelly":
             model_map = {
                 "predictive_coding": BreakthroughSNN,
-                "spiking_transformer": SpikingTransformer,
+                # --- ▼ 修正 (v_hpo_fix_value_error): V2 を使用し、古いモデルをリネーム ▼ ---
+                "spiking_transformer": SpikingTransformerV2, # type: ignore[dict-item]
+                "spiking_transformer_old": SpikingTransformer_OldTextOnly,
+                # --- ▲ 修正 (v_hpo_fix_value_error) ▲ ---
                 "spiking_mamba": SpikingMamba, 
                 "tiny_recursive_model": TinyRecursiveModel, 
                 "simple": SimpleSNN,
@@ -1229,6 +1258,14 @@ class SNNCore(nn.Module):
         elif model_type == "spiking_ssm": # SpikingSSM の入力キーを追加
             input_key = "input_ids" # SpikingSSM は input_ids を期待する
         # --- ▲ SNN5改善レポートで追加したアーキテクチャの入力キー ▲ ---
+        
+        # --- ▼ 修正 (v_hpo_fix_value_error): "spiking_transformer" (V2) は 'input_ids' または 'input_images' を期待する ▼ ---
+        # (V2は両方を受け取れるため、ここでは 'input_ids' のままにしておく。
+        #  入力テンソルの次元チェックで処理を分岐する)
+        elif model_type == "spiking_transformer":
+            # デフォルトは 'input_ids'
+            input_key = 'input_ids'
+        # --- ▲ 修正 (v_hpo_fix_value_error) ▲ ---
         else:
             input_key = 'input_ids'
         
@@ -1252,6 +1289,24 @@ class SNNCore(nn.Module):
         elif model_type in ["tskips_snn", "temporal_snn", "gated_snn"]:
             return self.model(input_sequence=input_data, **forward_kwargs) # type: ignore[operator]
         # --- ▲ 修正 (v24) ▲ ---
+        
+        # --- ▼ 修正 (v_hpo_fix_value_error): SpikingTransformerV2 の入力分岐 ▼ ---
         else:
-             # SpikingSSM も "input_ids" を使うため、else ブロックで処理される
-            return self.model(input_ids=input_data, **forward_kwargs) # type: ignore[operator]
+             # "spiking_transformer" (V2), "spiking_ssm", "simple" などがここに来る
+             
+             if model_type == "spiking_transformer":
+                 # SpikingTransformerV2 は入力の次元で分岐する
+                 if input_data.dim() == 4:
+                     # (B, C, H, W) -> 画像入力
+                     return self.model(input_images=input_data, **forward_kwargs) # type: ignore[operator]
+                 elif input_data.dim() == 2:
+                     # (B, L) -> テキスト入力
+                    return self.model(input_ids=input_data, **forward_kwargs) # type: ignore[operator]
+                 else:
+                     # 不明な入力。デフォルトの 'input_ids' で試行
+                     return self.model(input_ids=input_data, **forward_kwargs) # type: ignore[operator]
+             
+             else:
+                 # SpikingSSM や SimpleSNN など、'input_ids' を期待するモデル
+                 return self.model(input_ids=input_data, **forward_kwargs) # type: ignore[operator]
+        # --- ▲ 修正 (v_hpo_fix_value_error) ▲ ---

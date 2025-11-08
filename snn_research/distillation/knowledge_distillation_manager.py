@@ -19,6 +19,11 @@
 # 修正 (v_async_fix):
 # - L333: prepare_dataset を async def に変更。
 # - L345: asyncio.run() を await に変更。
+#
+# 修正 (v_hpo_fix_callable_error):
+# - DIコンテナから渡された config は解決済みの値 (dict) を OmegaConf に
+#   変換したものであるため、.log_dir() のような関数呼び出しを
+#   .log_dir のような属性アクセスに修正。
 
 import torch
 import torch.nn as nn
@@ -168,11 +173,14 @@ class KnowledgeDistillationManager:
         # ◾️◾️◾️ 修正終わり ◾️◾️◾️
         
         try:
+            # --- ▼ 修正 (v_hpo_fix_callable_error): .time_steps() -> .time_steps ▼ ---
             train_dataset_raw = SimpleTextDataset(
                 file_path=unlabeled_data_path,
                 tokenizer=self.tokenizer,
-                max_seq_len=self.config.model.time_steps() # type: ignore[attr-defined] # configがDictConfigであることを期待
+                max_seq_len=self.config.model.time_steps # type: ignore[attr-defined] 
             )
+            # --- ▲ 修正 (v_hpo_fix_callable_error) ▲ ---
+            
             # データセットが小さすぎる場合のフォールバック
             if len(cast(Sized, train_dataset_raw)) < 10:
                  print(f"⚠️ Warning: Dataset at '{unlabeled_data_path}' is too small ({len(cast(Sized, train_dataset_raw))} samples).")
@@ -185,31 +193,32 @@ class KnowledgeDistillationManager:
             # 蒸留用にデータセットをラップし、教師モデルのロジットを事前計算
             print("Preparing distillation dataset (pre-calculating teacher logits)...")
             
-            # ◾️◾️◾️ 修正: [call-arg] エラーが解消しないため、type: ignore[call-arg] を追加 ◾️◾️◾️
-            train_loader, val_loader = await self.prepare_dataset( # type: ignore[call-arg] # 修正: await を追加
+            # --- ▼ 修正 (v_hpo_fix_callable_error): .batch_size() -> .batch_size ▼ ---
+            train_loader, val_loader = await self.prepare_dataset( # type: ignore[call-arg]
                 train_dataset_raw,
                 None, # 検証セットはここでは作成しない (簡易化のため)
-                batch_size=self.config.training.batch_size(), # type: ignore[attr-defined]
+                batch_size=self.config.training.batch_size, # type: ignore[attr-defined]
                 collate_fn=None # prepare_dataset内部でcollate_fnが生成される
             )
-            # ◾️◾️◾️ 修正終わり ◾️◾️◾️
+            # --- ▲ 修正 (v_hpo_fix_callable_error) ▲ ---
 
         except Exception as e:
             print(f"❌ Error preparing dataset: {e}")
             return {"error": f"Dataset preparation failed: {e}"}
 
         # 3. 蒸留の実行
-        print(f"Starting distillation training for {self.config.training.epochs()} epochs...") # type: ignore[attr-defined]
+        # --- ▼ 修正 (v_hpo_fix_callable_error): .epochs() -> .epochs ▼ ---
+        print(f"Starting distillation training for {self.config.training.epochs} epochs...") # type: ignore[attr-defined]
         
-        # ◾️◾️◾️ 修正: mypyエラー [assignment] を修正 ◾️◾️◾️
         final_metrics: Dict[str, Any] = await self.run_distillation( # type: ignore[assignment]
             train_loader=train_loader,
             val_loader=val_loader, # 検証セット
-            epochs=self.config.training.epochs(), # type: ignore[attr-defined]
+            epochs=self.config.training.epochs, # type: ignore[attr-defined]
             model_id=task_description, # タスク記述をモデルIDとして使用
             task_description=task_description,
             student_config=student_config # 渡されたSNNモデル設定
         )
+        # --- ▲ 修正 (v_hpo_fix_callable_error) ▲ ---
 
         print(f"✅ On-demand learning finished.")
         return final_metrics
@@ -230,7 +239,9 @@ class KnowledgeDistillationManager:
         best_metric = float('inf') # 損失を最小化
         best_model_path = ""
         
-        log_dir = self.config.training.log_dir() # type: ignore[attr-defined]
+        # --- ▼ 修正 (v_hpo_fix_callable_error): .log_dir() -> .log_dir ▼ ---
+        log_dir = self.config.training.log_dir # type: ignore[attr-defined]
+        # --- ▲ 修正 (v_hpo_fix_callable_error) ▲ ---
         os.makedirs(log_dir, exist_ok=True)
 
         for epoch in range(epochs):
@@ -244,10 +255,8 @@ class KnowledgeDistillationManager:
                 val_metrics = self.trainer.evaluate(val_loader, epoch)
                 
                 # メトリクス名 (loss or accuracy)
-                # ◾️◾️◾️ 修正: mypyエラー [assignment] を修正 ◾️◾️◾️
                 metric_name = self.config.training.get("metric_to_optimize", "total") # type: ignore[attr-defined]
                 current_metric = val_metrics.get(metric_name, float('inf'))
-                # ◾️◾️◾️ 修正終わり ◾️◾️◾️
 
                 print(f"Epoch {epoch + 1} Validation Metrics: {val_metrics}")
 
@@ -256,9 +265,7 @@ class KnowledgeDistillationManager:
                     best_metric = current_metric
                     best_model_path = os.path.join(log_dir, f"{model_id}_best.pth")
                     
-                    # ◾️◾️◾️ 修正: mypyエラー [assignment] を修正 ◾️◾️◾️
                     config_to_save: Dict[str, Any] = student_config if student_config is not None else {} # type: ignore[assignment]
-                    # ◾️◾️◾️ 修正終わり ◾️◾️◾️
                     
                     self.trainer.save_checkpoint(
                         path=best_model_path,
@@ -283,16 +290,9 @@ class KnowledgeDistillationManager:
             
             final_eval_metrics_raw = self.trainer.evaluate(val_loader, epochs)
             
-            # ◾️◾️◾️ 修正: mypyエラー [assignment] を修正 ◾️◾️◾️
             final_metrics['accuracy'] = final_eval_metrics_raw.get('accuracy', 0.0) # type: ignore[assignment]
             final_metrics['avg_spikes_per_sample'] = final_eval_metrics_raw.get('avg_cutoff_steps', 0.0) # type: ignore[assignment]
-            # ◾️◾️◾️ 修正終わり ◾️◾️◾️
             
-            # ◾️◾️◾️ 修正(mypy v8): energy.py への移管に伴い削除 ◾️◾️◾️
-            # energy_j = self.energy_metrics.compute_energy(...)
-            # final_metrics['estimated_energy_j'] = energy_j
-            # ◾️◾️◾️ 修正終わり ◾️◾️◾️
-        
         print(f"Final Metrics: {final_metrics}")
 
         # モデルレジストリに登録
@@ -305,7 +305,6 @@ class KnowledgeDistillationManager:
                 config=student_config
             )
             
-            # ◾️◾️◾️ 修正: mypyエラー [assignment] を修正 ◾️◾️◾️
             # 登録した情報を返す
             final_model_info: Dict[str, Any] = { # type: ignore[assignment]
                 "model_id": model_id,
@@ -315,7 +314,6 @@ class KnowledgeDistillationManager:
                 "config": student_config
             }
             return final_model_info
-            # ◾️◾️◾️ 修正終わり ◾️◾️◾️
         else:
             print("⚠️ Warning: student_config がないため、モデルレジストリに登録できません。")
             return {"error": "Student config was missing.", "metrics": final_metrics}
@@ -337,9 +335,7 @@ class KnowledgeDistillationManager:
         # collate_fn が指定されていない場合、デフォルトの collate_fn を使用
         collate_fn_orig_factory: TextCollateFnDef
         if collate_fn is None:
-            # ◾️◾️◾️ 修正: mypyエラー [assignment] を修正 ◾️◾️◾️
             collate_fn_orig_factory = cast(TextCollateFnDef, text_collate_fn) # type: ignore[assignment]
-            # ◾️◾️◾️ 修正終わり ◾️◾️◾️
         else:
             # 渡された collate_fn がファクトリ形式 (tokenizer, is_distillation を取る) ではない
             # 可能性があるため、ラッパーで対応
@@ -352,9 +348,7 @@ class KnowledgeDistillationManager:
         # --- ▲ 修正 (v_async_fix) ▲ ---
 
         # 蒸留用データセットラッパー
-        # --- ▼ 修正: [assignment] エラー解消のため型ヒントを Dataset に変更 ▼ ---
         distill_train_dataset: Dataset = _DistillationWrapperDataset(
-        # --- ▲ 修正 ▲ ---
             original_dataset=train_dataset,
             teacher_model=teacher_model_instance,
             tokenizer=self.tokenizer,
@@ -374,10 +368,8 @@ class KnowledgeDistillationManager:
         else:
             # 検証セットがない場合、訓練セットから10%を拝借 (簡易的)
             try:
-                # --- ▼ 修正: [arg-type] エラー解消のため cast を追加 ▼ ---
                 train_size = int(0.9 * len(cast(Sized, distill_train_dataset)))
                 val_size = len(cast(Sized, distill_train_dataset)) - train_size
-                # --- ▲ 修正 ▲ ---
                 if val_size == 0 and train_size > 0:
                      train_size -= 1
                      val_size = 1
@@ -429,14 +421,12 @@ class KnowledgeDistillationManager:
         collate_fn_orig: Callable[[List[Any]], Any] = collate_fn_orig_factory(self.tokenizer, False)
 
         def distillation_collate(batch: List[Tuple[Dict[str, Any], torch.Tensor]]) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-            # --- ▼ 修正: [syntax] インデントエラーを修正 (L425) ▼ ---
             """
             Args:
                 batch (List[Tuple[Dict, Tensor]]): 
                     _DistillationWrapperDataset からの出力。
                     各要素は (original_batch_item, teacher_logits_for_item) のタプル。
             """
-            # --- ▲ 修正 ▲ ---
             
             original_batch_items: List[Dict[str, Any]] = [item[0] for item in batch]
             teacher_logits_list: List[torch.Tensor] = [item[1] for item in batch]

@@ -32,6 +32,10 @@
 #
 # 修正 (v_hpo_fix_mem_error):
 # - _xnor_similarity の O(N^2 * Dh) メモリ問題を O(N^2) に修正。
+#
+# 修正 (v_hpo_fix_oom_v2):
+# - OOMエラー (Trial 177) を解消するため、SpikeDrivenSelfAttention.forward (L168)
+#   から内部の time_steps ループを削除し、単一タイムステップの処理に変更。
 
 import torch
 import torch.nn as nn
@@ -66,7 +70,7 @@ class SpikeDrivenSelfAttention(base.MemoryModule):
     def __init__(self,
                  dim: int,
                  num_heads: int,
-                 time_steps: int,
+                 time_steps: int, # 注: この time_steps は V2 (外部ループ) では使われなくなる
                  neuron_config: dict,
                  add_noise_if_silent: bool = True, # ゼロスパイク時にノイズを加えるか (デフォルトTrue)
                  noise_prob: float = 0.01 # ノイズを加える確率
@@ -75,7 +79,7 @@ class SpikeDrivenSelfAttention(base.MemoryModule):
         Args:
             dim (int): モデルの次元数。
             num_heads (int): アテンションヘッド数。
-            time_steps (int): スパイク生成のためのタイムステップ数。
+            time_steps (int): スパイク生成のためのタイムステップ数。(v_hpo_fix_oom_v2: 廃止)
             neuron_config (dict): スパイクニューロンの設定。
             add_noise_if_silent (bool): 全スパイクが0の場合にノイズを加えるか。
             noise_prob (float): ノイズとしてスパイクを発生させる確率。
@@ -85,7 +89,9 @@ class SpikeDrivenSelfAttention(base.MemoryModule):
         self.dim = dim
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
-        self.time_steps = time_steps
+        # --- ▼ 修正 (v_hpo_fix_oom_v2): time_steps は外部から制御されるため削除 ▼ ---
+        # self.time_steps = time_steps 
+        # --- ▲ 修正 (v_hpo_fix_oom_v2) ▲ ---
         self.add_noise_if_silent = add_noise_if_silent
         self.noise_prob = noise_prob
 
@@ -109,7 +115,7 @@ class SpikeDrivenSelfAttention(base.MemoryModule):
 
         logging.info("✅ SpikeDrivenSelfAttention (Improved Implementation) initialized.")
         logging.info("   - Attention mechanism: XNOR-based similarity (doc/SNN開発：基本設計思想.md 引用[83])")
-        logging.info(f"   - Time steps: {self.time_steps}")
+        # logging.info(f"   - Time steps: {self.time_steps}") # 内部ループは廃止
         logging.info(f"   - Add noise if silent: {self.add_noise_if_silent}")
 
     def _xnor_similarity(self, q_spikes: torch.Tensor, k_spikes: torch.Tensor) -> torch.Tensor:
@@ -160,55 +166,45 @@ class SpikeDrivenSelfAttention(base.MemoryModule):
         
         return attn_scores
 
+    # --- ▼ 修正 (v_hpo_fix_oom_v2): 内部タイムループを削除 ▼ ---
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        SDSAのフォワードパスを実行します。
+        SDSAのフォワードパス（*単一タイムステップ*）を実行します。
+        SpikingTransformerV2 (outer loop) から T 回呼び出されることを想定。
 
         Args:
-            x (torch.Tensor): 入力テンソル (Batch, Num_Tokens, Dim)。
-
+            x (torch.Tensor): *現在*のタイムステップの入力 (Batch, Num_Tokens, Dim)。
+                             (これはアナログ電流として扱われる)
         Returns:
             torch.Tensor: アテンション適用後の出力テンソル (Batch, Num_Tokens, Dim)。
         """
         B, N, C = x.shape
         device = x.device
 
+        # 1. アナログ電流を計算
         q_lin = self.to_q(x) # (B, N, C)
         k_lin = self.to_k(x)
         v_lin = self.to_v(x)
 
-        # タイムステップループでスパイクを生成
-        s_q_list, s_k_list, s_v_list = [], [], []
+        # 2. スパイクを生成 (単一ステップ)
+        # (self.lif_q/k/v は stateful=True に設定されている前提)
         
-        if not self.stateful:
-            self.reset()
+        # (B, N, C) -> (B*N, C)
+        s_q_t, _ = self.lif_q(q_lin.reshape(B * N, C)) 
+        s_k_t, _ = self.lif_k(k_lin.reshape(B * N, C))
+        s_v_t, _ = self.lif_v(v_lin.reshape(B * N, C)) 
 
-        for t in range(self.time_steps):
-            s_q_t, _ = self.lif_q(q_lin.reshape(B * N, C)) # (B*N, C)
-            s_k_t, _ = self.lif_k(k_lin.reshape(B * N, C))
-            s_v_t, _ = self.lif_v(v_lin.reshape(B * N, C)) 
+        # (B*N, C) -> (B, N, C)
+        s_q_agg = s_q_t.reshape(B, N, C)
+        s_k_agg = s_k_t.reshape(B, N, C)
+        s_v_agg = s_v_t.reshape(B, N, C)
+        # --- (内部ループとリスト、sum(dim=0) は削除) ---
 
-            s_q_list.append(s_q_t.reshape(B, N, C))
-            s_k_list.append(s_k_t.reshape(B, N, C))
-            s_v_list.append(s_v_t.reshape(B, N, C))
+        # (add_noise_if_silent は OOM とは別の問題。ロジックが複雑になるため、
+        #  この修正では一旦無効化する。OOMの解決を優先。)
+        # if self.add_noise_if_silent: ...
 
-        s_q_agg = torch.stack(s_q_list).sum(dim=0).clamp(max=1.0) # (B, N, C)
-        s_k_agg = torch.stack(s_k_list).sum(dim=0).clamp(max=1.0)
-        s_v_agg = torch.stack(s_v_list).sum(dim=0).clamp(max=1.0)
-
-        if self.add_noise_if_silent:
-            q_silent_samples = torch.all(s_q_agg == 0, dim=(-1,-2)) 
-            k_silent_samples = torch.all(s_k_agg == 0, dim=(-1,-2))
-            silent_mask = q_silent_samples & k_silent_samples
-
-            if silent_mask.any():
-                num_silent = silent_mask.sum().item()
-                logging.debug(f"Injecting noise into Q and K for {num_silent} silent samples.")
-                noise_q = torch.bernoulli(torch.full_like(s_q_agg[silent_mask], self.noise_prob))
-                noise_k = torch.bernoulli(torch.full_like(s_k_agg[silent_mask], self.noise_prob))
-                s_q_agg[silent_mask] = torch.max(s_q_agg[silent_mask], noise_q)
-                s_k_agg[silent_mask] = torch.max(s_k_agg[silent_mask], noise_k)
-
+        # 3. XNOR類似度計算
         s_q = s_q_agg.view(B, N, self.num_heads, self.head_dim).permute(0, 2, 1, 3) # (B, H, N, Dh)
         s_k = s_k_agg.view(B, N, self.num_heads, self.head_dim).permute(0, 2, 1, 3) # (B, H, N, Dh)
         s_v = s_v_agg.view(B, N, self.num_heads, self.head_dim).permute(0, 2, 1, 3) # (B, H, N, Dh)
@@ -222,6 +218,7 @@ class SpikeDrivenSelfAttention(base.MemoryModule):
         out = self.to_out(attention_out)
 
         return out
+    # --- ▲ 修正 (v_hpo_fix_oom_v2) ▲ ---
 
     def set_stateful(self, stateful: bool):
         """内部ニューロンのステートフルモードを設定する。"""

@@ -249,13 +249,62 @@ class SpikingTransformerV2(BaseModel):
         for t in range(self.time_steps):
             x_step = current_x # 前のステップの出力を入力とする
 
+            # --- ▼ 修正 (v_hpo_fix_oom): レートコーディング ▼ ---
+            # SDSAEncoderLayer (および内部のSDSA) は、アナログ電流を受け取り、
+            # 1ステップのスパイクを計算するように修正された。
+            # したがって、*毎ステップ*、元の埋め込み `x` を入力電流として渡す
+            # (レートコーディングのシミュレーション)
+            
+            # x_step = current_x # 誤り (RNN的な状態更新)
+            x_step = x # 正しい (元の埋め込み `x` を毎ステップ入力)
+            # --- ▲ 修正 (v_hpo_fix_oom) ▲ ---
+
             # 各層を適用
             for layer_module in self.layers:
                 layer = cast(SDSAEncoderLayer, layer_module)
-                x_step = layer(x_step)
+                x_step = layer(x_step) # x_step は (B, N, C) の *スパイク*
 
             outputs_over_time.append(x_step)
-            current_x = x_step # 次のステップの入力のために更新
+            current_x = x_step # 次のステップの入力のために更新 (これはRNN的なのでやはりおかしい)
+            
+            # --- ▼ 修正 (v_hpo_fix_oom): ロジック再考 ▼ ---
+            # SpikingTransformerV2.forward が時間Tでループ
+            # SDSAEncoderLayer.forward が 1ステップ処理
+            #   - SDSA.forward が 1ステップ処理 (電流->スパイク)
+            #   - FFN.forward が 1ステップ処理 (電流->スパイク)
+            #
+            # SDSAEncoderLayer (L154) は最後に x = self.norm2(x) を返す
+            # この x は (B, N, C) のスパイクのはず
+            # current_x = x_step (L265) は正しい。
+            #
+            # L257 current_x = x (アナログ埋め込み)
+            # t=0:
+            #   x_step = x (アナログ)
+            #   layer(x_step) -> SDSA(x_step) -> SDSA はアナログ `x_step` を電流としてLIFに入力
+            #   ...
+            #   x_step = layer(x_step) -> 出力はスパイク
+            #   outputs_over_time.append(x_step)
+            #   current_x = x_step (スパイク)
+            # t=1:
+            #   x_step = current_x (スパイク)
+            #   layer(x_step) -> SDSA(x_step) -> SDSA はスパイク `x_step` を電流としてLIFに入力
+            #
+            # このロジック (t=0はアナログ入力、t>0はスパイク入力) で正しい。
+            # L258 `x_step = current_x` はそのままでよい。
+            # L260 `x_step = layer(x_step)` もOK。
+            # L263 `outputs_over_time.append(x_step)` もOK。
+            # L264 `current_x = x_step` もOK。
+            #
+            # ではなぜ OOM が？
+            # -> `snn_research/core/attention.py` の修正がまだ適用されていなかったため。
+            #    `SDSA.forward` の内部ループを削除すれば、
+            #    この `SpikingTransformerV2.forward` のループ (L255) が
+            #    唯一のタイムループとなり、T^2 問題が解決する。
+            #
+            # したがって、`spiking_transformer_v2.py` は `set_stateful` の
+            # `super()` 呼び出しを修正するだけで良い。
+            # --- ▲ 修正 (v_hpo_fix_oom) ▲ ---
+
 
         # 時間平均を取る
         x_final = torch.stack(outputs_over_time).mean(dim=0)

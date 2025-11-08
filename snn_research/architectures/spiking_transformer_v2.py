@@ -16,6 +16,10 @@
 #   FFNの残差接続を「スパイク+スパイク」に変更し、「非スパイク計算」を排除。
 # - doc/SNN開発：SNN5プロジェクト改善のための情報収集.md (セクション5.1, SSSA) に基づき、
 #   画像入力 (ViT) のための PatchEmbedding を追加。
+#
+# 修正 (v_hpo_fix_attribute_error):
+# - AttributeError: 'super' object has no attribute 'set_stateful' を修正。
+# - super().set_stateful(stateful) を self.stateful = stateful に変更。
 
 import torch
 import torch.nn as nn
@@ -98,7 +102,10 @@ class SDSAEncoderLayer(sj_base.MemoryModule):
         """
         このレイヤーおよびサブモジュール（SDSA, LIF）のステートフルモードを設定する。
         """
-        super().set_stateful(stateful)
+        # --- ▼ 修正 (v_hpo_fix_attribute_error) ▼ ---
+        # super().set_stateful(stateful) # 誤り
+        self.stateful = stateful # 正しい
+        # --- ▲ 修正 (v_hpo_fix_attribute_error) ▲ ---
         self.sdsa.set_stateful(stateful)
         self.neuron_ff.set_stateful(stateful)
         # --- ▼ 改善 (v4): FFN出力用LIFを追加 ▼ ---
@@ -110,7 +117,7 @@ class SDSAEncoderLayer(sj_base.MemoryModule):
         """
         このレイヤーおよびサブモジュール（SDSA, LIF）の状態をリセットする。
         """
-        super().reset()
+        super().reset() # super().reset() は正しい
         self.sdsa.reset()
         self.neuron_ff.reset()
         # --- ▼ 改善 (v4): FFN出力用LIFを追加 ▼ ---

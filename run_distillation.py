@@ -50,14 +50,27 @@ async def main() -> None:
     #    cifar10_spikingcnn_config.yaml には 'model:' キーがないため、
     #    'model' ノード配下にマージする
     try:
-        # モデル設定を辞書としてロード
-        model_cfg_dict = OmegaConf.to_container(OmegaConf.load(args.model_config), resolve=True)
-        if isinstance(model_cfg_dict, dict):
-            # 'model' キーでラップしてDIコンテナの設定にマージ
-            container.config.from_dict({'model': model_cfg_dict})
+        cfg_raw = OmegaConf.load(args.model_config)
+        
+        # ロードした config が 'model:' キーをトップレベルに持っているか確認
+        if isinstance(cfg_raw, DictConfig) and 'model' in cfg_raw:
+            # 既に 'model' キーがある場合 (spiking_transformer.yaml など)
+            # .model ノードを直接マージする
+            container.config.model.from_dict(
+                cast(Dict[str, Any], OmegaConf.to_container(cfg_raw.model, resolve=True))
+            )
+        elif isinstance(cfg_raw, DictConfig):
+            # 'model' キーがない場合 (cifar10_spikingcnn_config.yaml など)
+            # 辞書全体を 'model' キーでラップしてマージする
+            model_cfg_dict = OmegaConf.to_container(cfg_raw, resolve=True)
+            if isinstance(model_cfg_dict, dict):
+                container.config.from_dict({'model': model_cfg_dict})
+            else:
+                 raise TypeError(f"Model config loaded from {args.model_config} is not a dictionary.")
         else:
-            raise TypeError(f"Model config loaded from {args.model_config} is not a dictionary.")
-    except Exception as e:
+             raise TypeError(f"Model config loaded from {args.model_config} is not a dictionary.")
+        
+        except Exception as e:
         print(f"Warning: Could not load or merge model config '{args.model_config}': {e}")
         # 'model' が設定されていない可能性があるため、空の辞書をマージしておく
         container.config.from_dict({'model': {}})

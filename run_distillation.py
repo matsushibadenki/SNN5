@@ -3,7 +3,10 @@
 # Title: 知識蒸留実行スクリプト
 # Description: KnowledgeDistillationManagerを使用して、知識蒸留プロセスを開始します。
 #              設定ファイルとコマンドライン引数からパラメータを読み込みます。
-
+#
+# 修正 (v_async_fix):
+# - KnowledgeDistillationManager.prepare_dataset が async def に変更されたことに伴い、
+#   main() 内での呼び出し時に await を追加 (L183)。
 
 import argparse
 import asyncio
@@ -176,12 +179,14 @@ async def main() -> None:
     # --- ▲ 修正(v7) ▲ ---
 
     # 知識蒸留用にデータセットをラップ
-    train_loader, val_loader = manager.prepare_dataset(
+    # --- ▼ 修正 (v_async_fix): await を追加 ▼ ---
+    train_loader, val_loader = await manager.prepare_dataset(
         train_dataset=train_dataset,
         val_dataset=val_dataset,
         collate_fn=task.get_collate_fn(),
         batch_size=container.config.training.batch_size()
     )
+    # --- ▲ 修正 (v_async_fix) ▲ ---
 
     # 蒸留の実行
     await manager.run_distillation(

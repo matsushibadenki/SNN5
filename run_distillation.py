@@ -7,6 +7,11 @@
 # 修正 (v_async_fix):
 # - KnowledgeDistillationManager.prepare_dataset が async def に変更されたことに伴い、
 #   main() 内での呼び出し時に await を追加 (L183)。
+#
+# 修正 (v_hpo_fix_attr_error):
+# - HPO実行時に KnowledgeDistillationManager (L162) に渡される config が
+#   dict だったため、OmegaConf.create() で DictConfig に変換するよう修正。
+
 
 import argparse
 import asyncio
@@ -155,6 +160,11 @@ async def main() -> None:
     )
     model_registry = container.model_registry()
 
+    # --- ▼ 修正 (v_hpo_fix_attr_error): dict を DictConfig に変換 ▼ ---
+    # Managerの初期化に必要なconfigを取得
+    manager_config_dict: Dict[str, Any] = container.config() # これは dict を返す
+    manager_config_omegaconf: DictConfig = OmegaConf.create(manager_config_dict) # dict -> DictConfig
+
     manager = KnowledgeDistillationManager(
         student_model=student_model,
         teacher_model=teacher_model,
@@ -162,8 +172,9 @@ async def main() -> None:
         tokenizer_name=container.config.data.tokenizer_name(), # tokenizerはCIFARタスクでは使われないがインターフェースのため渡す
         model_registry=model_registry,
         device=device,
-        config=container.config() # 修正: config を渡す
+        config=manager_config_omegaconf # 修正: DictConfig オブジェクトを渡す
     )
+    # --- ▲ 修正 (v_hpo_fix_attr_error) ▲ ---
 
     # --- データセットの準備 ---
     TaskClass = TASK_REGISTRY.get(args.task)

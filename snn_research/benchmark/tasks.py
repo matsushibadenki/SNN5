@@ -12,6 +12,12 @@
 # 改善 (v4):
 # - doc/SNN開発：SNN5プロジェクト改善のための情報収集.md (セクション6.1, 6.2) に基づき、
 #   SHD (Spiking Heidelberg Digits) タスクを SpikingJelly を利用して追加。
+#
+# 修正 (v_hpo_fix_type_error_v2):
+# - HPO (run_distillation.py) から 'img_size' を渡されたときに
+#   TypeError が発生する問題を解消するため、CIFAR10Task に __init__ を追加。
+# - prepare_data がハードコードされた 224x224 ではなく、
+#   __init__ で渡された img_size (32x32) を使用するように修正。
 
 import os
 from abc import ABC, abstractmethod
@@ -192,9 +198,29 @@ class MRPCTask(_GLUEBinaryClassificationTask):
 
 class CIFAR10Task(BenchmarkTask):
     """CIFAR-10画像分類タスク。"""
+
+    # --- ▼ 修正 (v_hpo_fix_type_error_v2) ▼ ---
+    # img_size を __init__ で受け取れるようにし、
+    # prepare_data でハードコードされていた 224x224 を置き換える
+    
+    def __init__(
+        self, 
+        tokenizer: PreTrainedTokenizerBase, 
+        device: str, 
+        hardware_profile: Dict[str, Any],
+        img_size: int = 224 # デフォルトは 224
+    ):
+        super().__init__(tokenizer, device, hardware_profile)
+        self.img_size = img_size
+        if img_size != 224:
+            print(f"INFO (CIFAR10Task): Using custom img_size: {self.img_size}")
+    # --- ▲ 修正 (v_hpo_fix_type_error_v2) ▲ ---
+
     def prepare_data(self, data_dir: str = "data") -> Tuple[Dataset, Dataset]:
         transform = transforms.Compose([
-            transforms.Resize((224, 224)),
+            # --- ▼ 修正 (v_hpo_fix_type_error_v2) ▼ ---
+            transforms.Resize((self.img_size, self.img_size)), # ハードコード(224)を修正
+            # --- ▲ 修正 (v_hpo_fix_type_error_v2) ▲ ---
             transforms.ToTensor(),
             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
         ])

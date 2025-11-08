@@ -15,6 +15,10 @@
 #
 # 修正 (v10): mypy エラー [name-defined], [assignment], [arg-type], [misc], [no-redef], [list-item] を修正
 # 修正 (v11): mypy エラー [syntax] (インデント) を修正
+#
+# 修正 (v_async_fix):
+# - L333: prepare_dataset を async def に変更。
+# - L345: asyncio.run() を await に変更。
 
 import torch
 import torch.nn as nn
@@ -182,7 +186,7 @@ class KnowledgeDistillationManager:
             print("Preparing distillation dataset (pre-calculating teacher logits)...")
             
             # ◾️◾️◾️ 修正: [call-arg] エラーが解消しないため、type: ignore[call-arg] を追加 ◾️◾️◾️
-            train_loader, val_loader = self.prepare_dataset( # type: ignore[call-arg]
+            train_loader, val_loader = await self.prepare_dataset( # type: ignore[call-arg] # 修正: await を追加
                 train_dataset_raw,
                 None, # 検証セットはここでは作成しない (簡易化のため)
                 batch_size=self.config.training.batch_size(), # type: ignore[attr-defined]
@@ -316,8 +320,9 @@ class KnowledgeDistillationManager:
             print("⚠️ Warning: student_config がないため、モデルレジストリに登録できません。")
             return {"error": "Student config was missing.", "metrics": final_metrics}
 
-
-    def prepare_dataset(
+    # --- ▼ 修正 (v_async_fix): async def に変更 ▼ ---
+    async def prepare_dataset(
+    # --- ▲ 修正 (v_async_fix) ▲ ---
         self,
         train_dataset: Dataset,
         val_dataset: Optional[Dataset] = None,
@@ -342,7 +347,9 @@ class KnowledgeDistillationManager:
                 return collate_fn # type: ignore[return-value]
             collate_fn_orig_factory = collate_fn_factory_wrapper # type: ignore[assignment]
 
-        teacher_model_instance = asyncio.run(self._get_or_load_teacher_model())
+        # --- ▼ 修正 (v_async_fix): asyncio.run() を await に変更 ▼ ---
+        teacher_model_instance = await self._get_or_load_teacher_model()
+        # --- ▲ 修正 (v_async_fix) ▲ ---
 
         # 蒸留用データセットラッパー
         # --- ▼ 修正: [assignment] エラー解消のため型ヒントを Dataset に変更 ▼ ---

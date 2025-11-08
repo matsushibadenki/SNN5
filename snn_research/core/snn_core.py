@@ -25,6 +25,11 @@
 # - SNNCore.__init__ に V2 へのパラメータマッピングロジックを追加。
 # - SNNCore.forward で入力テンソルの次元をチェックし、V2モデルに
 #   `input_images` または `input_ids` として正しく渡すよう修正。
+#
+# 修正 (v_hpo_fix_oom_v3):
+# - OOM (Out of Memory) エラー (Trial 224, 226) を解消するため、
+#   cifar10 (vocab_size=10) の場合に ViT パラメータを
+#   img_size=32, patch_size=4 に強制的に上書きするロジックを追加。
 
 import torch
 import torch.nn as nn
@@ -1180,10 +1185,19 @@ class SNNCore(nn.Module):
                 params["dim_feedforward"] = params["d_model"] * 4 # Default FFN expansion
             if "n_head" in params and "nhead" not in params:
                 params["nhead"] = params.pop("n_head")
-            # Add defaults for V2's image params if not present
-            if "img_size" not in params: params["img_size"] = 224 # Default for cifar10/imagenet
-            if "patch_size" not in params: params["patch_size"] = 16
-            if "in_channels" not in params: params["in_channels"] = 3
+
+            # --- ▼ 修正 (v_hpo_fix_oom_v3): cifar10 (vocab_size=10) の場合、ViTパラメータを強制的に上書き ▼ ---
+            if vocab_size == 10:
+                logger.info("Detected vocab_size=10 (likely CIFAR-10). Overriding ViT params for SpikingTransformerV2.")
+                params["img_size"] = 32
+                params["patch_size"] = 4 # N = (32/4)^2 = 64
+                params["in_channels"] = 3
+            else:
+                # Add defaults for V2's image params if not present (e.g. ImageNet)
+                if "img_size" not in params: params["img_size"] = 224
+                if "patch_size" not in params: params["patch_size"] = 16
+                if "in_channels" not in params: params["in_channels"] = 3
+            # --- ▲ 修正 (v_hpo_fix_oom_v3) ▲ ---
         # --- ▲ 修正 (v_hpo_fix_value_error) ▲ ---
 
         

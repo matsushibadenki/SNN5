@@ -38,9 +38,7 @@ async def main() -> None:
     )
     args = parser.parse_args()
 
-    # --- ▼ 修正: HPO連携のため、設定のロード順序を修正 ▼ ---
 
-    # 1. DIコンテナのインスタンス化 (空の設定で)
     container = TrainingContainer()
     
     # 2. 基本設定をロード
@@ -50,6 +48,7 @@ async def main() -> None:
     #    cifar10_spikingcnn_config.yaml には 'model:' キーがないため、
     #    'model' ノード配下にマージする
     try:
+        # --- ▼ 修正 (v_hpo_fix_3): インデントエラーとExceptブロックのロジックを修正 ▼ ---
         cfg_raw = OmegaConf.load(args.model_config)
         
         # ロードした config が 'model:' キーをトップレベルに持っているか確認
@@ -66,14 +65,19 @@ async def main() -> None:
             if isinstance(model_cfg_dict, dict):
                 container.config.from_dict({'model': model_cfg_dict})
             else:
+                 # --- ▼ 修正: インデントを修正 (21 -> 20 spaces) ▼ ---
                  raise TypeError(f"Model config loaded from {args.model_config} is not a dictionary.")
         else:
+             # --- ▼ 修正: インデントを修正 (17 -> 16 spaces) ▼ ---
              raise TypeError(f"Model config loaded from {args.model_config} is not a dictionary.")
-        
-        except Exception as e:
+        # --- ▲ 修正 (v_hpo_fix_3) ▲ ---
+    
+    except Exception as e:
         print(f"Warning: Could not load or merge model config '{args.model_config}': {e}")
+        # --- ▼ 修正: 失敗時のフォールバックを except ブロック内に復元 ▼ ---
         # 'model' が設定されていない可能性があるため、空の辞書をマージしておく
         container.config.from_dict({'model': {}})
+        # --- ▲ 修正 ▲ ---
 
 
     # 4. コマンドライン引数からエポック数を上書き

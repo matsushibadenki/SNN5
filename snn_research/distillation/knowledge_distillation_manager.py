@@ -26,8 +26,8 @@
 #   .log_dir のような属性アクセスに修正。
 #
 # 修正 (v_hpo_fix_key_error):
-# - _DistillationWrapperDataset が 'input_ids' だけでなく 'input_images' も
-#   処理できるように修正 (L560-L580)。
+# - _DistillationWrapperDataset (L575) と distillation_collate (L442) が 
+#   'input_ids' だけでなく 'input_images' も処理できるように修正。
 
 import torch
 import torch.nn as nn
@@ -134,7 +134,14 @@ class KnowledgeDistillationManager:
 
         print(f"🧠 Loading teacher model '{self.teacher_model_name}' from Hugging Face...")
         try:
-            model = AutoModelForCausalLM.from_pretrained(self.teacher_model_name)
+            # --- ▼ 修正 (v_hpo_fix_key_error): 画像タスク (resnet) のロードに対応 ▼ ---
+            if self.teacher_model_name == "resnet18":
+                model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
+                num_ftrs = model.fc.in_features
+                model.fc = torch.nn.Linear(num_ftrs, 10) # CIFAR-10前提
+            else:
+                model = AutoModelForCausalLM.from_pretrained(self.teacher_model_name)
+            # --- ▲ 修正 (v_hpo_fix_key_error) ▲ ---
             self.teacher_model = model.to(self.device).eval()
             return self.teacher_model
         except Exception as e:
@@ -336,16 +343,17 @@ class KnowledgeDistillationManager:
         教師モデルのロジットを事前計算するデータセットラッパーを適用する。
         """
         
-        # collate_fn が指定されていない場合、デフォルトの collate_fn を使用
-        collate_fn_orig_factory: TextCollateFnDef
+        # --- ▼ 修正 (v_hpo_fix_key_error): collate_fn の処理ロジックを修正 ▼ ---
+        collate_fn_to_use: Callable[[List[Any]], Any]
+        
         if collate_fn is None:
-            collate_fn_orig_factory = cast(TextCollateFnDef, text_collate_fn) # type: ignore[assignment]
+            # ケース1: (textタスク) collate_fnが指定されなかった場合、デフォルトのテキスト用ファクトリを使用
+            collate_fn_factory = cast(TextCollateFnDef, text_collate_fn)
+            collate_fn_to_use = collate_fn_factory(self.tokenizer, False)
         else:
-            # 渡された collate_fn がファクトリ形式 (tokenizer, is_distillation を取る) ではない
-            # 可能性があるため、ラッパーで対応
-            def collate_fn_factory_wrapper(tokenizer, is_distillation):
-                return collate_fn # type: ignore[return-value]
-            collate_fn_orig_factory = collate_fn_factory_wrapper # type: ignore[assignment]
+            # ケース2: (cifar10タスク) task.get_collate_fn() が渡された場合
+            collate_fn_to_use = collate_fn
+        # --- ▲ 修正 (v_hpo_fix_key_error) ▲ ---
 
         # --- ▼ 修正 (v_async_fix): asyncio.run() を await に変更 ▼ ---
         teacher_model_instance = await self._get_or_load_teacher_model()
@@ -356,7 +364,9 @@ class KnowledgeDistillationManager:
             original_dataset=train_dataset,
             teacher_model=teacher_model_instance,
             tokenizer=self.tokenizer,
-            collate_fn_orig_factory=collate_fn_orig_factory, # type: ignore[arg-type] # ファクトリを渡す
+            # --- ▼ 修正 (v_hpo_fix_key_error): ファクトリではなく、インスタンスを渡す ▼ ---
+            collate_fn_orig=collate_fn_to_use, 
+            # --- ▲ 修正 (v_hpo_fix_key_error) ▲ ---
             device=self.device
         )
         
@@ -366,7 +376,9 @@ class KnowledgeDistillationManager:
                 original_dataset=val_dataset,
                 teacher_model=teacher_model_instance,
                 tokenizer=self.tokenizer,
-                collate_fn_orig_factory=collate_fn_orig_factory, # type: ignore[arg-type] # ファクトリを渡す
+                # --- ▼ 修正 (v_hpo_fix_key_error): ファクトリではなく、インスタンスを渡す ▼ ---
+                collate_fn_orig=collate_fn_to_use,
+                # --- ▲ 修正 (v_hpo_fix_key_error) ▲ ---
                 device=self.device
             )
         else:
@@ -390,7 +402,9 @@ class KnowledgeDistillationManager:
 
         # 蒸留用の collate_fn (タプルを返す)
         distillation_collate_fn = self._create_distillation_collate_fn(
-            collate_fn_orig_factory=collate_fn_orig_factory # type: ignore[arg-type] # ファクトリを渡す
+            # --- ▼ 修正 (v_hpo_fix_key_error): ファクトリではなく、インスタンスを渡す ▼ ---
+            collate_fn_orig=collate_fn_to_use 
+            # --- ▲ 修正 (v_hpo_fix_key_error) ▲ ---
         )
 
         train_loader = DataLoader(
@@ -412,18 +426,15 @@ class KnowledgeDistillationManager:
 
     def _create_distillation_collate_fn(
         self,
-        collate_fn_orig_factory: TextCollateFnDef
+        # --- ▼ 修正 (v_hpo_fix_key_error): シグネチャを修正 ▼ ---
+        collate_fn_orig: Callable[[List[Any]], Any]
+        # --- ▲ 修正 (v_hpo_fix_key_error) ▲ ---
     ) -> Callable:
         """
         知識蒸留用のデータローダー collate_fn を作成する。
         (student_input, attention_mask, student_target, teacher_logits) のタプルを返す。
         """
         
-        # ファクトリから collate_fn インスタンスを取得
-        # (蒸留用データセットラッパーが内部でテキスト処理に collate_fn を使うため、
-        #  ここでは is_distillation=False を渡して、テキスト処理用の collate_fn を取得する)
-        collate_fn_orig: Callable[[List[Any]], Any] = collate_fn_orig_factory(self.tokenizer, False)
-
         def distillation_collate(batch: List[Tuple[Dict[str, Any], torch.Tensor]]) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
             """
             Args:
@@ -436,12 +447,32 @@ class KnowledgeDistillationManager:
             teacher_logits_list: List[torch.Tensor] = [item[1] for item in batch]
 
             # 1. 元の collate_fn を使って、テキストデータをテンソル化 (SNN入力用)
-            #    collate_fn_orig は (input_ids, attention_mask, labels) を含む辞書を返すと期待
             collated_batch: Dict[str, torch.Tensor] = collate_fn_orig(original_batch_items)
             
-            student_input_ids = collated_batch['input_ids']
-            attention_mask = collated_batch['attention_mask']
-            student_target_ids = collated_batch['labels']
+            # --- ▼ 修正 (v_hpo_fix_key_error): 'input_ids' と 'input_images' の両方に対応 ▼ ---
+            # (student_input, attention_mask, student_target) を決定する
+            
+            student_input: torch.Tensor
+            attention_mask: torch.Tensor
+            student_target: torch.Tensor
+            
+            if 'input_ids' in collated_batch:
+                # Text Task
+                student_input = collated_batch['input_ids']
+                attention_mask = collated_batch['attention_mask']
+                student_target = collated_batch['labels']
+            
+            elif 'input_images' in collated_batch:
+                # Image Task
+                student_input = collated_batch['input_images'] # (B, C, H, W)
+                student_target = collated_batch['labels']      # (B,)
+                # 画像タスクにはシーケンスの attention_mask はない
+                attention_mask = torch.ones_like(student_target, dtype=torch.long) # (B,)
+            
+            else:
+                raise KeyError(f"Neither 'input_ids' nor 'input_images' found in collated batch from original collate_fn. Keys: {collated_batch.keys()}")
+            # --- ▲ 修正 (v_hpo_fix_key_error) ▲ ---
+
 
             # 2. 教師ロジットをパディングしてバッチ化
             #    teacher_logits_list の各要素は (SeqLen_item, VocabSize)
@@ -449,19 +480,30 @@ class KnowledgeDistillationManager:
                 teacher_logits_list, batch_first=True, padding_value=0.0
             )
 
+            # --- ▼ 修正 (v_hpo_fix_key_error): 画像タスクの形状 (B, 1, C) に対応 ▼ ---
             # 3. シーケンス長の整合性を取る
-            max_len_student = student_input_ids.shape[1]
+            
+            # 画像タスクの場合、student_input は (B, C, H, W)、
+            # padded_teacher_logits は (B, 1, NumClasses)
+            # DistillationLoss (losses.py) は is_classification (ndim==2) をチェックする
+            # ここで形状を合わせる必要はない。
+            
+            if student_input.dim() > 2: # Image task (B, C, H, W)
+                # student_target は (B,)
+                # padded_teacher_logits は (B, 1, NumClasses) -> (B, NumClasses) にする
+                padded_teacher_logits = padded_teacher_logits.squeeze(1)
+                
+                # (student_input, attention_mask(dummy), student_target, teacher_logits)
+                return student_input, attention_mask, student_target, padded_teacher_logits
+
+            # --- Text Task の場合の整合性チェック ---
+            max_len_student = student_input.shape[1]
             max_len_teacher = padded_teacher_logits.shape[1]
             
-            # (student_target_ids は input_ids と同じ長さのはず)
-            if student_target_ids.shape[1] != max_len_student:
-                 # collate_fn_orig が labels も input_ids と同じ長さにパディングすることを期待
-                 # (もしズレていたら、ここでアラインメントが必要)
+            if student_target.shape[1] != max_len_student:
                  pass
 
-            # ロジットと入力の長さを合わせる (通常は同じはずだが、念のため)
             if max_len_student > max_len_teacher:
-                # ロジット側をパディング
                 pad_size = max_len_student - max_len_teacher
                 padding = torch.zeros(
                     (padded_teacher_logits.shape[0], pad_size, padded_teacher_logits.shape[2]),
@@ -470,16 +512,15 @@ class KnowledgeDistillationManager:
                 padded_teacher_logits = torch.cat([padded_teacher_logits, padding], dim=1)
             
             elif max_len_teacher > max_len_student:
-                # 入力側をパディング (attention_mask も)
                 pad_size = max_len_teacher - max_len_student
                 pad_val_input = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else 0
                 pad_val_target = -100
                 
                 padding_input = torch.full(
-                    (student_input_ids.shape[0], pad_size), pad_val_input,
-                    dtype=student_input_ids.dtype, device=student_input_ids.device
+                    (student_input.shape[0], pad_size), pad_val_input,
+                    dtype=student_input.dtype, device=student_input.device
                 )
-                student_input_ids = torch.cat([student_input_ids, padding_input], dim=1)
+                student_input = torch.cat([student_input, padding_input], dim=1)
 
                 padding_mask = torch.zeros(
                     (attention_mask.shape[0], pad_size),
@@ -488,13 +529,13 @@ class KnowledgeDistillationManager:
                 attention_mask = torch.cat([attention_mask, padding_mask], dim=1)
                 
                 padding_target = torch.full(
-                    (student_target_ids.shape[0], pad_size), pad_val_target,
-                    dtype=student_target_ids.dtype, device=student_target_ids.device
+                    (student_target.shape[0], pad_size), pad_val_target,
+                    dtype=student_target.dtype, device=student_target.device
                 )
-                student_target_ids = torch.cat([student_target_ids, padding_target], dim=1)
+                student_target = torch.cat([student_target, padding_target], dim=1)
             
-            # (student_input, attention_mask, student_target, teacher_logits)
-            return student_input_ids, attention_mask, student_target_ids, padded_teacher_logits
+            return student_input, attention_mask, student_target, padded_teacher_logits
+            # --- ▲ 修正 (v_hpo_fix_key_error) ▲ ---
 
         return distillation_collate
 
@@ -509,7 +550,9 @@ class _DistillationWrapperDataset(Dataset):
         original_dataset: Dataset,
         teacher_model: nn.Module,
         tokenizer: PreTrainedTokenizerBase,
-        collate_fn_orig_factory: TextCollateFnDef,
+        # --- ▼ 修正 (v_hpo_fix_key_error): シグネチャを修正 ▼ ---
+        collate_fn_orig: Callable[[List[Any]], Any],
+        # --- ▲ 修正 (v_hpo_fix_key_error) ▲ ---
         device: str
     ):
         self.original_dataset = original_dataset
@@ -517,13 +560,12 @@ class _DistillationWrapperDataset(Dataset):
         self.tokenizer = tokenizer
         self.device = device
         
-        self.collate_fn_orig: Callable[[List[Any]], Any] = collate_fn_orig_factory(tokenizer, False)
+        # --- ▼ 修正 (v_hpo_fix_key_error): ファクトリ呼び出しを削除 ▼ ---
+        self.collate_fn_orig = collate_fn_orig
+        # --- ▲ 修正 (v_hpo_fix_key_error) ▲ ---
         
         if self.collate_fn_orig is None:
-             logger.error("Failed to get original collate_fn from factory. Using default fallback.")
-             def error_collate(batch):
-                 raise RuntimeError("collate_fn was None during _DistillationWrapperDataset init.")
-             self.collate_fn_orig = error_collate
+             raise RuntimeError("collate_fn_orig is None, cannot process item.")
         
         logger.info(f"DistillationWrapperDataset initialized for {len(cast(Sized, self.original_dataset))} samples.")
 

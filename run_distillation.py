@@ -11,12 +11,14 @@ import torch
 import torchvision.models as models  # type: ignore[import-untyped]
 from torch.utils.data import DataLoader
 from omegaconf import OmegaConf, DictConfig
-from typing import Any, List, Optional
-import sys # sysをインポート
+from typing import Any, List, Optional, cast, Dict
+import sys 
+import os
 
-# プロジェクトルートをPythonパスに追加 (app.containersをインポートするため)
-from pathlib import Path
-sys.path.append(str(Path(__file__).resolve().parent.parent))
+# プロジェクトルートをPythonパスに追加 (run_hpo.py と同じ修正)
+project_root: str = os.path.abspath(os.path.dirname(__file__))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 from app.containers import TrainingContainer
 from snn_research.distillation.knowledge_distillation_manager import KnowledgeDistillationManager
@@ -61,17 +63,16 @@ async def main() -> None:
         elif isinstance(cfg_raw, DictConfig):
             # 'model' キーがない場合 (cifar10_spikingcnn_config.yaml など)
             # 辞書全体を 'model' キーでラップしてマージする
-            model_cfg_dict = OmegaConf.to_container(cfg_raw, resolve=True)
-            if isinstance(model_cfg_dict, dict):
-                container.config.from_dict({'model': model_cfg_dict})
+            model_config_dict = OmegaConf.to_container(cfg_raw, resolve=True)
+            if isinstance(model_config_dict, dict):
+                container.config.from_dict({'model': model_config_dict})
             else:
                  # --- ▼ 修正: インデントを修正 (21 -> 20 spaces) ▼ ---
                  raise TypeError(f"Model config loaded from {args.model_config} is not a dictionary.")
         else:
              # --- ▼ 修正: インデントを修正 (17 -> 16 spaces) ▼ ---
              raise TypeError(f"Model config loaded from {args.model_config} is not a dictionary.")
-        # --- ▲ 修正 (v_hpo_fix_3) ▲ ---
-    
+            
     except Exception as e:
         print(f"Warning: Could not load or merge model config '{args.model_config}': {e}")
         # --- ▼ 修正: 失敗時のフォールバックを except ブロック内に復元 ▼ ---

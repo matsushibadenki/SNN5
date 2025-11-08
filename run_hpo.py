@@ -63,8 +63,9 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # プロジェクトルートをPythonパスに追加 (run_hpo.pyがプロジェクトルートにあると仮定)
-project_root = Path(__file__).resolve().parent
-sys.path.append(str(project_root))
+project_root: str = os.path.abspath(os.path.dirname(__file__))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 # プロジェクト内の関数をインポート (必要に応じて)
 # from app.utils import get_auto_device # 必要なら

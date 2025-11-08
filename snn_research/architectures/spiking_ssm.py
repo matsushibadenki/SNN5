@@ -28,6 +28,10 @@
 # 修正 (v4): SyntaxError: 末尾の余分な '}' を削除。
 #
 # 修正 (v_syn): SyntaxError: 末尾の不要な '}' を削除。
+#
+# 修正 (v_hpo_fix_attribute_error):
+# - AttributeError: 'super' object has no attribute 'set_stateful' を修正。
+# - super().set_stateful(stateful) を self.stateful = stateful に変更。
 
 import torch
 import torch.nn as nn
@@ -118,7 +122,10 @@ class S4DLIFBlock(sj_base.MemoryModule):
         self.norm = SNNLayerNorm(d_model)
 
     def set_stateful(self, stateful: bool) -> None:
-        super().set_stateful(stateful)
+        # --- ▼ 修正 (v_hpo_fix_attribute_error) ▼ ---
+        # super().set_stateful(stateful) # 誤り
+        self.stateful = stateful # 正しい
+        # --- ▲ 修正 (v_hpo_fix_attribute_error) ▲ ---
         if hasattr(self.lif_h, 'set_stateful'):
             cast(Any, self.lif_h).set_stateful(stateful)
         if hasattr(self.lif_y, 'set_stateful'):

@@ -11,6 +11,12 @@
 # 修正 (v_hpo_fix_attr_error):
 # - HPO実行時に KnowledgeDistillationManager (L162) に渡される config が
 #   dict だったため、OmegaConf.create() で DictConfig に変換するよう修正。
+#
+# 修正 (v_hpo_fix_tensor_size_mismatch):
+# - OOM (Trial 224, 226) の根本原因である、cifar10 (32x32) と
+#   ViT (224x224) のミスマッチを解消するため、
+#   タスクが 'cifar10' の場合、データローダーが参照する
+#   `config.data.img_size` も 32 に上書きするロジックを追加 (L129)。
 
 
 import argparse
@@ -127,6 +133,37 @@ async def main() -> None:
             except Exception as e:
                 print(f"Error applying override '{override}': {e}")
     # --- ▲ 修正 ▲ ---
+
+    # --- ▼ 修正 (v_hpo_fix_tensor_size_mismatch) ▼ ---
+    # HPO (spiking_transformer.yaml) と cifar10 タスクのミスマッチを修正
+    if args.task == 'cifar10':
+        print("INFO: Overriding data/model config for CIFAR-10 (img_size=32, patch_size=4).")
+        
+        # 1. モデルコンフィグ (SNNCoreが読み取る) を上書き
+        try:
+            container.config.model.img_size.from_value(32)
+            container.config.model.patch_size.from_value(4)
+        except Exception as e:
+            print(f"Warning: Could not override config.model: {e}")
+
+        # 2. データコンフィグ (CIFAR10Taskが読み取る) を上書き
+        try:
+            if container.config.data.img_size.provided:
+                container.config.data.img_size.from_value(32)
+            else:
+                # 存在しない場合は作成 (base_configにdata.img_sizeがない場合)
+                container.config.data.from_dict({'img_size': 32})
+                
+            if container.config.data.patch_size.provided:
+                container.config.data.patch_size.from_value(4)
+            else:
+                # 存在しない場合は作成
+                container.config.data.from_dict({'patch_size': 4})
+                
+        except Exception as e:
+            print(f"Warning: Could not override config.data: {e}")
+    # --- ▲ 修正 (v_hpo_fix_tensor_size_mismatch) ▲ ---
+
 
     # DIコンテナから必要なコンポーネントを正しい順序で取得・構築
     device = container.device()

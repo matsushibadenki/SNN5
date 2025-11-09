@@ -1,6 +1,5 @@
 # ファイルパス: snn_research/core/neurons/__init__.py
-# (修正版)
-#
+# (更新)
 # Title: SNNニューロンモデル定義
 # Description:
 # - プロジェクトで使用される様々なSNNニューロンモデルを定義します。
@@ -24,6 +23,7 @@
 # - ロードマップ P2.1 (PLIF) / P2.2 (GLIF) の実装を再検証・強化。
 #
 # 修正 (v4): BistableIFNeuron をインポート
+# 修正 (v5): 末尾の不要な '}' を削除し、__all__ リストを追加
 
 from typing import Optional, Tuple, Any, List, cast
 import torch
@@ -673,7 +673,8 @@ class ScaleAndFireNeuron(base.MemoryModule):
         # SFNはT=1でアナログ値を直接出力する (SNNの最終層や変換層として使う)
         # 戻り値の型 (spike, mem) に合わせる
         return output_analog, output_analog # memの代わりにoutput_analogを返す
-        
+
+
 __all__ = [
     "AdaptiveLIFNeuron",
     "IzhikevichNeuron",
@@ -682,4 +683,5 @@ __all__ = [
     "TC_LIF",
     "DualThresholdNeuron",
     "ScaleAndFireNeuron",
-    # --- ▼ 修正: BistableIFNeuron
+    "BistableIFNeuron"
+]

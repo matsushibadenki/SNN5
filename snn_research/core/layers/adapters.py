@@ -19,7 +19,8 @@ from ..neurons import (
     TC_LIF, DualThresholdNeuron, ScaleAndFireNeuron
 )
 from snn_research.io.spike_encoder import DifferentiableTTFSEncoder
-from spikingjelly.activation_based import functional, base as sj_base # 修正: sj_baseインポート
+
+from spikingjelly.activation_based import functional, base as sj_base # type: ignore[import-untyped]
 
 # AnalogToSpikes は BaseModel を継承
 class AnalogToSpikes(BaseModel): 

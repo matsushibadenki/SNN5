@@ -28,6 +28,9 @@
 # 修正 (v_hpo_fix_key_error):
 # - _DistillationWrapperDataset (L575) と distillation_collate (L442) が 
 #   'input_ids' だけでなく 'input_images' も処理できるように修正。
+#
+# 修正 (v_refactor_fix):
+# - [name-defined] エラーを修正するため、torchvision.models をインポート。
 
 import torch
 import torch.nn as nn
@@ -41,6 +44,10 @@ import logging
 import asyncio # [name-defined] asyncio をインポート
 # --- ▲ 修正 ▲ ---
 from omegaconf import DictConfig
+
+# --- ▼ 修正: [name-defined] エラー修正 ▼ ---
+import torchvision.models as models  # type: ignore[import-untyped]
+# --- ▲ 修正 ▲ ---
 
 from snn_research.distillation.model_registry import ModelRegistry
 # --- ▼ 修正: [name-defined] DistillationTrainer をインポート ▼ ---

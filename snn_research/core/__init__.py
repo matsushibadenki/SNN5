@@ -1,5 +1,6 @@
 # ファイルパス: snn_research/core/__init__.py
 # (リファクタリング反映版)
+# 修正: 削除対象の旧式モデル (v1, simple) への参照を削除
 
 from .base import BaseModel, SNNLayerNorm
 
@@ -10,7 +11,7 @@ from .snn_core import SNNCore
 from .neurons import (
     AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron,
     TC_LIF, DualThresholdNeuron, ScaleAndFireNeuron,
-    BistableIFNeuron # <-- 修正: BistableIFNeuron を追加
+    BistableIFNeuron
 )
 
 # --- SOTAアーキテクチャ ---
@@ -20,8 +21,8 @@ from .sntorch_models import SpikingTransformerSnnTorch
 
 # --- 分離されたローカルモデル ---
 from .models.predictive_coding_model import BreakthroughSNN
-from .models.spiking_transformer_v1_model import SpikingTransformer_OldTextOnly
-from .models.simple_snn_model import SimpleSNN
+# from .models.spiking_transformer_v1_model import SpikingTransformer_OldTextOnly # 削除
+# from .models.simple_snn_model import SimpleSNN # 削除
 from .models.hybrid_cnn_snn_model import HybridCnnSnnModel
 from .models.spiking_cnn_model import SpikingCNN
 
@@ -37,7 +38,7 @@ __all__ = [
     "TC_LIF", 
     "DualThresholdNeuron", 
     "ScaleAndFireNeuron",
-    "BistableIFNeuron", # <-- 修正: __all__ に追加
+    "BistableIFNeuron",
     
     # SOTAモデル
     "SpikingMamba",
@@ -46,8 +47,8 @@ __all__ = [
     
     # ローカルモデル (SNNCoreが使用)
     "BreakthroughSNN",
-    "SpikingTransformer_OldTextOnly",
-    "SimpleSNN",
+    # "SpikingTransformer_OldTextOnly", # 削除
+    # "SimpleSNN", # 削除
     "HybridCnnSnnModel",
     "SpikingCNN",
 ]

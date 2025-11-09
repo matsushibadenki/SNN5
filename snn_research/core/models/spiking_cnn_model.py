@@ -14,7 +14,8 @@ from ..neurons import (
     AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron,
     TC_LIF, DualThresholdNeuron
 )
-from spikingjelly.activation_based import functional
+
+from spikingjelly.activation_based import functional # type: ignore[import-untyped]
 
 class SpikingCNN(BaseModel):
     """

@@ -1,5 +1,4 @@
 # ファイルパス: snn_research/training/losses.py
-# (修正版)
 # Title: SNN 損失関数定義
 # Description: CombinedLoss, DistillationLoss, SelfSupervisedLoss (TCL), PhysicsInformedLoss, PlannerLoss, ProbabilisticEnsembleLoss を含む各種損失関数を定義します。
 # 改善点(v1): 継続学習のためのElastic Weight Consolidation (EWC) 損失を追加。
@@ -19,6 +18,8 @@
 # - mypy [name-defined] エラーを解消するため、Tuple をインポート。
 #
 # 修正 (v8): リファクタリングに伴い MultiLevelSpikeDrivenSelfAttention のインポート元を変更
+#
+# 修正 (v9): mypy [truthy-function] エラーを解消するため、'if SNNCore:' を 'if SNNCore is not None:' に変更。
 
 import torch
 import torch.nn as nn
@@ -50,18 +51,21 @@ def _get_total_neurons(model: nn.Module) -> int:
         # ScaleAndFireNeuron は T=1 のため、ここでは除外
     )
     
-    # SNNCoreラッパーを考慮
     model_to_scan = model
     if isinstance(model, nn.parallel.DistributedDataParallel):
         model_to_scan = model.module # DDPラッパーを解除
     
     # --- ▼ 修正: SNNCoreのインポートとチェックを追加 ▼ ---
     try:
-        from snn_research.core.snn_core import SNNCore
+        # --- ▼ 修正: リファクタリング後のSNNCoreインポート ▼ ---
+        from snn_research.core.snn_core import SNNCore 
+        # --- ▲ 修正 ▲ ---
     except ImportError:
         SNNCore = None # type: ignore[misc, assignment]
-
-    if SNNCore and isinstance(model_to_scan, SNNCore):
+    
+    # --- ▼ 修正 (v9): [truthy-function] エラー解消 ▼ ---
+    if SNNCore is not None and isinstance(model_to_scan, SNNCore): 
+    # --- ▲ 修正 (v9) ▲ ---
         model_to_scan = model_to_scan.model # SNNCoreラッパーを解除
     # --- ▲ 修正 ▲ ---
         

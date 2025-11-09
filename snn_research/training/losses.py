@@ -1,4 +1,5 @@
 # ファイルパス: snn_research/training/losses.py
+# (修正版)
 # Title: SNN 損失関数定義
 # Description: CombinedLoss, DistillationLoss, SelfSupervisedLoss (TCL), PhysicsInformedLoss, PlannerLoss, ProbabilisticEnsembleLoss を含む各種損失関数を定義します。
 # 改善点(v1): 継続学習のためのElastic Weight Consolidation (EWC) 損失を追加。
@@ -16,6 +17,8 @@
 #
 # 修正(v7):
 # - mypy [name-defined] エラーを解消するため、Tuple をインポート。
+#
+# 修正 (v8): リファクタリングに伴い MultiLevelSpikeDrivenSelfAttention のインポート元を変更
 
 import torch
 import torch.nn as nn
@@ -25,7 +28,9 @@ from typing import Dict, Optional, cast, Any, Type, Tuple
 # --- ▲ 修正 ▲ ---
 from transformers import PreTrainedTokenizerBase
 
-from snn_research.core.snn_core import MultiLevelSpikeDrivenSelfAttention
+# --- ▼ 修正: インポート元を snn_core から complex_attention に変更 ▼ ---
+from snn_research.core.layers.complex_attention import MultiLevelSpikeDrivenSelfAttention
+# --- ▲ 修正 ▲ ---
 # --- ▼ 修正(v6): ニューロンクラスをインポート ▼ ---
 from snn_research.core.neurons import (
     AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron,
@@ -49,8 +54,16 @@ def _get_total_neurons(model: nn.Module) -> int:
     model_to_scan = model
     if isinstance(model, nn.parallel.DistributedDataParallel):
         model_to_scan = model.module # DDPラッパーを解除
-    if hasattr(model_to_scan, 'model') and isinstance(getattr(model_to_scan, 'model'), nn.Module):
-        model_to_scan = getattr(model_to_scan, 'model') # SNNCoreラッパーを解除
+    
+    # --- ▼ 修正: SNNCoreのインポートとチェックを追加 ▼ ---
+    try:
+        from snn_research.core.snn_core import SNNCore
+    except ImportError:
+        SNNCore = None # type: ignore[misc, assignment]
+
+    if SNNCore and isinstance(model_to_scan, SNNCore):
+        model_to_scan = model_to_scan.model # SNNCoreラッパーを解除
+    # --- ▲ 修正 ▲ ---
         
     for module in model_to_scan.modules():
         if isinstance(module, neuron_classes):

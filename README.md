@@ -52,132 +52,126 @@
 graph LR
 
 %% スタイル定義
-
-classDef Agent fill:\#f9f,stroke:\#333,stroke-width:2px;
-
-classDef Cognitive fill:\#ccf,stroke:\#333,stroke-width:2px;
-
-classDef Execution fill:\#cfc,stroke:\#333,stroke-width:2px;
-
-classDef Foundation fill:\#ffc,stroke:\#333,stroke-width:2px;
-
-classDef IO fill:\#eee,stroke:\#333,stroke-width:2px;
-
-classDef UI fill:\#ddd,stroke:\#333,stroke-width:2px;
+classDef Agent fill:#f9f,stroke:#333,stroke-width:2px;
+classDef Cognitive fill:#ccf,stroke:#333,stroke-width:2px;
+classDef Execution fill:#cfc,stroke:#333,stroke-width:2px;
+classDef Foundation fill:#ffc,stroke:#333,stroke-width:2px;
+classDef IO fill:#eee,stroke:#333,stroke-width:2px;
+classDef UI fill:#ddd,stroke:#333,stroke-width:2px;
 
 %% レイヤー    
-subgraph Layer\\\_UI \\\["User Interface Layer"\\\]    
+subgraph Layer_UI["User Interface Layer"]    
     direction LR    
-    CLI\\\["snn-cli.py (Typer)"\\\]:::UI    
-    GradioUI\\\["Gradio Web UI"\\\]:::UI    
+    CLI["snn-cli.py (Typer)"]:::UI    
+    GradioUI["Gradio Web UI"]:::UI    
 end
 
-subgraph Layer\\\_Orchestration \\\["Orchestration Layer (Agents)"\\\]    
+subgraph Layer_Orchestration["Orchestration Layer (Agents)"]    
     direction TB    
-    LifeForm\\\["DigitalLifeForm"\\\]:::Agent    
-    Autonomous\\\["AutonomousAgent"\\\]:::Agent    
-    Evolving\\\["SelfEvolvingAgentMaster"\\\]:::Agent    
-    RL\\\["ReinforcementLearnerAgent"\\\]:::Agent    
+    LifeForm["DigitalLifeForm"]:::Agent    
+    Autonomous["AutonomousAgent"]:::Agent    
+    Evolving["SelfEvolvingAgentMaster"]:::Agent    
+    RL["ReinforcementLearnerAgent"]:::Agent    
 end
 
-subgraph Layer\\\_Cognitive \\\["Cognitive Layer"\\\]    
+subgraph Layer_Cognitive["Cognitive Layer"]    
     direction TB    
-    subgraph Cognitive\\\_Executive \\\["Executive & Planning"\\\]    
-        Planner\\\["HierarchicalPlanner"\\\]:::Cognitive    
-        PFC\\\["PrefrontalCortex"\\\]:::Cognitive    
+    subgraph Cognitive_Executive["Executive & Planning"]    
+        Planner["HierarchicalPlanner"]:::Cognitive    
+        PFC["PrefrontalCortex"]:::Cognitive    
     end    
-    subgraph Cognitive\\\_Memory \\\["Memory & Knowledge"\\\]    
-        Memory\\\["Memory (Hippocampus/Cortex)"\\\]:::Cognitive    
-        RAG\\\["RAGSystem"\\\]:::Cognitive    
-        SymbolGrounding\\\["SymbolGrounding"\\\]:::Cognitive    
+    subgraph Cognitive_Memory["Memory & Knowledge"]    
+        Memory["Memory (Hippocampus/Cortex)"]:::Cognitive    
+        RAG["RAGSystem"]:::Cognitive    
+        SymbolGrounding["SymbolGrounding"]:::Cognitive    
     end    
-    subgraph Cognitive\\\_Core \\\["Core Cognitive Processing"\\\]    
-        Brain\\\["ArtificialBrain"\\\]:::Cognitive    
-        GWS\\\["GlobalWorkspace"\\\]:::Cognitive    
-        Causal\\\["CausalInferenceEngine"\\\]:::Cognitive    
-        Motivation\\\["IntrinsicMotivation"\\\]:::Cognitive    
-        Amygdala\\\["Amygdala"\\\]:::Cognitive    
-        BasalGanglia\\\["BasalGanglia"\\\]:::Cognitive    
-        Perception\\\["HybridPerceptionCortex"\\\]:::Cognitive    
+    subgraph Cognitive_Core["Core Cognitive Processing"]    
+        Brain["ArtificialBrain"]:::Cognitive    
+        GWS["GlobalWorkspace"]:::Cognitive    
+        Causal["CausalInferenceEngine"]:::Cognitive    
+        Motivation["IntrinsicMotivation"]:::Cognitive    
+        Amygdala["Amygdala"]:::Cognitive    
+        BasalGanglia["BasalGanglia"]:::Cognitive    
+        Perception["HybridPerceptionCortex"]:::Cognitive    
     end    
-    subgraph Cognitive\\\_Motor \\\["Motor Control"\\\]    
-         Cerebellum\\\["Cerebellum"\\\]:::Cognitive    
-         MotorCortex\\\["MotorCortex"\\\]:::Cognitive    
+    subgraph Cognitive_Motor["Motor Control"]    
+         Cerebellum["Cerebellum"]:::Cognitive    
+         MotorCortex["MotorCortex"]:::Cognitive    
     end    
 end
 
-subgraph Layer\\\_Execution \\\["Execution Layer"\\\]    
+subgraph Layer_Execution["Execution Layer"]    
     direction TB    
-    Training\\\["train.py / Trainers"\\\]:::Execution    
-    Inference\\\["SNNInferenceEngine"\\\]:::Execution    
-    Benchmark\\\["Benchmark Suite"\\\]:::Execution    
-    Conversion\\\["ANN-SNN Converter"\\\]:::Execution    
-    Deployment\\\["NeuromorphicExporter/Compiler"\\\]:::Execution    
+    Training["train.py / Trainers"]:::Execution    
+    Inference["SNNInferenceEngine"]:::Execution    
+    Benchmark["Benchmark Suite"]:::Execution    
+    Conversion["ANN-SNN Converter"]:::Execution    
+    Deployment["NeuromorphicExporter/Compiler"]:::Execution    
 end
 
-subgraph Layer\\\_Foundation \\\["Foundation Layer"\\\]    
+subgraph Layer_Foundation["Foundation Layer"]    
     direction TB    
-    Core\\\["SNN Models (core)"\\\]:::Foundation    
-    Neurons\\\["Neuron Models"\\\]:::Foundation    
-    Attention\\\["Attention Mechanisms"\\\]:::Foundation    
-    Rules\\\["BioLearningRules"\\\]:::Foundation    
+    Core["SNN Models (core)"]:::Foundation    
+    Neurons["Neuron Models"]:::Foundation    
+    Attention["Attention Mechanisms"]:::Foundation    
+    Rules["BioLearningRules"]:::Foundation    
 end
 
-subgraph Layer\\\_IO \\\["Input/Output Layer"\\\]    
+subgraph Layer_IO["Input/Output Layer"]    
      direction TB    
-     SensoryReceptor\\\["SensoryReceptor"\\\]:::IO    
-     SpikeEncoder\\\["SpikeEncoder"\\\]:::IO    
-     SpikeDecoder\\\["SpikeDecoder"\\\]:::IO    
-     Actuator\\\["Actuator"\\\]:::IO    
+     SensoryReceptor["SensoryReceptor"]:::IO    
+     SpikeEncoder["SpikeEncoder"]:::IO    
+     SpikeDecoder["SpikeDecoder"]:::IO    
+     Actuator["Actuator"]:::IO    
 end
 
 %% 主要な接続    
-CLI \\--\\\> Layer\\\_Orchestration    
-CLI \\--\\\> Layer\\\_Cognitive    
-CLI \\--\\\> Layer\\\_Execution    
-GradioUI \\--\\\> Inference
+CLI --> Layer_Orchestration    
+CLI --> Layer_Cognitive    
+CLI --> Layer_Execution    
+GradioUI --> Inference
 
-SensoryReceptor \\--\\\> SpikeEncoder    
-SpikeEncoder \\--\\\> Perception    
-Brain \\--\\\> GWS    
-GWS \\-- Broadcasts \\--\\\> PFC    
-GWS \\-- Broadcasts \\--\\\> BasalGanglia    
-GWS \\-- Broadcasts \\--\\\> Hippocampus    
-GWS \\-- Broadcasts \\--\\\> Causal
+SensoryReceptor --> SpikeEncoder    
+SpikeEncoder --> Perception    
+Brain --> GWS    
+GWS -- Broadcasts --> PFC    
+GWS -- Broadcasts --> BasalGanglia    
+GWS -- Broadcasts --> Memory    
+GWS -- Broadcasts --> Causal
 
-PFC \\-- Goal \\--\\\> Planner    
-Planner \\-- Subtasks \\--\\\> Layer\\\_Orchestration    
-Layer\\\_Orchestration \\-- Execute \\--\\\> Training    
-Layer\\\_Orchestration \\-- Execute \\--\\\> Inference    
-Layer\\\_Orchestration \\-- Uses \\--\\\> Memory    
-Layer\\\_Orchestration \\-- Uses \\--\\\> RAG
+PFC -- Goal --> Planner    
+Planner -- Subtasks --> Layer_Orchestration    
+Layer_Orchestration -- Execute --> Training    
+Layer_Orchestration -- Execute --> Inference    
+Layer_Orchestration -- Uses --> Memory    
+Layer_Orchestration -- Uses --> RAG
 
-Autonomous \\--\\\> WebCrawler\\\[Web Crawler Tool\\\]    
-WebCrawler \\-- Data \\--\\\> Training
+Autonomous --> WebCrawler[Web Crawler Tool]    
+WebCrawler -- Data --> Training
 
-BasalGanglia \\-- ActionSelection \\--\\\> Cerebellum    
-Cerebellum \\-- RefinedCommands \\--\\\> MotorCortex    
-MotorCortex \\--\\\> Actuator    
-Actuator \\-- Action \\--\\\> ExternalWorld(\\\[External World\\\])
+BasalGanglia -- ActionSelection --> Cerebellum    
+Cerebellum -- RefinedCommands --> MotorCortex    
+MotorCortex --> Actuator    
+Actuator -- Action --> ExternalWorld([External World])
 
-Training \\--\\\> Core    
-Inference \\--\\\> Core    
-Benchmark \\--\\\> Core    
-Conversion \\--\\\> Core    
-Deployment \\--\\\> Core
+Training --> Core    
+Inference --> Core    
+Benchmark --> Core    
+Conversion --> Core    
+Deployment --> Core
 
-Core \\--\\\> Neurons    
-Core \\--\\\> Attention    
-Training \\--\\\> Rules
+Core --> Neurons    
+Core --> Attention    
+Training --> Rules
 
 %% Global Workspace中心の連携 (より詳細)    
-Perception \\-- Upload (Salience) \\--\\\> GWS    
-Amygdala \\-- Upload (Salience) \\--\\\> GWS    
-Hippocampus \\-- Upload (Salience) \\--\\\> GWS    
-Causal \\-- Upload (Salience) \\--\\\> GWS
+Perception -- "Upload (Salience)" --> GWS    
+Amygdala -- "Upload (Salience)" --> GWS    
+Memory -- "Upload (Salience)" --> GWS    
+Causal -- "Upload (Salience)" --> GWS
 
 %% 強調表示 (例)    
-style GWS fill:\\\#f9a,stroke:\\\#f00,stroke-width:3px
+style GWS fill:#f9a,stroke:#f00,stroke-width:3px
 ```
 
 

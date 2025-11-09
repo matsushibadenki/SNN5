@@ -10,7 +10,7 @@ from .snn_core import SNNCore
 from .neurons import (
     AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron,
     TC_LIF, DualThresholdNeuron, ScaleAndFireNeuron,
-    BistableIFNeuron # bif_neuron.py から
+    BistableIFNeuron # <-- 修正: BistableIFNeuron を追加
 )
 
 # --- SOTAアーキテクチャ ---
@@ -37,7 +37,7 @@ __all__ = [
     "TC_LIF", 
     "DualThresholdNeuron", 
     "ScaleAndFireNeuron",
-    "BistableIFNeuron",
+    "BistableIFNeuron", # <-- 修正: __all__ に追加
     
     # SOTAモデル
     "SpikingMamba",

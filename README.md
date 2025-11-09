@@ -60,32 +60,29 @@ classDef IO fill:#eee,stroke:#333,stroke-width:2px;
 classDef UI fill:#ddd,stroke:#333,stroke-width:2px;
 
 %% レイヤー    
-subgraph Layer_UI["User Interface Layer"]    
-    direction LR    
+subgraph Layer_UI["User Interface Layer"]
     CLI["snn-cli.py (Typer)"]:::UI    
     GradioUI["Gradio Web UI"]:::UI    
 end
 
-subgraph Layer_Orchestration["Orchestration Layer (Agents)"]    
-    direction TB    
+subgraph Layer_Orchestration["Orchestration Layer (Agents)"]
     LifeForm["DigitalLifeForm"]:::Agent    
     Autonomous["AutonomousAgent"]:::Agent    
     Evolving["SelfEvolvingAgentMaster"]:::Agent    
     RL["ReinforcementLearnerAgent"]:::Agent    
 end
 
-subgraph Layer_Cognitive["Cognitive Layer"]    
-    direction TB    
-    subgraph Cognitive_Executive["Executive & Planning"]    
+subgraph Layer_Cognitive["Cognitive Layer"]
+    subgraph Cognitive_Executive["Executive & Planning"]
         Planner["HierarchicalPlanner"]:::Cognitive    
         PFC["PrefrontalCortex"]:::Cognitive    
     end    
-    subgraph Cognitive_Memory["Memory & Knowledge"]    
+    subgraph Cognitive_Memory["Memory & Knowledge"]
         Memory["Memory (Hippocampus/Cortex)"]:::Cognitive    
         RAG["RAGSystem"]:::Cognitive    
         SymbolGrounding["SymbolGrounding"]:::Cognitive    
     end    
-    subgraph Cognitive_Core["Core Cognitive Processing"]    
+    subgraph Cognitive_Core["Core Cognitive Processing"]
         Brain["ArtificialBrain"]:::Cognitive    
         GWS["GlobalWorkspace"]:::Cognitive    
         Causal["CausalInferenceEngine"]:::Cognitive    
@@ -94,14 +91,13 @@ subgraph Layer_Cognitive["Cognitive Layer"]
         BasalGanglia["BasalGanglia"]:::Cognitive    
         Perception["HybridPerceptionCortex"]:::Cognitive    
     end    
-    subgraph Cognitive_Motor["Motor Control"]    
+    subgraph Cognitive_Motor["Motor Control"]
          Cerebellum["Cerebellum"]:::Cognitive    
          MotorCortex["MotorCortex"]:::Cognitive    
     end    
 end
 
-subgraph Layer_Execution["Execution Layer"]    
-    direction TB    
+subgraph Layer_Execution["Execution Layer"]
     Training["train.py / Trainers"]:::Execution    
     Inference["SNNInferenceEngine"]:::Execution    
     Benchmark["Benchmark Suite"]:::Execution    
@@ -109,16 +105,14 @@ subgraph Layer_Execution["Execution Layer"]
     Deployment["NeuromorphicExporter/Compiler"]:::Execution    
 end
 
-subgraph Layer_Foundation["Foundation Layer"]    
-    direction TB    
+subgraph Layer_Foundation["Foundation Layer"]
     Core["SNN Models (core)"]:::Foundation    
     Neurons["Neuron Models"]:::Foundation    
     Attention["Attention Mechanisms"]:::Foundation    
     Rules["BioLearningRules"]:::Foundation    
 end
 
-subgraph Layer_IO["Input/Output Layer"]    
-     direction TB    
+subgraph Layer_IO["Input/Output Layer"]
      SensoryReceptor["SensoryReceptor"]:::IO    
      SpikeEncoder["SpikeEncoder"]:::IO    
      SpikeDecoder["SpikeDecoder"]:::IO    
@@ -134,25 +128,25 @@ GradioUI --> Inference
 SensoryReceptor --> SpikeEncoder    
 SpikeEncoder --> Perception    
 Brain --> GWS    
-GWS -- Broadcasts --> PFC    
-GWS -- Broadcasts --> BasalGanglia    
-GWS -- Broadcasts --> Memory    
-GWS -- Broadcasts --> Causal
+GWS --> PFC    
+GWS --> BasalGanglia    
+GWS --> Memory    
+GWS --> Causal
 
-PFC -- Goal --> Planner    
-Planner -- Subtasks --> Layer_Orchestration    
-Layer_Orchestration -- Execute --> Training    
-Layer_Orchestration -- Execute --> Inference    
-Layer_Orchestration -- Uses --> Memory    
-Layer_Orchestration -- Uses --> RAG
+PFC --> Planner    
+Planner --> Layer_Orchestration    
+Layer_Orchestration --> Training    
+Layer_Orchestration --> Inference    
+Layer_Orchestration --> Memory    
+Layer_Orchestration --> RAG
 
 Autonomous --> WebCrawler[Web Crawler Tool]    
-WebCrawler -- Data --> Training
+WebCrawler --> Training
 
-BasalGanglia -- ActionSelection --> Cerebellum    
-Cerebellum -- RefinedCommands --> MotorCortex    
+BasalGanglia --> Cerebellum    
+Cerebellum --> MotorCortex    
 MotorCortex --> Actuator    
-Actuator -- Action --> ExternalWorld([External World])
+Actuator --> ExternalWorld([External World])
 
 Training --> Core    
 Inference --> Core    
@@ -164,13 +158,13 @@ Core --> Neurons
 Core --> Attention    
 Training --> Rules
 
-%% Global Workspace中心の連携 (より詳細)    
-Perception -- "Upload (Salience)" --> GWS    
-Amygdala -- "Upload (Salience)" --> GWS    
-Memory -- "Upload (Salience)" --> GWS    
-Causal -- "Upload (Salience)" --> GWS
+%% Global Workspace中心の連携
+Perception --> GWS    
+Amygdala --> GWS    
+Memory --> GWS    
+Causal --> GWS
 
-%% 強調表示 (例)    
+%% 強調表示
 style GWS fill:#f9a,stroke:#f00,stroke-width:3px
 ```
 

@@ -6,6 +6,7 @@
 # - このファイルは、プロジェクト内のSNNモデルアーキテクチャを動的に
 #   インスタンス化するための「ファクトリ」クラスである SNNCore のみを定義します。
 # - 実際のレイヤーやモデル定義は core/layers/ および core/models/ に分離されました。
+# - 修正: 削除対象の旧式モデル (v1, simple) への参照を削除。
 
 import torch
 import torch.nn as nn
@@ -27,8 +28,8 @@ from snn_research.io.spike_encoder import DifferentiableTTFSEncoder
 
 # --- 分離されたローカルモデルのインポート ---
 from .models.predictive_coding_model import BreakthroughSNN
-from .models.spiking_transformer_v1_model import SpikingTransformer_OldTextOnly
-from .models.simple_snn_model import SimpleSNN
+# from .models.spiking_transformer_v1_model import SpikingTransformer_OldTextOnly # 削除
+# from .models.simple_snn_model import SimpleSNN # 削除
 from .models.hybrid_cnn_snn_model import HybridCnnSnnModel
 from .models.spiking_cnn_model import SpikingCNN
 
@@ -89,8 +90,8 @@ class SNNCore(nn.Module):
             model_map = {
                 # --- ▼ 分離されたローカルモデル ▼ ---
                 "predictive_coding": BreakthroughSNN,
-                "spiking_transformer_old": SpikingTransformer_OldTextOnly,
-                "simple": SimpleSNN,
+                # "spiking_transformer_old": SpikingTransformer_OldTextOnly, # 削除
+                # "simple": SimpleSNN, # 削除
                 "hybrid_cnn_snn": HybridCnnSnnModel,
                 "spiking_cnn": SpikingCNN,
                 # --- ▲ 分離されたローカルモデル ▲ ---
@@ -116,7 +117,12 @@ class SNNCore(nn.Module):
             raise ValueError(f"Unsupported backend: {backend}")
 
         if model_type not in model_map:
-            raise ValueError(f"Unknown model type '{model_type}' for backend '{backend}'")
+            # 'simple' が削除されたため、デフォルトを 'predictive_coding' に変更
+            if model_type == 'simple':
+                logger.warning("Model type 'simple' is deprecated. Defaulting to 'predictive_coding'.")
+                model_type = 'predictive_coding'
+            else:
+                raise ValueError(f"Unknown model type '{model_type}' for backend '{backend}'")
         
         # (パラメータ調整ロジックはすべて維持)
         if model_type in ["temporal_snn", "gated_snn"]:
@@ -124,8 +130,9 @@ class SNNCore(nn.Module):
             params['hidden_dim'] = config.get('hidden_dim', 64)
             params['output_dim'] = config.get('output_dim', vocab_size)
 
-        if 'time_steps' not in params and model_type == 'simple':
-             params['time_steps'] = config.get('time_steps', 16) 
+        # 'simple' が削除されたため、この分岐は不要になる
+        # if 'time_steps' not in params and model_type == 'simple':
+        #      params['time_steps'] = config.get('time_steps', 16) 
              
         if model_type in ["spiking_cnn", "sew_resnet"]:
             num_classes_cfg = OmegaConf.select(config, "num_classes", default=None)

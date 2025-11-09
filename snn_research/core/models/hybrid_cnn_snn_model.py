@@ -18,7 +18,8 @@ from ..neurons import (
     AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron,
     TC_LIF
 )
-from spikingjelly.activation_based import functional, base as sj_base
+
+from spikingjelly.activation_based import functional, base as sj_base # type: ignore[import-untyped]
 
 class HybridCnnSnnModel(BaseModel):
     """

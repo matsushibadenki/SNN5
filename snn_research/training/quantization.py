@@ -1,5 +1,9 @@
 # ファイルパス: snn_research/training/quantization.py
-# (改善 v5: PyTorch QATとSpQuantの共存を考慮し、ロジックを整理)
+# タイトル: QAT (Quantization-Aware Training) と SpQuant-SNN の実装
+# 機能説明:
+#   PyTorchの標準QAT機能（apply_qat/convert_to_quantized_model）を提供します。
+#   SNN固有の量子化技術であるSpQuant-SNN（膜電位量子化）のためのラッパー（SpQuantWrapper）
+#   および適用関数（apply_spquant_quantization）を提供します。
 
 import torch
 import torch.nn as nn
@@ -9,7 +13,17 @@ import logging
 import torch.nn.functional as F
 
 from snn_research.core.neurons import AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron
-from spikingjelly.activation_based import base as sj_base # type: ignore
+# spikingjelly.activation_based.baseの型情報がない場合の対応
+try:
+    from spikingjelly.activation_based import base as sj_base # type: ignore[import-untyped]
+except ImportError:
+    class DummyMemoryModule(nn.Module):
+        def reset(self):
+            pass
+        def set_stateful(self, stateful: bool):
+            pass
+    sj_base = type('sj_base', (object,), {'MemoryModule': DummyMemoryModule})
+
 from snn_research.core.base import BaseModel 
 # --- (TernaryQuantizeFunction, QuantizeMembranePotential, _apply_negative_membrane_pruning は省略 - 変更なし) ---
 
@@ -54,7 +68,7 @@ class SpQuantWrapper(nn.Module):
              elif isinstance(thresh_param, float):
                  base_thresh = thresh_param
                  
-        # QuantizeMembranePotential の定義が不明なため、Any で代用
+        # QuantizeMembranePotential の定義が不明なため、nn.Identityに置換
         # self.quantizer = QuantizeMembranePotential(
         #     initial_alpha=base_thresh,
         #     threshold=base_thresh * 0.5
@@ -92,12 +106,6 @@ def apply_spquant_quantization(model: nn.Module, inplace: bool = True) -> nn.Mod
     
     # モデルの階層を再帰的に探索
     for name, module in list(model.named_children()):
-        
-        # --- QAT適用済みチェック ---
-        # PyTorch QATが適用されたモジュール(nn.Conv2d/nn.Linear)は
-        # `QuantStub` や `Observer` が挿入されている。
-        # ここでは簡易的に、それがQATプロセスの一部でないかチェックする。
-        # (通常、SpQuantはニューロンに適用するため、Conv/Linearは無視してよい)
         
         # 1. 目的のニューロンかチェック
         is_target_neuron = isinstance(module, (AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron))

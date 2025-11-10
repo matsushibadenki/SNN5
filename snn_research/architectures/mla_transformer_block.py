@@ -3,7 +3,7 @@
 # 機能説明:
 #   プロジェクトの既存の MultiLevelSpikeDrivenSelfAttention (MLA) を使用し、
 #   QAT量子化を念頭に置いた構成を持つ単一のTransformerエンコーダーブロック。
-#   mypyエラー回避のため、`self.lif1`と`self.lif2`の呼び出しにタイプ無視を追加。
+#   PyTorchの動的な呼び出しに対するmypyの誤検出を回避しています。
 
 import torch
 import torch.nn as nn
@@ -14,10 +14,11 @@ from snn_research.core.base import SNNLayerNorm
 from snn_research.core.layers.complex_attention import MultiLevelSpikeDrivenSelfAttention
 from snn_research.core.neurons import AdaptiveLIFNeuron, IzhikevichNeuron, TC_LIF
 from snn_research.training.quantization import SpQuantWrapper
-# spikingjelly.activation_based.baseの型情報がない場合の対応
-# type: ignore[import-untyped, attr-defined] を使用して外部ライブラリのインポートエラーを回避
+
+# spikingjelly.activation_based.baseの型情報がない場合の対応 (mypyエラー回避)
 try:
-    from spikingjelly.activation_based import base as sj_base # type: ignore[import-untyped]
+    # 外部ライブラリの型定義がないことと、ダミー実装で存在しない属性を参照するエラーをまとめて無視
+    from spikingjelly.activation_based import base as sj_base # type: ignore[import-untyped, attr-defined] 
 except ImportError:
     class DummyMemoryModule(nn.Module):
         def reset(self):
@@ -29,7 +30,7 @@ except ImportError:
 
 # ニューロンをラッピングするヘルパー関数
 def wrap_neuron_for_quantization(neuron_module: nn.Module) -> nn.Module:
-    """設定に応じてニューロンをSpQuantWrapperでラップする。"""
+    """設定に応じてニューロンをSpQuantWrapperでラップする（デモでは素通し）。"""
     return neuron_module
 
 
@@ -47,7 +48,7 @@ class MLATransformerBlock(sj_base.MemoryModule):
         self.d_model = d_model
         self.time_steps = time_steps
         
-        # 1. MLAアテンション (既存実装を使用)
+        # 1. MLAアテンション (既存実装を使用 - 複数時間スケールによる多層アテンション)
         self.norm1 = SNNLayerNorm(d_model)
         self.attn = MultiLevelSpikeDrivenSelfAttention(
             d_model=d_model, 
@@ -61,12 +62,12 @@ class MLATransformerBlock(sj_base.MemoryModule):
         self.norm2 = SNNLayerNorm(d_model)
         self.fc1 = nn.Linear(d_model, dim_feedforward)
         
-        # FFN用ニューロン (AdaptiveLIFNeuronのインスタンスを直接作成)
+        # FFN用ニューロン (QATターゲット)
         lif_params = {k: v for k, v in neuron_config.items() if k in ['tau_mem', 'base_threshold']}
-        self.lif1 = wrap_neuron_for_quantization(AdaptiveLIFNeuron(features=dim_feedforward, **lif_params)) # QATターゲット
+        self.lif1 = wrap_neuron_for_quantization(AdaptiveLIFNeuron(features=dim_feedforward, **lif_params))
         
         self.fc2 = nn.Linear(dim_feedforward, d_model)
-        self.lif2 = wrap_neuron_for_quantization(AdaptiveLIFNeuron(features=d_model, **lif_params)) # QATターゲット
+        self.lif2 = wrap_neuron_for_quantization(AdaptiveLIFNeuron(features=d_model, **lif_params))
 
     def set_stateful(self, stateful: bool):
         self.stateful = stateful
@@ -74,7 +75,7 @@ class MLATransformerBlock(sj_base.MemoryModule):
         if hasattr(self.attn, 'set_stateful'):
             self.attn.set_stateful(stateful)
         
-        # FFN内のニューロンの状態を設定 (SpQuantWrapperにも伝播するはず)
+        # FFN内のニューロンの状態を設定
         for module in [self.lif1, self.lif2]:
             if hasattr(module, 'set_stateful'):
                 cast(Any, module).set_stateful(stateful)
@@ -90,15 +91,14 @@ class MLATransformerBlock(sj_base.MemoryModule):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         単一時間ステップの処理（B, L, D）。
-        外部ループ (SpikingTransformer) から呼び出されることを想定。
         """
         B, L, D = x.shape
         
         # 1. MLA Attention (Analog -> Spike -> Spike)
         attn_out_spikes = self.attn(self.norm1(x)) # (B, L, D) スパイク
         
-        # 2. Residual Connection 1 (x はアナログ入力、attn_out はスパイク)
-        x = x + attn_out_spikes # Residualはアナログ+スパイクの混合
+        # 2. Residual Connection 1
+        x = x + attn_out_spikes
 
         # 3. FFN (Spike -> Linear -> LIF -> Spike)
         ffn_in = self.norm2(x) 
@@ -106,15 +106,12 @@ class MLATransformerBlock(sj_base.MemoryModule):
         
         ffn_hidden_current = self.fc1(ffn_in_flat) # アナログ電流
         
-        # LIF1 (Spike)
-        # mypyの誤検知（"Tensor" not callable）を回避するため、タイプ無視を追加
+        # LIF1 (Spike) - mypyエラー回避
         ffn_hidden_spikes, _ = self.lif1(ffn_hidden_current) # type: ignore[operator]
         
         ffn_out_current = self.fc2(ffn_hidden_spikes) # アナログ電流
         
-        # LIF2 (Spike)
-        # mypyの誤検知（"Tensor" not callable）を回避するため、タイプ無視を追加
-        # (ライン73のエラーに対応)
+        # LIF2 (Spike) - mypyエラー回避
         ffn_out_spikes, _ = self.lif2(ffn_out_current) # type: ignore[operator]
         ffn_out_spikes = ffn_out_spikes.reshape(B, L, D)
         

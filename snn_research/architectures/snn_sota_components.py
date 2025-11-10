@@ -1,15 +1,31 @@
 # ファイルパス: snn_research/architectures/snn_sota_components.py
 # (v_fix_mypy_operator 修正 v2)
-# Title: SOTA SNN コンポーネント (SNN-RMSNorm)
+# Title: SOTA SNN コンポーネント (SNN-RMSNorm, SNN-SwiGLU, SNN-RoPE)
 #
 # Description:
-# ... (中略) ...
+# doc/ROADMAP.md (P1.2) および doc/レポート：ANN-SNN変換情報.md (IV) に基づき、
+# SOTA Transformer (Llama 4等) で使用される主要コンポーネントの
+# SNN実装（または近似実装）を提供します。
+#
+# 実装コンポーネント:
+# - SNNRMSNorm (BrainTransformers [33] ベース)
+# - SNNSwiGLU (BrainTransformers [33] ベース)
+# - ConditionalPositionalEncoding (CPG-PE [2] / Spikformer V2 [35] ベースの近似SNN-RoPE)
+#
 # 修正 (v_fix_mypy_operator): [operator] "Tensor" not callable エラーを修正。
 #                            (set_stateful, reset メソッド内の型推論エラーを cast で修正)
+#
+# 改善 (v3):
+# - P1.2 のタスクに基づき、SNNSwiGLU と ConditionalPositionalEncoding (SNN-RoPE近似) を追加。
+# - mypy --strict 準拠。
 
 import torch
 import torch.nn as nn
+# --- ▼ 修正: math, F をインポート ▼ ---
 from typing import Tuple, Dict, Any, Type, Optional, List, cast
+import math
+import torch.nn.functional as F
+# --- ▲ 修正 ▲ ---
 
 # SNNのコアコンポーネントをインポート
 from snn_research.core.base import SNNLayerNorm # SNNLayerNormは標準LNのため、ここではRMSNormをカスタム実装
@@ -247,3 +263,231 @@ class SNNRMSNorm(sj_base.MemoryModule):
         self.set_stateful(False)
         
         return torch.stack(outputs, dim=1) # (B, T_seq, D)
+
+
+# --- ▼▼▼ P1.2 SNN-SwiGLU の実装 ▼▼▼ ---
+
+class SNNSiLUApproximator(PiecewiseLinearApproximator):
+    """
+    SNN-SwiGLU用: SiLU(x) = x * sigmoid(x) 関数を近似する。
+    BrainTransformers [33] に基づく。
+    """
+    def __init__(
+        self,
+        features: int,
+        num_segments: int = 16, # SiLUは複雑なためセグメントを増やす
+        neuron_class: Type[AdaptiveLIFNeuron] = AdaptiveLIFNeuron,
+        neuron_params: Optional[Dict[str, Any]] = None
+    ) -> None:
+        if neuron_params is None:
+            neuron_params = {'tau_mem': 10.0, 'base_threshold': 1.0}
+        super().__init__(features, num_segments, neuron_class, neuron_params)
+        
+        # ターゲット関数 SiLU(x) = x * sigmoid(x) に基づいて
+        # 重みを事前初期化 (オプションだが有効)
+        with torch.no_grad():
+            # (0, 1) の範囲で x をサンプリング
+            x_sample = torch.linspace(0.01, 1.0, num_segments)
+            y_silu = x_sample * torch.sigmoid(x_sample)
+            # 簡易的な重み初期化 (各セグメントがその値を持つように)
+            weights_data = y_silu - torch.cat([torch.tensor([0.0]), y_silu[:-1]])
+            self.weights.data = weights_data.unsqueeze(0).repeat(features, 1)
+
+        logger.info(f"SNN-SwiGLU: SNNSiLUApproximator (SiLU) initialized with {num_segments} segments.")
+
+class SNNSwiGLU(sj_base.MemoryModule):
+    """
+    SNN-SwiGLU (ロードマップ P1.2)。
+    BrainTransformers [33] に基づく。
+    SwiGLU(x, W, V) = SiLU(xW) ⊗ xV
+    
+    SNN実装:
+    gate = SNNSiLU(Linear_W(x))
+    value = LIF(Linear_V(x))
+    output = gate * value (アダマール積 / ANDゲート)
+    
+    注: この実装は時間ステップ (T) でのループを必要とします。
+    """
+    gate_proj: nn.Linear
+    gate_silu: SNNSiLUApproximator
+    value_proj: nn.Linear
+    value_lif: AdaptiveLIFNeuron
+    
+    def __init__(
+        self,
+        d_model: int,
+        d_ffn: int, # SwiGLUの中間次元
+        neuron_config: Dict[str, Any]
+    ) -> None:
+        super().__init__()
+        self.d_model = d_model
+        self.d_ffn = d_ffn
+        
+        neuron_type_str: str = neuron_config.get("type", "lif")
+        neuron_params: Dict[str, Any] = neuron_config.copy()
+        neuron_params.pop('type', None)
+        
+        if neuron_type_str != 'lif':
+            logger.warning("SNNSwiGLU defaulting to AdaptiveLIFNeuron.")
+        neuron_class: Type[AdaptiveLIFNeuron] = AdaptiveLIFNeuron
+        
+        filtered_params: Dict[str, Any] = {
+            k: v for k, v in neuron_params.items() 
+            if k in ['tau_mem', 'base_threshold']
+        }
+        
+        # 1. ゲートパス (xW)
+        self.gate_proj = nn.Linear(d_model, d_ffn, bias=False)
+        # 2. SiLU近似 (SNN)
+        self.gate_silu = SNNSiLUApproximator(
+            features=d_ffn, neuron_class=neuron_class, neuron_params=filtered_params
+        )
+        
+        # 3. バリューパス (xV)
+        self.value_proj = nn.Linear(d_model, d_ffn, bias=False)
+        # 4. バリューパスのLIF (標準的なLIF)
+        self.value_lif = neuron_class(features=d_ffn, **filtered_params)
+
+    def set_stateful(self, stateful: bool) -> None:
+        self.stateful = stateful
+        self.gate_silu.set_stateful(stateful)
+        self.value_lif.set_stateful(stateful)
+
+    def reset(self) -> None:
+        super().reset()
+        self.gate_silu.reset()
+        self.value_lif.reset()
+
+    def forward(self, x_spikes_seq: torch.Tensor) -> torch.Tensor:
+        """
+        スパイク時系列 (B, T, D_model) を SwiGLU処理 (スパイク) する。
+        """
+        B, T_seq, D = x_spikes_seq.shape
+        
+        SJ_F.reset_net(self)
+        self.set_stateful(True)
+        
+        outputs: List[torch.Tensor] = []
+
+        for t in range(T_seq):
+            x_t: torch.Tensor = x_spikes_seq[:, t, :] # (B, D_model)
+            
+            # 1. ゲートパス (xW -> SiLU)
+            gate_current: torch.Tensor = self.gate_proj(x_t)
+            gate_spikes_t: torch.Tensor = self.gate_silu(gate_current) # (B, D_ffn)
+            
+            # 2. バリューパス (xV -> LIF)
+            value_current: torch.Tensor = self.value_proj(x_t)
+            value_spikes_t, _ = self.value_lif(value_current) # (B, D_ffn)
+            
+            # 3. 要素積 (⊗) -> スパイクドメインでは AND (アダマール積)
+            y_t: torch.Tensor = gate_spikes_t * value_spikes_t
+            
+            outputs.append(y_t)
+            
+        self.set_stateful(False)
+        
+        return torch.stack(outputs, dim=1) # (B, T_seq, D_ffn)
+
+# --- ▲▲▲ P1.2 SNN-SwiGLU の実装 ▲▲▲ ---
+
+
+# --- ▼▼▼ P1.2 SNN-RoPE (近似) の実装 ▼▼▼ ---
+
+class ConditionalPositionalEncoding(sj_base.MemoryModule):
+    """
+    近似 SNN-RoPE (ロードマップ P1.2)。
+    Spikformer V2 [35] や CPG-PE [2] のアイデアに基づく、
+    学習可能な「条件付き位置エンコーディング生成器」。
+    
+    RoPEの回転行列を近似する代わりに、位置インデックス(t)を入力とし、
+    それに対応するスパイクベースの位置エンコーディング(PE_t)を生成する
+    小規模なSNN (CPG) を実装する。
+    """
+    cpg_rnn: nn.RNN
+    cpg_lif: AdaptiveLIFNeuron
+    cpg_proj: nn.Linear
+    
+    def __init__(
+        self,
+        d_model: int,
+        max_seq_len: int,
+        neuron_config: Dict[str, Any]
+    ) -> None:
+        super().__init__()
+        self.d_model = d_model
+        self.max_seq_len = max_seq_len
+        
+        # 位置インデックス (0 ... max_seq_len-1) を受け取る埋め込み
+        self.pos_idx_embed = nn.Embedding(max_seq_len, d_model)
+        
+        # CPG (中枢パターン生成器) を模倣する小規模RNN
+        self.cpg_rnn = nn.RNN(d_model, d_model, batch_first=True)
+        
+        # CPGの出力をスパイク化するニューロン
+        neuron_type_str: str = neuron_config.get("type", "lif")
+        neuron_params: Dict[str, Any] = neuron_config.copy()
+        neuron_params.pop('type', None)
+        if neuron_type_str != 'lif':
+            logger.warning("SNNRoPE defaulting to AdaptiveLIFNeuron.")
+        neuron_class: Type[AdaptiveLIFNeuron] = AdaptiveLIFNeuron
+        filtered_params: Dict[str, Any] = {
+            k: v for k, v in neuron_params.items() 
+            if k in ['tau_mem', 'base_threshold']
+        }
+        self.cpg_lif = neuron_class(features=d_model, **filtered_params)
+        
+        logger.info(f"SNN-RoPE (CPG-PE Approx) [P1.2] initialized. MaxLen: {max_seq_len}")
+
+    def set_stateful(self, stateful: bool) -> None:
+        self.stateful = stateful
+        self.cpg_lif.set_stateful(stateful)
+
+    def reset(self) -> None:
+        super().reset()
+        self.cpg_lif.reset()
+
+    def forward(
+        self,
+        x_spikes_seq: torch.Tensor # (B, T_seq, D)
+    ) -> torch.Tensor:
+        """
+        入力スパイク時系列 (B, T, D) を受け取り、
+        それに対応するスパイクベースの位置エンコーディングを加算する。
+        """
+        B, T_seq, D = x_spikes_seq.shape
+        device = x_spikes_seq.device
+        
+        if T_seq > self.max_seq_len:
+            logger.warning(f"SNN-RoPE: Input seq_len ({T_seq}) > max_seq_len ({self.max_seq_len}). Truncating.")
+            T_seq = self.max_seq_len
+            x_spikes_seq = x_spikes_seq[:, :T_seq, :]
+            
+        # 1. 位置インデックス (0, 1, ..., T_seq-1) を生成
+        pos_indices = torch.arange(T_seq, device=device).unsqueeze(0).expand(B, -1) # (B, T_seq)
+        
+        # 2. CPG-RNNで位置エンコーディング（アナログ）を生成
+        pos_emb_analog = self.pos_idx_embed(pos_indices) # (B, T_seq, D)
+        pos_rnn_out, _ = self.cpg_rnn(pos_emb_analog) # (B, T_seq, D)
+        
+        # 3. スパイク化 (時間ステップ T_seq でループ)
+        SJ_F.reset_net(self.cpg_lif)
+        self.cpg_lif.set_stateful(True)
+        
+        pe_spikes_list: List[torch.Tensor] = []
+        for t in range(T_seq):
+            current_analog = pos_rnn_out[:, t, :] # (B, D)
+            pe_spike_t, _ = self.cpg_lif(current_analog)
+            pe_spikes_list.append(pe_spike_t)
+            
+        self.cpg_lif.set_stateful(False)
+        
+        pe_spikes_seq = torch.stack(pe_spikes_list, dim=1) # (B, T_seq, D)
+        
+        # 4. 入力スパイクと位置エンコーディング・スパイクを加算 (ORゲート)
+        # (x > 0) | (pe > 0)
+        output_spikes = (x_spikes_seq + pe_spikes_seq).clamp(0, 1)
+        
+        return output_spikes
+
+# --- ▲▲▲ P1.2 SNN-RoPE (近似) の実装 ▲▲▲ ---

@@ -44,6 +44,10 @@
 # 修正 (v16): 構文エラー解消のため、末尾の '}' を削除。
 #
 # 修正 (v17): SyntaxError: 末尾の不要な '}' を削除。(v_syn)
+#
+# 修正 (v18):
+# - mypy [index], [assignment] エラーを解消するため、
+#   BioSNN の __init__ シグネチャ変更 (layer_sizes -> input_size, layer_configs) に対応。
 
 from typing import Dict, Any, List, cast, Union, Optional, Type, Tuple
 import yaml
@@ -116,10 +120,14 @@ class NeuromorphicCompiler:
              neuron_type = "BioLIF"
              params = {
                  "tau_mem": module.tau_mem,
-                 "v_threshold": module.v_thresh,
+                 "v_threshold": module.v_thresh_base, # v_thresh -> v_thresh_base
                  "v_reset": module.v_reset,
                  "v_rest": module.v_rest,
                  "dt": module.dt,
+                 # --- ▼ 修正 (v18): P8.3 適応的閾値パラメータを追加 ▼ ---
+                 "threshold_decay": module.threshold_decay,
+                 "threshold_step": module.threshold_step,
+                 # --- ▲ 修正 (v18) ▲ ---
              }
 
         # パラメータをシリアライズ可能な型に変換
@@ -188,7 +196,9 @@ class NeuromorphicCompiler:
         # 入力層のニューロン数を推定
         first_conn_input_size = 0
         if isinstance(model, BioSNN):
-            first_conn_input_size = model.layer_sizes[0]
+            # --- ▼ 修正 (v18): layer_sizes[0] -> input_size ▼ ---
+            first_conn_input_size = model.input_size
+            # --- ▲ 修正 (v18) ▲ ---
         else:
             # SNNCoreモデルの入力層 (EmbeddingまたはConv) を探す
             first_module = next(iter(all_modules), None)
@@ -218,7 +228,9 @@ class NeuromorphicCompiler:
         # 出力層のニューロン数を推定
         last_conn_output_size = 0
         if isinstance(model, BioSNN):
-             last_conn_output_size = model.layer_sizes[-1]
+             # --- ▼ 修正 (v18): layer_sizes[-1] -> layer_configs[-1]["n_e"] ▼ ---
+             last_conn_output_size = model.layer_configs[-1]["n_e"] # Eニューロン数
+             # --- ▲ 修正 (v18) ▲ ---
         else:
              for name, module in reversed(all_modules):
                  if isinstance(module, nn.Linear): # 出力層は通常 Linear
@@ -306,38 +318,68 @@ class NeuromorphicCompiler:
 
         # BioSNN の接続情報を追加
         if isinstance(model, BioSNN):
-            for i, weight_matrix in enumerate(model.weights):
-                # BioSNNのレイヤー名は 'layers.0', 'layers.1' ...
-                pre_layer_name = f"layers.{i-1}" if i > 0 else "input"
-                post_layer_name = f"layers.{i}"
-
-                # layer_map から正しい情報を取得
-                pre_core_config: Dict[str, Any] = layer_map[pre_layer_name] if pre_layer_name != "input" else input_layer_info
-                post_core_config = layer_map.get(post_layer_name)
+            # --- ▼ 修正 (v18): E/I分離に対応した接続解析 ▼ ---
+            current_n_e = model.input_size
+            current_n_i = 0
+            pre_e_name = "input"
+            pre_i_name: Optional[str] = None
+            
+            for i in range(len(model.layers_e)):
+                post_e_name = f"layers_e.{i}"
+                post_i_name: Optional[str] = f"layers_i.{i}" if i < len(model.layers_i) else None
                 
-                if post_core_config is None:
-                     logging.warning(f"Could not find post-synaptic layer '{post_layer_name}' in layer_map for BioSNN weights.")
-                     continue
+                n_e_post = model.layer_configs[i]["n_e"]
+                n_i_post = model.layer_configs[i].get("n_i", 0)
 
-                pre_core_size: int = len(pre_core_config["neuron_ids"])
-                post_core_size: int = len(post_core_config["neuron_ids"])
-                
-                connection_count_layer: int = 0
-                for post_id_local in range(post_core_size):
-                     for pre_id_local in range(pre_core_size):
-                         weight: float = weight_matrix[post_id_local, pre_id_local].item()
-                         if abs(weight) > 1e-9:
-                             connection_count_layer += 1
+                # E -> E
+                w_ee = model.weights_ee[i]
+                structure["connections"].append({
+                    "source_module": pre_e_name, "target_module": post_e_name,
+                    "connection_module_name": f"weights_ee.{i}", "type": "dense_ee",
+                    "in_features": current_n_e, "out_features": n_e_post,
+                    "num_connections": (w_ee.data > 0).sum().item() # デール則適用後
+                })
+                connection_count += (w_ee.data > 0).sum().item()
 
-                connection_info = {
-                    "source_module": pre_core_config["name"],
-                    "target_module": post_core_config["name"],
-                    "connection_module_name": f"weights_{i}",
-                    "type": "dense", "in_features": pre_core_size, "out_features": post_core_size,
-                    "num_connections": connection_count_layer,
-                }
-                structure["connections"].append(connection_info)
-                connection_count += connection_count_layer
+                if n_i_post > 0 and i < len(model.weights_ie):
+                    # E -> I
+                    w_ie = model.weights_ie[i]
+                    structure["connections"].append({
+                        "source_module": pre_e_name, "target_module": post_i_name,
+                        "connection_module_name": f"weights_ie.{i}", "type": "dense_ei",
+                        "in_features": current_n_e, "out_features": n_i_post,
+                        "num_connections": (w_ie.data > 0).sum().item()
+                    })
+                    connection_count += (w_ie.data > 0).sum().item()
+
+                if current_n_i > 0 and pre_i_name is not None:
+                    # I -> E
+                    if i-1 < len(model.weights_ei):
+                        w_ei = model.weights_ei[i-1]
+                        structure["connections"].append({
+                            "source_module": pre_i_name, "target_module": post_e_name,
+                            "connection_module_name": f"weights_ei.{i-1}", "type": "dense_ie",
+                            "in_features": current_n_i, "out_features": n_e_post,
+                            "num_connections": (w_ei.data > 0).sum().item() # 負の重み
+                        })
+                        connection_count += (w_ei.data > 0).sum().item()
+                    
+                    # I -> I
+                    if n_i_post > 0 and i-1 < len(model.weights_ii):
+                        w_ii = model.weights_ii[i-1]
+                        structure["connections"].append({
+                            "source_module": pre_i_name, "target_module": post_i_name,
+                            "connection_module_name": f"weights_ii.{i-1}", "type": "dense_ii",
+                            "in_features": current_n_i, "out_features": n_i_post,
+                            "num_connections": (w_ii.data > 0).sum().item() # 負の重み
+                        })
+                        connection_count += (w_ii.data > 0).sum().item()
+
+                current_n_e = n_e_post
+                current_n_i = n_i_post
+                pre_e_name = post_e_name
+                pre_i_name = post_i_name
+            # --- ▲ 修正 (v18) ▲ ---
 
         structure["summary"] = {
             "total_neuron_layers": len([l for l in layer_map.values() if l.get("type") == "neuron_layer"]),
@@ -406,8 +448,9 @@ class NeuromorphicCompiler:
                  logging.warning(f"Could not determine valid connection cores for module '{connection_module_name}'. Source Module: {source_module_name} (Core: {source_core_id}), Target Module: {target_module_name} (Core: {target_core_id})")
 
         learning_rule_config: Dict[str, Any] = {}
-        if isinstance(model, BioSNN) and hasattr(model, 'learning_rule') and isinstance(model.learning_rule, BioLearningRule):
-            rule: BioLearningRule = model.learning_rule
+        # --- ▼ 修正 (v18): learning_rule -> synaptic_rule ▼ ---
+        if isinstance(model, BioSNN) and hasattr(model, 'synaptic_rule') and isinstance(model.synaptic_rule, BioLearningRule):
+            rule: BioLearningRule = model.synaptic_rule
             rule_name: str = type(rule).__name__
             rule_params: Dict[str, Any] = {
                 key: round(val, 6) if isinstance(val, float) else val
@@ -420,6 +463,7 @@ class NeuromorphicCompiler:
                 "enabled_on_hardware": self.hardware_profile.get("supports_on_chip_learning", False)
             }
             logging.info(f"Learning rule '{rule_name}' mapped.")
+        # --- ▲ 修正 (v18) ▲ ---
         else:
              learning_rule_config = { "rule_name": "None", "enabled_on_hardware": False }
              if not isinstance(model, BioSNN):
@@ -484,7 +528,9 @@ class NeuromorphicCompiler:
             # LavaにはIzhikevichの標準プロセスはないため、カスタムプロセスが必要
             return f"# Custom Izhikevich: a={params.get('a')}, b={params.get('b')}, c={params.get('c')}, d={params.get('d')}"
         elif neuron_type == "BioLIF":
-            return f"v_th={params.get('v_threshold', 1.0)}, v_reset={params.get('v_reset', 0.0)}"
+            # --- ▼ 修正 (v18): v_threshold -> v_thresh_base ▼ ---
+            return f"v_th={params.get('v_thresh_base', 1.0)}, v_reset={params.get('v_reset', 0.0)}"
+            # --- ▲ 修正 (v18) ▲ ---
         return "# Unknown neuron params"
 
     def export_to_lava(self, model: nn.Module, output_dir: str) -> None:
@@ -566,13 +612,15 @@ class NeuromorphicCompiler:
         """PyNN (SpiNNaker) のニューロンパラメータ文字列を生成する (スタブ)"""
         if "LIF" in neuron_type:
             # PyNNのIF_curr_expパラメータにマッピング
+            # --- ▼ 修正 (v18): v_threshold -> v_thresh_base ▼ ---
             return f"""
     'tau_m': {params.get('tau_mem', 10.0)},
-    'v_thresh': {params.get('v_threshold', params.get('base_threshold', 1.0))},
+    'v_thresh': {params.get('v_thresh_base', 1.0)},
     'v_reset': {params.get('v_reset', 0.0)},
     'v_rest': {params.get('v_rest', 0.0)},
     'i_offset': 0.0
 """
+            # --- ▲ 修正 (v18) ▲ ---
         elif neuron_type == "Izhikevich":
             # PyNNのIzhikevichモデル
             return f"""
@@ -678,6 +726,10 @@ class NeuromorphicCompiler:
             # 接続タイプ (Connector)
             if conn['type'] in ['linear', 'dense']:
                 connector = "p.AllToAllConnector()"
+            # --- ▼ 修正 (v18): BioSNN (E/I) の接続タイプに対応 ▼ ---
+            elif conn['type'] in ['dense_ee', 'dense_ei', 'dense_ie', 'dense_ii']:
+                 connector = "p.AllToAllConnector()"
+            # --- ▲ 修正 (v18) ▲ ---
             elif conn['type'] == 'conv':
                 # (sPyNNakerのConvは複雑なためスタブ)
                 connector = f"p.AllToAllConnector() # (Stub for Conv2D)"
@@ -764,3 +816,4 @@ class NeuromorphicCompiler:
         }
         print("--- ✅ シミュレーション完了 ---")
         return report
+}

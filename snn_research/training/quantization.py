@@ -95,9 +95,7 @@ class SpQuantWrapper(nn.Module):
 
 def apply_spquant_quantization(model: nn.Module, inplace: bool = True) -> nn.Module:
     """
-    SNN5改善レポート (セクション4.2, [20]) に基づき、
-    モデル内のSNNニューロンをSpQuantWrapperでラップする。
-    PyTorch QATが適用されたモジュールはスキップする。
+    SNN5改善レポートに基づき、モデル内のSNNニューロンをSpQuantWrapperでラップする。
     """
     if not inplace:
         model = copy.deepcopy(model)

@@ -39,6 +39,9 @@
 # 修正 (v11):
 # - mypy [call-arg], [misc], [union-attr] エラーを修正。
 # - BioSNN の __init__ シグネチャ変更 (layer_sizes -> input_size, layer_configs) に対応。
+#
+# 修正 (v12):
+# - mypy [assignment] エラーを解消するため、configから取得した time_steps を int に明示的に変換。
 
 import sys
 from pathlib import Path
@@ -75,7 +78,6 @@ def test_biosnn_compilation(compiler: NeuromorphicCompiler, output_dir: str) -> 
         tau_trace=20.0, tau_eligibility=50.0
     )
     
-    # --- ▼ 修正 (v11): BioSNN (P8.2) の __init__ に対応 ▼ ---
     model_input_size = 10
     model_layer_configs: List[Dict[str, int]] = [
         {"n_e": 20, "n_i": 0}, # 隠れ層
@@ -85,7 +87,6 @@ def test_biosnn_compilation(compiler: NeuromorphicCompiler, output_dir: str) -> 
     model: BioSNN = BioSNN(
         input_size=model_input_size,
         layer_configs=model_layer_configs,
-    # --- ▲ 修正 (v11) ▲ ---
         neuron_params={'tau_mem': 10.0, 'v_threshold': 1.0, 'v_reset': 0.0, 'v_rest': 0.0, 'threshold_decay': 0.99, 'threshold_step': 0.05}, # P8.3のパラメータ追加
         synaptic_rule=learning_rule,
         homeostatic_rule=None,
@@ -101,12 +102,8 @@ def test_biosnn_compilation(compiler: NeuromorphicCompiler, output_dir: str) -> 
     )
     pruned_model: BioSNN = cast(BioSNN, pruned_model_uncast)
     
-    # --- ▼ 修正 (v11): mypy エラー [misc], [union-attr] を修正 ▼ ---
-    # BioSNN (P8.2) では self.weights (E->E) と self.weights_ie (E->I) など
-    # 複数の重みリストを持つ。ここでは E->E のみで簡易的に比較。
     original_connections = sum(torch.sum(w.data > 0).item() for w in model.weights_ee) # type: ignore[misc]
     pruned_connections = sum(torch.sum(w.data > 0).item() for w in pruned_model.weights_ee) # type: ignore[misc]
-    # --- ▲ 修正 (v11) ▲ ---
     
     print(f"🔪 モデルをプルーニングしました: {original_connections} -> {pruned_connections} connections (E->E only)")
     assert pruned_connections < original_connections
@@ -126,19 +123,15 @@ def test_biosnn_compilation(compiler: NeuromorphicCompiler, output_dir: str) -> 
         assert "learning_rate" in params and abs(params["learning_rate"] - learning_rate) < 1e-6
         print("  - 検証: 学習則のコンパイル結果は正常です。")
         
-        # --- ▼ 修正 (v18): コンパイル後の接続数を再検証 ▼ ---
-        # compiler._analyze_model_structure が E/I 全ての接続をカウントするようになった
         compiled_connections = config.get("network_summary", {}).get("total_connections", 0)
         
-        # プルーニング済みモデルの全接続数を再計算
-        pruned_model.clamp_weights() # _apply_dale_law と同等の処理
+        pruned_model.clamp_weights()
         pruned_total_conn = 0
         for w_list in [pruned_model.weights_ee, pruned_model.weights_ie, pruned_model.weights_ei, pruned_model.weights_ii]:
              pruned_total_conn += sum(torch.sum(w.data > 0).item() for w in w_list) # type: ignore[misc]
         
         assert compiled_connections == pruned_total_conn
         print(f"  - 検証: プルーニング結果がコンパイルファイルに正しく反映されました ({compiled_connections} total connections)。")
-        # --- ▲ 修正 (v18) ▲ ---
 
         simulation_report = compiler.simulate_on_hardware(
             compiled_config_path=output_path,
@@ -192,10 +185,17 @@ def test_snncore_compilation(compiler: NeuromorphicCompiler, output_dir: str) ->
         print("  - 検証: 学習則 (None) のコンパイル結果は正常です。")
 
         estimated_spikes = 500000
-        # --- ▼ 修正 (v11): configから time_steps を取得 ▼ ---
+        # --- ▼ 修正 (v12): mypy [assignment] エラー解消のための修正 ▼ ---
         time_steps_val = container.config.model.time_steps()
-        time_steps = cast(int, time_steps_val) if isinstance(time_steps_val, int) else 16
-        # --- ▲ 修正 (v11) ▲ ---
+        
+        # floatの可能性を考慮し、intに明示的に変換
+        if isinstance(time_steps_val, (int, float)):
+            snn_time_steps: int = int(time_steps_val)
+        else:
+            snn_time_steps: int = 16
+
+        time_steps: int = snn_time_steps
+        # --- ▲ 修正 (v12) ▲ ---
 
         simulation_report = compiler.simulate_on_hardware(
             compiled_config_path=output_path,

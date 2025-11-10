@@ -1,4 +1,4 @@
-# snn_research/hardware/__init__.py
+# ファイルパス: snn_research/hardware/__init__.py
 # (更新)
 
 from .profiles import get_hardware_profile, loihi_profile

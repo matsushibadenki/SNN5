@@ -13,15 +13,21 @@
 # 乗算不要の効率的なルーティング（アダマール積によるANDゲート）を実現します。
 #
 # mypy --strict 準拠。
+#
+# 修正 (v_fix_mypy_name_defined): [name-defined] エラーを解消するため、SpikeDrivenSelfAttention をインポート。
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Tuple, Dict, Any, Type, Optional, List, cast
+from typing import Tuple, Dict, Any, Type, Optional, List, cast, Union
+import math
 
 # SNNのコアコンポーネントをインポート
 from snn_research.core.base import BaseModel, SNNLayerNorm
 from snn_research.core.neurons import AdaptiveLIFNeuron
+# --- ▼ 修正: SpikeDrivenSelfAttention をインポート ▼ ---
+from snn_research.core.attention import SpikeDrivenSelfAttention
+# --- ▲ 修正 ▲ ---
 from spikingjelly.activation_based import functional as SJ_F # type: ignore[import-untyped]
 from spikingjelly.activation_based import base as sj_base # type: ignore[import-untyped]
 

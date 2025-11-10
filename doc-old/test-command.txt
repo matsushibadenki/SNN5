@@ -1,0 +1,37 @@
+python app/main.py \
+    --config configs/base_config.yaml \
+    --ai_tech_model_config configs/models/medium.yaml \
+    --ai_tech_model_path runs/specialists/最新のai技術/best_model.pth \
+    --summarization_model_config configs/models/medium.yaml \
+    --summarization_model_path runs/specialists/文章要約/best_model.pth \
+    --cifar_model_config configs/cifar10_spikingcnn_config.yaml \
+    --cifar_model_path runs/specialists/cifar10_distilled_from_resnet18/best_model.pth
+    
+    
+効率テスト
+python snn-cli.py hpo run \
+    configs/cifar10_spikingcnn_config.yaml \
+    cifar10 \
+    --target-script run_distillation.py \
+    --teacher-model resnet18 \
+    --n-trials 10 \
+    --metric-name accuracy
+    
+
+データ消去
+python snn-cli.py clean
+
+ヘルスチェック
+python snn-cli.py health-check
+
+チューニング
+python snn-cli.py hpo run \
+    configs/models/spiking_transformer.yaml \
+    cifar10 \
+    --target-script run_distillation.py \
+    --teacher-model resnet18 \
+    --n-trials 100 \
+    --eval-epochs 3 \
+    --metric-name accuracy \
+    --study-name "SOTA_SpikingTransformer_HPO" \
+    --storage "sqlite:///runs/hpo/SOTA_SpikingTransformer.db"

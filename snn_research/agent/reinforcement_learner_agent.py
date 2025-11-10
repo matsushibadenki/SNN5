@@ -12,6 +12,10 @@
 #   外部から（DIコンテナ経由で）受け取れるように修正。
 # - これにより、snn_research/bio_models/simple_network.py (v2) の
 #   安定化機構をエージェントが利用できるようになる。
+#
+# 修正 (v3):
+# - mypy [call-arg] エラーを解消するため、BioSNN の __init__ シグネチャ変更
+#   (layer_sizes -> input_size, layer_configs) に対応。
 
 import torch
 # --- ▼ 改善 (v2): 必要な型ヒントを追加 ▼ ---
@@ -41,17 +45,24 @@ class ReinforcementLearnerAgent:
         self.device = device
         
         # --- ▼ 改善 (v2): ハードコードされた学習ルールを削除 ▼ ---
-        # learning_rule = RewardModulatedSTDP(
-        #     learning_rate=0.005, a_plus=1.0, a_minus=1.0,
-        #     tau_trace=20.0, tau_eligibility=50.0
-        # )
+        # (削除済み)
         # --- ▲ 改善 (v2) ▲ ---
         
-        hidden_size = (input_size + output_size) * 2
-        layer_sizes = [input_size, hidden_size, output_size]
+        # --- ▼ 修正 (v3): BioSNN (P8.2) の __init__ に対応 ▼ ---
+        # hidden_size = (input_size + output_size) * 2
+        # layer_sizes = [input_size, hidden_size, output_size] # 旧
+        
+        # E/I分離を仮定しないシンプルな設定 (抑制性ニューロン=0)
+        hidden_size_e = (input_size + output_size) * 2
+        layer_configs: List[Dict[str, int]] = [
+            {"n_e": hidden_size_e, "n_i": 0},
+            {"n_e": output_size, "n_i": 0}
+        ]
         
         self.model = BioSNN(
-            layer_sizes=layer_sizes,
+            input_size=input_size,
+            layer_configs=layer_configs,
+            # --- ▲ 修正 (v3) ▲ ---
             neuron_params={'tau_mem': 10.0, 'v_threshold': 1.0, 'v_reset': 0.0, 'v_rest': 0.0},
             # --- ▼ 改善 (v2): 注入されたルールを使用 ▼ ---
             synaptic_rule=synaptic_rule,
@@ -70,7 +81,12 @@ class ReinforcementLearnerAgent:
         with torch.no_grad():
             input_spikes = (torch.rand_like(state) < (state * 0.5 + 0.5)).float()
             output_spikes, hidden_spikes_history = self.model(input_spikes)
-            self.experience_buffer.append([input_spikes] + hidden_spikes_history)
+            # all_layer_spikes = [input_spikes] + hidden_spikes_history
+            # (BioSNN v3 はE/I結合スパイクを返すため、入力スパイクの形状と異なる可能性)
+            # 入力層 (N_input,)
+            # 隠れ層 (N_e + N_i,)
+            # BioSNN.forward は [input, layer1_e+i, layer2_e+i] を返す
+            self.experience_buffer.append(hidden_spikes_history) # 修正: model.forwardが返す履歴をそのまま保存
             action = torch.argmax(output_spikes).item()
             return int(action)
 
@@ -104,3 +120,4 @@ class ReinforcementLearnerAgent:
         if reward != -0.05 or causal_credit > 0:
             self.experience_buffer = []
     # --- ▲ 修正 ▲ ---
+}

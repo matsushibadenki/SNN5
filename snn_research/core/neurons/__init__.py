@@ -24,6 +24,10 @@
 #
 # 修正 (v4): BistableIFNeuron をインポート
 # 修正 (v5): 末尾の不要な '}' を削除し、__all__ リストを追加
+#
+# 改善 (v6):
+# - doc/ROADMAP.md (P2.1) および doc/SNN5プロジェクトの技術的解決策リサーチ.md (セクション2.2, 引用[47]) に基づき、
+#   AdaptiveLIFNeuron に「Evolutionary Leak (EL)」機構（入力依存の動的リーク）を実装。
 
 from typing import Optional, Tuple, Any, List, cast
 import torch
@@ -31,10 +35,15 @@ from torch import Tensor, nn
 import torch.nn.functional as F
 import math
 from spikingjelly.activation_based import surrogate, base # type: ignore[import-untyped]
+import logging # logging をインポート
 
 # --- ▼ 修正: BistableIFNeuron をインポート ▼ ---
 from .bif_neuron import BistableIFNeuron
 # --- ▲ 修正 ▲ ---
+
+# --- ▼ 改善 (v6): ロガーを追加 ▼ ---
+logger = logging.getLogger(__name__)
+# --- ▲ 改善 (v6) ▲ ---
 
 class AdaptiveLIFNeuron(base.MemoryModule):
     """
@@ -42,8 +51,13 @@ class AdaptiveLIFNeuron(base.MemoryModule):
     Designed for vectorized operations and to be BPTT-friendly.
     
     v2: Implements PLIF (Parametric LIF) by making tau_mem a learnable parameter.
+    v6: Implements EL (Evolutionary Leak) [P2.1] by making tau_mem input-dependent.
     """
     log_tau_mem: nn.Parameter
+    # --- ▼ 改善 (v6): EL用モジュールを追加 ▼ ---
+    gate_tau_lin: Optional[nn.Linear]
+    gate_input_proj_el: Optional[nn.Linear]
+    # --- ▲ 改善 (v6) ▲ ---
 
     def __init__(
         self,
@@ -56,6 +70,10 @@ class AdaptiveLIFNeuron(base.MemoryModule):
         # 論文に基づく動的閾値パラメータを追加
         threshold_decay: float = 0.99,
         threshold_step: float = 0.05,
+        # --- ▼ 改善 (v6): P2.1 (EL) 追加 ▼ ---
+        evolutionary_leak: bool = False, # ELフラグ
+        gate_input_features: Optional[int] = None # GLIF互換
+        # --- ▲ 改善 (v6) ▲ ---
     ):
         super().__init__()
         self.features = features
@@ -74,6 +92,18 @@ class AdaptiveLIFNeuron(base.MemoryModule):
         self.threshold_decay = threshold_decay
         self.threshold_step = threshold_step
         self.surrogate_function = surrogate.ATan(alpha=2.0)
+
+        # --- ▼ 改善 (v6): P2.1 (EL) 追加 ▼ ---
+        self.evolutionary_leak = evolutionary_leak
+        self.gate_tau_lin = None
+        self.gate_input_proj_el = None # mypyのために初期化
+        if self.evolutionary_leak:
+            if gate_input_features is None:
+                gate_input_features = features
+            # GLIFと同様のゲート層を追加
+            self.gate_tau_lin = nn.Linear(gate_input_features, features)
+            logger.info(f"AdaptiveLIFNeuron (features={features}): Evolutionary Leak (EL) [P2.1] ENABLED.")
+        # --- ▲ 改善 (v6) ▲ ---
 
         self.register_buffer("mem", None)
         self.register_buffer("adaptive_threshold", None)
@@ -106,13 +136,34 @@ class AdaptiveLIFNeuron(base.MemoryModule):
         if self.adaptive_threshold is None or self.adaptive_threshold.shape != x.shape:
             self.adaptive_threshold = torch.zeros_like(x)
 
-        # --- ▼ 修正: tau_mem を学習可能なパラメータに変更 (P2.1 PLIF) ▼ ---
-        # 学習可能なパラメータから現在の時定数を計算
-        current_tau_mem = torch.exp(self.log_tau_mem) + 1.1
-        mem_decay = torch.exp(-1.0 / current_tau_mem)
-        # --- ▲ 修正 ▲ ---
+        # --- ▼ 改善 (v6): P2.1 (EL) 修正 ▼ ---
+        mem_decay: torch.Tensor
         
-        self.mem = self.mem * mem_decay + x
+        if self.evolutionary_leak and self.gate_tau_lin is not None:
+            # EL (Evolutionary Leak) [47]
+            # ゲート入力 (x) の次元チェック (GLIFNeuronと同様)
+            gate_input: torch.Tensor
+            if x.shape[1] != self.gate_tau_lin.in_features:
+                 if self.gate_tau_lin.in_features == self.features:
+                     gate_input = x
+                 else:
+                     if not hasattr(self, 'gate_input_proj_el') or self.gate_input_proj_el is None:
+                         self.gate_input_proj_el = nn.Linear(x.shape[1], self.gate_tau_lin.in_features).to(x.device)
+                     gate_input = self.gate_input_proj_el(x) # type: ignore[operator]
+            else:
+                 gate_input = x
+            
+            # ゲートの出力を Sigmoid で 0-1 に
+            mem_decay_gate = torch.sigmoid(self.gate_tau_lin(gate_input))
+            # (1.0 - mem_decay_gate) が入力 (x) の結合強度になる
+            self.mem = self.mem * mem_decay_gate + (1.0 - mem_decay_gate) * x
+            
+        else:
+            # PLIF (Parametric LIF) [v2]
+            current_tau_mem = torch.exp(self.log_tau_mem) + 1.1
+            mem_decay = torch.exp(-1.0 / current_tau_mem)
+            self.mem = self.mem * mem_decay + x
+        # --- ▲ 改善 (v6) ▲ ---
         
         if self.training and self.noise_intensity > 0:
             self.mem += torch.randn_like(self.mem) * self.noise_intensity
@@ -309,6 +360,9 @@ class GLIFNeuron(base.MemoryModule):
     base_threshold: nn.Parameter
     gate_tau_lin: nn.Linear
     v_reset: nn.Parameter # 学習可能なリセット電位
+    # --- ▼ 改善 (v6): P2.1 (EL) との互換性 ▼ ---
+    gate_input_proj_glif: Optional[nn.Linear]
+    # --- ▲ 改善 (v6) ▲ ---
 
     def __init__(
         self,
@@ -321,8 +375,11 @@ class GLIFNeuron(base.MemoryModule):
         self.features = features
         self.base_threshold = nn.Parameter(torch.full((features,), base_threshold))
         
+        gate_input_dim: int
         if gate_input_features is None:
-            gate_input_features = features
+            gate_input_dim = features
+        else:
+            gate_input_dim = gate_input_features
         
         # 1. 学習可能なリセット電位 (v_reset)
         # (引用[8]のGLIFはリセット機構も学習可能とする)
@@ -330,7 +387,8 @@ class GLIFNeuron(base.MemoryModule):
         
         # 2. 膜時定数(tau)を制御するゲート (P2.2)
         # ゲートの入力次元を gate_input_features に設定
-        self.gate_tau_lin = nn.Linear(gate_input_features, features)
+        self.gate_tau_lin = nn.Linear(gate_input_dim, features)
+        self.gate_input_proj_glif = None # mypyのために初期化
         
         self.surrogate_function = surrogate.ATan(alpha=2.0)
 
@@ -360,6 +418,7 @@ class GLIFNeuron(base.MemoryModule):
         
         # --- 1. ゲートの計算 (P2.2) ---
         # ゲート入力 (x) の次元チェック
+        gate_input: torch.Tensor
         if x.shape[1] != self.gate_tau_lin.in_features:
              # GLIFのゲート入力次元と、ニューロンの入力次元が異なる場合
              if self.gate_tau_lin.in_features == self.features:
@@ -368,10 +427,11 @@ class GLIFNeuron(base.MemoryModule):
                  #
                  # ゲート入力次元が異なる場合は、入力を射影するか、エラーを出す
                  # ここでは、入力 (x) をゲート入力次元に射影する (簡易的な実装)
-                 # 本来は専用の射影層を持つべき
-                 if not hasattr(self, 'gate_input_proj'):
-                     self.gate_input_proj = nn.Linear(x.shape[1], self.gate_tau_lin.in_features).to(x.device)
-                 gate_input = self.gate_input_proj(x) # type: ignore[attr-defined]
+                 # --- ▼ 改善 (v6): P2.1 (EL) との互換性 ▼ ---
+                 if not hasattr(self, 'gate_input_proj_glif') or self.gate_input_proj_glif is None:
+                     self.gate_input_proj_glif = nn.Linear(x.shape[1], self.gate_tau_lin.in_features).to(x.device)
+                 gate_input = self.gate_input_proj_glif(x)
+                 # --- ▲ 改善 (v6) ▲ ---
         else:
              gate_input = x
         

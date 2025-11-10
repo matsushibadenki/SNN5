@@ -16,6 +16,9 @@
 # 修正 (v3):
 # - mypy [call-arg] エラーを解消するため、BioSNN の __init__ シグネチャ変更
 #   (layer_sizes -> input_size, layer_configs) に対応。
+#
+# 修正 (v4):
+# - 123行目の mypy [syntax] error: Unmatched '}' を削除。
 
 import torch
 # --- ▼ 改善 (v2): 必要な型ヒントを追加 ▼ ---
@@ -45,7 +48,10 @@ class ReinforcementLearnerAgent:
         self.device = device
         
         # --- ▼ 改善 (v2): ハードコードされた学習ルールを削除 ▼ ---
-        # (削除済み)
+        # learning_rule = RewardModulatedSTDP(
+        #     learning_rate=0.005, a_plus=1.0, a_minus=1.0,
+        #     tau_trace=20.0, tau_eligibility=50.0
+        # )
         # --- ▲ 改善 (v2) ▲ ---
         
         # --- ▼ 修正 (v3): BioSNN (P8.2) の __init__ に対応 ▼ ---
@@ -120,4 +126,6 @@ class ReinforcementLearnerAgent:
         if reward != -0.05 or causal_credit > 0:
             self.experience_buffer = []
     # --- ▲ 修正 ▲ ---
-}
+# --- ▼ 修正 (v4): 123行目の余分な '}' を削除 ▼ ---
+# } 
+# --- ▲ 修正 (v4) ▲ ---

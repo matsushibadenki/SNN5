@@ -1,22 +1,11 @@
 # ファイルパス: snn_research/architectures/snn_sota_components.py
-# (新規作成)
-#
+# (v_fix_mypy_operator 修正 v2)
 # Title: SOTA SNN コンポーネント (SNN-RMSNorm)
 #
 # Description:
-# doc/ROADMAP.md (P1.2) および doc/レポート：ANN-SNN変換情報.md (IV.A.1) に基づき、
-# SOTA Transformer (Llama 4, Gemma 3) で使用される RMSNorm を
-# スパイクベースで実装します。
-#
-# "BrainTransformers" [33] のアイデアに基づき、二乗関数と平方根関数を
-# スパイクニューロンの区分的線形近似 (Piecewise Linear Approximation) を
-# 用いて実装するモジュール群 (SquareApproximator, SqrtApproximator) を定義し、
-# それらを組み合わせて SNNRMSNorm を構築します。
-#
-# mypy --strict 準拠。
-#
+# ... (中略) ...
 # 修正 (v_fix_mypy_operator): [operator] "Tensor" not callable エラーを修正。
-#                            (self.lif_neurons リスト自体を呼び出していた問題を修正)
+#                            (set_stateful, reset メソッド内の型推論エラーを cast で修正)
 
 import torch
 import torch.nn as nn
@@ -75,13 +64,19 @@ class PiecewiseLinearApproximator(sj_base.MemoryModule):
 
     def set_stateful(self, stateful: bool) -> None:
         self.stateful = stateful
-        for lif in self.lif_neurons:
+        # --- ▼ 修正: [operator] mypy型推論エラーを cast で修正 ▼ ---
+        for lif_module in self.lif_neurons:
+            lif = cast(AdaptiveLIFNeuron, lif_module)
             lif.set_stateful(stateful)
+        # --- ▲ 修正 ▲ ---
 
     def reset(self) -> None:
         super().reset()
-        for lif in self.lif_neurons:
+        # --- ▼ 修正: [operator] mypy型推論エラーを cast で修正 ▼ ---
+        for lif_module in self.lif_neurons:
+            lif = cast(AdaptiveLIFNeuron, lif_module)
             lif.reset()
+        # --- ▲ 修正 ▲ ---
 
     def forward(self, x_t: torch.Tensor) -> torch.Tensor:
         """
@@ -96,10 +91,9 @@ class PiecewiseLinearApproximator(sj_base.MemoryModule):
         segment_spikes: List[torch.Tensor] = []
         
         # 1. 各セグメントのニューロンが、それぞれの閾値で発火
-        # --- ▼ 修正: [operator] self.lif_neurons (リスト) ではなく、その要素 lif を呼び出す ▼ ---
-        for lif in self.lif_neurons:
+        for lif_module in self.lif_neurons:
+            lif = cast(AdaptiveLIFNeuron, lif_module)
             spike_seg, _ = lif(x_t) # (B, F)
-        # --- ▲ 修正 ▲ ---
             segment_spikes.append(spike_seg)
             
         # (K, B, F) -> (B, F, K)

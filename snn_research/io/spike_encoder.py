@@ -1,7 +1,7 @@
 # ファイルパス: snn_research/io/spike_encoder.py
 # (改修)
 #
-# Title: Spike Encoder (TTFS実装版)
+# Title: Spike Encoder (TTFS / FE 実装版)
 #
 # Description:
 # - 人工脳アーキテクチャの「符号化層」を担うコンポーネント。
@@ -15,14 +15,26 @@
 #   学習可能な(微分可能な)TTFSエンコーダ `DifferentiableTTFSEncoder` を追加。
 #
 # 修正 (v3): mypy [name-defined] エラーを解消するため、surrogate をインポート。
+#
+# 改善 (v4):
+# - doc/ROADMAP.md (P2.2) および doc/SNN5プロジェクトの技術的解決策リサーチ.md (セクション2.2) に基づき、
+#   FEEL-SNN (FE) [47] の概念である「周波数エンコーディング」を実装する
+#   `FrequencyEncoder` クラスを追加。
+#
+# 修正 (v5):
+# - `FrequencyEncoder` 内の mypy [name-defined] エラーを解消するため、
+#   `AdaptiveLIFNeuron` と `spikingjelly.activation_based.functional (SJ_F)` をインポート。
 
 import torch
 import torch.nn as nn 
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, cast
 import math 
-# --- ▼ 修正 ▼ ---
-from spikingjelly.activation_based import surrogate # type: ignore
-# --- ▲ 修正 ▲ ---
+from spikingjelly.activation_based import surrogate # type: ignore[import-untyped]
+
+# --- ▼▼▼ 修正 (v5): mypy [name-defined] エラー解消 ▼▼▼ ---
+from spikingjelly.activation_based import functional as SJ_F # type: ignore[import-untyped]
+from snn_research.core.neurons import AdaptiveLIFNeuron
+# --- ▲▲▲ 修正 (v5) ▲▲▲ ---
 
 class SpikeEncoder:
     """
@@ -212,10 +224,119 @@ class DifferentiableTTFSEncoder(nn.Module):
         # surrogate.fast_sigmoid を使う例 (代理勾配)
         # これにより、forwardでは 0/1 に近い値 (Heaviside)、backwardでは勾配が流れる
         
-        # --- ▼ 修正 ▼ ---
-        # surrogate が未定義だったため修正
         spikes = surrogate.fast_sigmoid(self.duration - 1 - distance * self.sensitivity.view(1, -1, 1)) # 仮の実装
-        # --- ▲ 修正 ▲ ---
 
         return spikes.permute(0, 2, 1) # (B, T, N) に形状を合わせる
 # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑追加終わり◾️◾️◾◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+
+
+# --- ▼▼▼ 改善 (v4): P2.2 FrequencyEncoder の実装 ▼▼▼ ---
+class FrequencyEncoder(nn.Module):
+    """
+    doc/SNN5プロジェクトの技術的解決策リサーチ.md (セクション2.2, 引用[47]) に基づく、
+    FEEL-SNN (FE) の周波数エンコーディングを実装するモジュール。
+    
+    時間ステップごとに異なる周波数（振動）で入力を変調し、
+    ノイズ耐性を高めることを目指す。
+    """
+    def __init__(
+        self,
+        features: int,
+        duration: int,
+        num_frequencies: int = 4,
+        min_freq: float = 2.0, # 最小周波数 (Hz)
+        max_freq: float = 50.0 # 最大周波数 (Hz)
+    ):
+        """
+        Args:
+            features (int): 入力特徴量の次元数。
+            duration (int): スパイクを生成する期間 (タイムステップ数)。
+            num_frequencies (int): 使用する周波数帯域の数。
+            min_freq (float): 最小周波数 (Hz)。
+            max_freq (float): 最大周波数 (Hz)。
+        """
+        super().__init__()
+        self.features = features
+        self.duration = duration
+        self.num_frequencies = num_frequencies
+        
+        if num_frequencies <= 0:
+            raise ValueError("num_frequencies must be > 0")
+
+        # 1. 時間ベクトル (T,) を作成 (0 ... duration-1)
+        time_vector = torch.arange(duration, dtype=torch.float32).unsqueeze(0) # (1, T)
+        
+        # 2. 周波数帯域 (F,) を作成
+        if num_frequencies == 1:
+            frequencies = torch.tensor([min_freq], dtype=torch.float32)
+        else:
+            frequencies = torch.linspace(min_freq, max_freq, num_frequencies, dtype=torch.float32)
+        
+        # 周波数をラジアン/ステップに変換 (Tステップで (freq * T / 1000 * 2pi) 振動する)
+        # (duration が ms ではなくステップ数なので、 2pi / T_period_steps)
+        # T_period_steps = duration / (freq * duration_sec) 
+        # -> duration_sec が不明なため、簡易的に (duration / freq) を周期とする
+        
+        # 論文[47]のアイデア:
+        # 時間ステップ t ごとに異なる周波数 f を割り当てる
+        # FE(x, t) = x * (1 + cos(2 * pi * f_t * t))
+        
+        # ここでは、時間ステップ t ごとに、F個の周波数のうち1つを割り当てる
+        # (T,)
+        self.time_to_freq_indices = torch.remainder(torch.arange(duration), num_frequencies).long()
+        # (F,) -> (T,)
+        self.assigned_frequencies_rad = (2.0 * math.pi * frequencies[self.time_to_freq_indices]) / duration
+        
+        # (T,) -> (1, T, 1) (ブロードキャスト用)
+        self.oscillation = nn.Parameter(
+            torch.cos(self.assigned_frequencies_rad.unsqueeze(0).unsqueeze(-1)),
+            requires_grad=False
+        ) # (1, T, 1)
+
+        # 3. ポアソン発火のためのLIFニューロン（簡易版）
+        self.lif = AdaptiveLIFNeuron(features=features, tau_mem=5.0, base_threshold=0.8)
+
+    def forward(self, x_analog: torch.Tensor) -> torch.Tensor:
+        """
+        アナログ入力 (B, N) を周波数変調ポアソンスパイク (B, T, N) に変換する。
+
+        Args:
+            x_analog (torch.Tensor): アナログ入力 (Batch, num_neurons)。値は [0, 1] に正規化されている想定。
+
+        Returns:
+            torch.Tensor: 生成されたスパイクパターン (Batch, time_steps, num_neurons)。
+        """
+        B, N = x_analog.shape
+        if N != self.features:
+            raise ValueError(f"Input dimension ({N}) does not match num_neurons ({self.features})")
+
+        # 1. 入力を時間軸にブロードキャスト
+        x_repeated = x_analog.unsqueeze(1).repeat(1, self.duration, 1) # (B, T, N)
+        
+        # 2. 周波数変調 (FEEL-SNN [47] 式(2) 近似)
+        # modulator = 0.5 * (1.0 + self.oscillation) # (1, T, 1) -> (0.0 ... 1.0)
+        # (論文[47]は (1 + cos) なので 0.0 ... 2.0)
+        modulator = 1.0 + self.oscillation # (1, T, 1)
+        
+        modulated_input = x_repeated * modulator # (B, T, N)
+        
+        # 3. スパイク生成 (簡易ポアソン or LIF)
+        # (B, T, N) -> (B*T, N)
+        modulated_input_flat = modulated_input.reshape(B * self.duration, N)
+        
+        SJ_F.reset_net(self.lif)
+        cast(AdaptiveLIFNeuron, self.lif).set_stateful(True)
+        
+        spikes_list: List[torch.Tensor] = []
+        for t in range(self.duration):
+            # (B, N)
+            current_t_input = modulated_input[:, t, :]
+            spike_t, _ = self.lif(current_t_input)
+            spikes_list.append(spike_t)
+            
+        cast(AdaptiveLIFNeuron, self.lif).set_stateful(False)
+
+        spikes_stacked = torch.stack(spikes_list, dim=1) # (B, T, N)
+
+        return spikes_stacked
+# --- ▲▲▲ 改善 (v4) ▲▲▲ ---

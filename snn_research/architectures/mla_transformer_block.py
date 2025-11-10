@@ -71,11 +71,9 @@ class MLATransformerBlock(sj_base.MemoryModule):
 
     def set_stateful(self, stateful: bool):
         self.stateful = stateful
-        # MLAアテンション内の全ニューロンの状態を設定
         if hasattr(self.attn, 'set_stateful'):
-            self.attn.set_stateful(stateful)
+            self.attn.set_stateful(stateful) # type: ignore
         
-        # FFN内のニューロンの状態を設定
         for module in [self.lif1, self.lif2]:
             if hasattr(module, 'set_stateful'):
                 cast(Any, module).set_stateful(stateful)
@@ -94,24 +92,20 @@ class MLATransformerBlock(sj_base.MemoryModule):
         """
         B, L, D = x.shape
         
-        # 1. MLA Attention (Analog -> Spike -> Spike)
-        attn_out_spikes = self.attn(self.norm1(x)) # (B, L, D) スパイク
-        
-        # 2. Residual Connection 1
+        # 1. MLA Attention & Residual 1
+        attn_out_spikes = self.attn(self.norm1(x))
         x = x + attn_out_spikes
 
         # 3. FFN (Spike -> Linear -> LIF -> Spike)
-        ffn_in = self.norm2(x) 
-        ffn_in_flat = ffn_in.reshape(B * L, D)
-        
-        ffn_hidden_current = self.fc1(ffn_in_flat) # アナログ電流
+        ffn_in_flat = self.norm2(x).reshape(B * L, D)
+        ffn_hidden_current = self.fc1(ffn_in_flat)
         
         # LIF1 (Spike) - mypyエラー回避
         ffn_hidden_spikes, _ = self.lif1(ffn_hidden_current) # type: ignore[operator]
         
-        ffn_out_current = self.fc2(ffn_hidden_spikes) # アナログ電流
+        ffn_out_current = self.fc2(ffn_hidden_spikes)
         
-        # LIF2 (Spike) - mypyエラー回避
+        # LIF2 (Spike) - mypyエラー回避 (ライン76に対応)
         ffn_out_spikes, _ = self.lif2(ffn_out_current) # type: ignore[operator]
         ffn_out_spikes = ffn_out_spikes.reshape(B, L, D)
         

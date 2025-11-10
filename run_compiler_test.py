@@ -132,26 +132,28 @@ def test_biosnn_compilation(compiler: NeuromorphicCompiler, output_dir: str, con
         pruned_model.clamp_weights()
         pruned_total_conn = 0
         for w_list in [pruned_model.weights_ee, pruned_model.weights_ie, pruned_model.weights_ei, pruned_model.weights_ii]:
-             pruned_total_conn += sum(torch.sum(w.data > 0).item() for w in w_list) # type: ignore[misc]
+             pruned_total_conn += sum(torch.sum(w.data > 0).item() for w in w_list) # type: ignore[assignment]
         
         assert compiled_connections == pruned_total_conn
         print(f"  - 検証: プルーニング結果がコンパイルファイルに正しく反映されました ({compiled_connections} total connections)。")
 
-        # --- ▼ 修正 (v13): time_steps の型エラー修正 ▼ ---
-        time_steps_val = container.config.model.time_steps()
+        # --- ▼ 修正 (L135-L147): time_steps_sim の宣言と代入を修正 ▼ ---
+        time_steps_val: Any = container.config.model.time_steps()
         
-        # floatの可能性を考慮し、intに明示的に変換
+        # L145: time_steps_sim はここで初めて宣言される (デフォルト値を設定)
+        time_steps_sim: int = 16 
+        
+        # L135: floatの可能性を考慮し、intに明示的に変換（L135の行）
         if isinstance(time_steps_val, (int, float)):
-            time_steps_sim: int = int(time_steps_val)
-        else:
-            time_steps_sim: int = 16
+            # [assignment]エラーを抑制し、代入のみ行う（再注釈なし）
+            time_steps_sim = int(time_steps_val) # type: ignore[assignment]
+        # --- ▲ 修正 (L135-L147) ▲ ---
 
         simulation_report = compiler.simulate_on_hardware(
             compiled_config_path=output_path,
             total_spikes=15000,
             time_steps=time_steps_sim
         )
-        # --- ▲ 修正 (v13) ▲ ---
         print("\n--- 📊 BioSNN ハードウェアシミュレーション結果 ---")
         for key, value in simulation_report.items(): print(f"  - {key}: {value:.4e}")
         print("--------------------------------------------------")
@@ -200,14 +202,15 @@ def test_snncore_compilation(compiler: NeuromorphicCompiler, output_dir: str, co
 
         estimated_spikes = 500000
         
-        time_steps_val = container.config.model.time_steps()
+        time_steps_val: Any = container.config.model.time_steps()
+        
+        # time_steps_core_val の初期化と代入ロジック
+        time_steps_core_val: int = 16 # Initialize with default
         
         # floatの可能性を考慮し、intに明示的に変換
         if isinstance(time_steps_val, (int, float)):
-            time_steps_core_val: int = int(time_steps_val)
-        else:
-            time_steps_core_val: int = 16
-
+            time_steps_core_val = int(time_steps_val) # type: ignore[assignment]
+        
         simulation_report = compiler.simulate_on_hardware(
             compiled_config_path=output_path,
             total_spikes=estimated_spikes,

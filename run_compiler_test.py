@@ -42,6 +42,10 @@
 #
 # 修正 (v12):
 # - mypy [assignment] エラーを解消するため、configから取得した time_steps を int に明示的に変換。
+#
+# 修正 (v13):
+# - mypy [assignment] および [no-redef] エラーを解消するため、変数をアンビギュアスに宣言し、
+#   `time_steps` 変数名を `test_snncore_compilation` 内で再利用しないよう修正。
 
 import sys
 from pathlib import Path
@@ -68,7 +72,7 @@ from snn_research.core.snn_core import SNNCore
 # --- ▲ 修正 ▲ ---
 
 
-def test_biosnn_compilation(compiler: NeuromorphicCompiler, output_dir: str) -> None:
+def test_biosnn_compilation(compiler: NeuromorphicCompiler, output_dir: str, container: TrainingContainer) -> None:
     """BioSNNモデルのコンパイルとプルーニングをテストする。"""
     print("\n--- 1. BioSNNモデルのコンパイルテスト開始 ---")
     
@@ -133,11 +137,21 @@ def test_biosnn_compilation(compiler: NeuromorphicCompiler, output_dir: str) -> 
         assert compiled_connections == pruned_total_conn
         print(f"  - 検証: プルーニング結果がコンパイルファイルに正しく反映されました ({compiled_connections} total connections)。")
 
+        # --- ▼ 修正 (v13): time_steps の型エラー修正 ▼ ---
+        time_steps_val = container.config.model.time_steps()
+        
+        # floatの可能性を考慮し、intに明示的に変換
+        if isinstance(time_steps_val, (int, float)):
+            time_steps_sim: int = int(time_steps_val)
+        else:
+            time_steps_sim: int = 16
+
         simulation_report = compiler.simulate_on_hardware(
             compiled_config_path=output_path,
             total_spikes=15000,
-            time_steps=100
+            time_steps=time_steps_sim
         )
+        # --- ▲ 修正 (v13) ▲ ---
         print("\n--- 📊 BioSNN ハードウェアシミュレーション結果 ---")
         for key, value in simulation_report.items(): print(f"  - {key}: {value:.4e}")
         print("--------------------------------------------------")
@@ -145,14 +159,14 @@ def test_biosnn_compilation(compiler: NeuromorphicCompiler, output_dir: str) -> 
         print(f"\n❌ BioSNNテスト失敗: 設定ファイルが生成されませんでした。")
         raise AssertionError("BioSNNコンパイルテスト失敗")
 
-def test_snncore_compilation(compiler: NeuromorphicCompiler, output_dir: str) -> None:
+def test_snncore_compilation(compiler: NeuromorphicCompiler, output_dir: str, container: TrainingContainer) -> None:
     """SNNCore (SEW-ResNet) モデルのコンパイルをテストする。"""
     print("\n--- 2. SNNCore (SEW-ResNet) モデルのコンパイルテスト開始 ---")
 
     try:
-        container = TrainingContainer()
-        container.config.from_yaml("configs/base_config.yaml")
-        container.config.from_yaml("configs/cifar10_spikingcnn_config.yaml")
+        # この関数は main で設定された container を使用する
+        
+        # モデル構成を上書き (SEW-ResNet)
         container.config.model.architecture_type.from_value("sew_resnet")
         
         snn_core_model_uncast: nn.Module = container.snn_model(vocab_size=10)
@@ -185,22 +199,19 @@ def test_snncore_compilation(compiler: NeuromorphicCompiler, output_dir: str) ->
         print("  - 検証: 学習則 (None) のコンパイル結果は正常です。")
 
         estimated_spikes = 500000
-        # --- ▼ 修正 (v12): mypy [assignment] エラー解消のための修正 ▼ ---
+        
         time_steps_val = container.config.model.time_steps()
         
         # floatの可能性を考慮し、intに明示的に変換
         if isinstance(time_steps_val, (int, float)):
-            snn_time_steps: int = int(time_steps_val)
+            time_steps_core_val: int = int(time_steps_val)
         else:
-            snn_time_steps: int = 16
-
-        time_steps: int = snn_time_steps
-        # --- ▲ 修正 (v12) ▲ ---
+            time_steps_core_val: int = 16
 
         simulation_report = compiler.simulate_on_hardware(
             compiled_config_path=output_path,
             total_spikes=estimated_spikes,
-            time_steps=time_steps
+            time_steps=time_steps_core_val # 使用する変数を time_steps_core_val に統一
         )
         print("\n--- 📊 SNNCore ハードウェアシミュレーション結果 ---")
         for key, value in simulation_report.items(): print(f"  - {key}: {value:.4e}")
@@ -215,19 +226,28 @@ def main():
     """
     print("--- ニューロモーフィック・コンパイラ 統合テスト開始 ---")
 
+    # 1. DIコンテナを初期化 (テスト全体で共有)
+    container = TrainingContainer()
+    
+    # 2. ベース設定とモデル設定をロード (テストで上書きされる)
+    container.config.from_yaml("configs/base_config.yaml")
+    container.config.from_yaml("configs/cifar10_spikingcnn_config.yaml")
+
     compiler = NeuromorphicCompiler(hardware_profile_name="default")
     output_dir = "runs/compiler_tests"
     os.makedirs(output_dir, exist_ok=True)
 
     # テスト1: BioSNN (プルーニング + 学習則)
     try:
-        test_biosnn_compilation(compiler, output_dir)
+        # BioSNNはここで設定を上書きする必要はない (内部でハードコードされているため)
+        test_biosnn_compilation(compiler, output_dir, container)
     except Exception as e:
         print(f"❌ BioSNNコンパイルテスト中にエラーが発生しました: {e}", exc_info=True)
 
     # テスト2: SNNCore (SEW-ResNet)
     try:
-        test_snncore_compilation(compiler, output_dir)
+        # SNNCoreテストは内部で architecture_type を 'sew_resnet' に上書きする
+        test_snncore_compilation(compiler, output_dir, container)
     except Exception as e:
         print(f"❌ SNNCoreコンパイルテスト中にエラーが発生しました: {e}", exc_info=True)
 

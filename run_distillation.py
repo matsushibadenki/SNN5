@@ -18,6 +18,8 @@ project_root: str = os.path.abspath(os.path.dirname(__file__))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
+print(f"🚨 DEBUG: Currently executing script from: {os.path.abspath(__file__)}")
+
 from app.containers import TrainingContainer
 from snn_research.distillation.knowledge_distillation_manager import KnowledgeDistillationManager
 from snn_research.benchmark import TASK_REGISTRY

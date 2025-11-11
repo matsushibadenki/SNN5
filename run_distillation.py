@@ -1,28 +1,7 @@
 # ファイルパス: run_distillation.py
-# コードの最も最初には、ファイルパス、ファイルの内容を示したタイトル、機能の説明を詳細に記述してください。 修正内容は記載する必要はありません。
 # Title: 知識蒸留実行スクリプト
 # Description: KnowledgeDistillationManagerを使用して、知識蒸留プロセスを開始します。
 #              設定ファイルとコマンドライン引数からパラメータを読み込みます。
-#
-# 修正 (v_async_fix):
-# - KnowledgeDistillationManager.prepare_dataset が async def に変更されたことに伴い、
-#   main() 内での呼び出し時に await を追加 (L183)。
-#
-# 修正 (v_hpo_fix_attr_error):
-# - HPO実行時に KnowledgeDistillationManager (L162) に渡される config が
-#   dict だったため、OmegaConf.create() で DictConfig に変換するよう修正。
-#
-# 修正 (v_hpo_fix_tensor_size_mismatch):
-# - OOM (Trial 224, 226) の根本原因である、cifar10 (32x32) と
-#   ViT (224x224) のミスマッチを解消するため、
-#   タスクが 'cifar10' の場合、データローダーが参照する
-#   `config.data.img_size` も 32 に上書きするロジックを追加 (L129)。
-#
-# 修正 (v_hpo_fix_type_error):
-# - TypeError (unexpected keyword argument 'img_size') を解消するため、
-#   img_size を task.prepare_data() ではなく、
-#   TaskClass() のコンストラクタに渡すよう修正 (L226-L233)。
-
 
 import argparse
 import asyncio
@@ -94,7 +73,6 @@ async def main() -> None:
             
     except Exception as e:
         print(f"Warning: Could not load or merge model config '{args.model_config}': {e}")
-        # --- ▼ 修正: 失敗時のフォールバックを except ブロック内に復元 ▼ ---
         # 'model' が設定されていない可能性があるため、空の辞書をマージしておく
         container.config.from_dict({'model': {}})
         # --- ▲ 修正 ▲ ---
@@ -137,6 +115,18 @@ async def main() -> None:
                 print(f"  - Applied: {keys} = {value}")
             except Exception as e:
                 print(f"Error applying override '{override}': {e}")
+    
+    # 6. 【致命的なバグ修正】 spike_rate=0 を解消するため、spike_reg_weight を強制的に低い値に固定
+    #    (Optunaが探索する高すぎる値 (e.g., 2.839) をデバッグレベルでオーバーライド)
+    try:
+        # provider API を使って上書き
+        config_provider = container.config.training.gradient_based.distillation.loss.spike_reg_weight
+        DEBUG_SPIKE_REG_VALUE = 1e-6 # 非常に低い値
+        config_provider.from_value(DEBUG_SPIKE_REG_VALUE)
+        print(f"  - 【DEBUG OVERRIDE】 Forced spike_reg_weight to: {DEBUG_SPIKE_REG_VALUE}")
+    except Exception as e:
+        # この設定がない場合、エラーを無視して続行するが、警告を出す
+        print(f"Warning: Could not force spike_reg_weight. This may cause spike_rate=0: {e}")
     # --- ▲ 修正 ▲ ---
 
     # --- ▼ 修正 (v_hpo_fix_tensor_size_mismatch) ▼ ---

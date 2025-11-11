@@ -1,7 +1,7 @@
-# ファイルパス: run_distillation.py
-# Title: 知識蒸留実行スクリプト
+# ファイルパス: run_distill_hpo.py
+# Title: 知識蒸留実行スクリプト (HPO専用)
 # Description: KnowledgeDistillationManagerを使用して、知識蒸留プロセスを開始します。
-#              設定ファイルとコマンドライン引数からパラメータを読み込みます。
+#              【最終修正版】spike_rate=0 の問題を解決するため、LR、閾値、重み初期化を強制的に設定するデバッグロジックを含む。
 
 import argparse
 import asyncio
@@ -18,7 +18,9 @@ project_root: str = os.path.abspath(os.path.dirname(__file__))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
+# --- ▼▼▼ 【最優先追加】現在の実行パスをログに出力 (環境不整合の確認用) ▼▼▼ ---
 print(f"🚨 DEBUG: Currently executing script from: {os.path.abspath(__file__)}")
+# --- ▲▲▲ 【最優先追加】 ▲▲▲ ---
 
 from app.containers import TrainingContainer
 from snn_research.distillation.knowledge_distillation_manager import KnowledgeDistillationManager
@@ -95,7 +97,6 @@ async def main() -> None:
                 value: Any
                 try:
                     value = int(value_str)
-                    #... (型推論ロジックは省略) ...
                 except ValueError:
                     try:
                         value = float(value_str)
@@ -120,7 +121,7 @@ async def main() -> None:
             except Exception as e:
                 print(f"Error applying override '{override}': {e}")
     
-    # 6. 【致命的なバグ修正】 spike_rate=0 を解消するため、spike_reg_weight を強制的に低い値に固定
+    # 6. 【致命的なバグ修正】 spike_reg_weight を強制的に低い値に固定
     #    (Optunaが探索する高すぎる値 (e.g., 2.839) をデバッグレベルでオーバーライド)
     try:
         config_provider = container.config.training.gradient_based.distillation.loss.spike_reg_weight
@@ -130,7 +131,7 @@ async def main() -> None:
     except Exception as e:
         print(f"Warning: Could not force spike_reg_weight. This may cause spike_rate=0: {e}")
         
-    # 7. 【最終手段】 learning_rate を強制的に高く設定 <<< ここを修正/追加
+    # 7. 【最終手段】 learning_rate を強制的に高く設定
     try:
         config_provider_lr = container.config.training.gradient_based.learning_rate
         DEBUG_LR_VALUE = 1e-3 # HPOの探索範囲（例: 6.5e-5）よりも高い値を強制
@@ -138,7 +139,6 @@ async def main() -> None:
         print(f"  - 【DEBUG OVERRIDE】 Forced learning_rate to: {DEBUG_LR_VALUE}")
     except Exception as e:
         print(f"Warning: Could not force learning_rate: {e}")
-        
         
 
     # --- ▼ 修正 (v_hpo_fix_tensor_size_mismatch) ▼ ---
@@ -261,13 +261,16 @@ async def main() -> None:
         collate_fn=task.get_collate_fn(),
         batch_size=container.config.training.batch_size()
     )
-
+    # --- ▲ 修正 (v_async_fix) ▲ ---
+    
+    # --- ▼▼▼ 環境整合性チェック: 最終オーバーライド値の確認 ▼▼▼ ---
     print("\n=============================================")
     print("🚨 FINAL DEBUG CHECK BEFORE STARTING TRAINING 🚨")
     print(f"  V_THRESHOLD (from YAML): {container.config.model.neuron.v_threshold()}")
     print(f"  LR (Forced): {container.config.training.gradient_based.learning_rate()}")
     print(f"  SPIKE_REG_W (Forced): {container.config.training.gradient_based.distillation.loss.spike_reg_weight()}")
     print("=============================================\n")
+    # --- ▲▲▲ 環境整合性チェック ▲▲▲ ---
 
     # 蒸留の実行
     await manager.run_distillation(
@@ -282,12 +285,3 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
-    
-    # --- ▼▼▼ 環境整合性チェック: 最終オーバーライド値の確認 ▼▼▼ ---
-    print("\n=============================================")
-    print("🚨 FINAL DEBUG CHECK BEFORE STARTING TRAINING 🚨")
-    print(f"  V_THRESHOLD (from YAML): {container.config.model.neuron.v_threshold()}")
-    print(f"  LR (Forced): {container.config.training.gradient_based.learning_rate()}")
-    print(f"  SPIKE_REG_W (Forced): {container.config.training.gradient_based.distillation.loss.spike_reg_weight()}")
-    print("=============================================\n")
-    # --- ▲▲▲ 環境整合性チェック ▲▲▲ ---

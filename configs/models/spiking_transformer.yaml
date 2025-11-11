@@ -1,6 +1,6 @@
 # configs/models/spiking_transformer.yaml
 # ファイルの内容: スパイキングトランスフォーマーモデルの設定
-# 機能: ログで確認された spike_rate=0 の問題を解消するため、ニューロンの初期閾値を下げ、性能向上のため時間ステップ数を増加させる。
+# 機能: スパイク発火の問題を解決し、HPOの実行時間を短縮するため時間ステップ数を 32 に戻す。
 
 model:
   path: "spiking_transformer_model.pth"
@@ -8,10 +8,10 @@ model:
   d_model: 256
   num_layers: 6
   n_head: 8
-  time_steps: 64 # チューンナップ: T=64に増加。時間的な情報をより長く処理することで、特にTransformerのようなモデルの性能向上を目指す。
+  time_steps: 32 # チューンナップ: 処理速度最適化のため、T=32 に戻す。
   neuron:
     type: "lif"
-    v_threshold: 0.2 # 必須修正: ログの「spike_rate=0」を解決するため、初期閾値を低く設定し、ニューロンが発火できるようにする。
+    v_threshold: 0.2 # 以前の修正を維持: spike_rate=0 を解消するため閾値を低く維持。
     # 動的閾値パラメータ
     threshold_decay: 0.99
     threshold_step: 0.05

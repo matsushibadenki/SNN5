@@ -280,3 +280,12 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
+    
+    # --- ▼▼▼ 環境整合性チェック: 最終オーバーライド値の確認 ▼▼▼ ---
+    print("\n=============================================")
+    print("🚨 FINAL DEBUG CHECK BEFORE STARTING TRAINING 🚨")
+    print(f"  V_THRESHOLD (from YAML): {container.config.model.neuron.v_threshold()}")
+    print(f"  LR (Forced): {container.config.training.gradient_based.learning_rate()}")
+    print(f"  SPIKE_REG_W (Forced): {container.config.training.gradient_based.distillation.loss.spike_reg_weight()}")
+    print("=============================================\n")
+    # --- ▲▲▲ 環境整合性チェック ▲▲▲ ---

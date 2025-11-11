@@ -259,7 +259,13 @@ async def main() -> None:
         collate_fn=task.get_collate_fn(),
         batch_size=container.config.training.batch_size()
     )
-    # --- ▲ 修正 (v_async_fix) ▲ ---
+
+    print("\n=============================================")
+    print("🚨 FINAL DEBUG CHECK BEFORE STARTING TRAINING 🚨")
+    print(f"  V_THRESHOLD (from YAML): {container.config.model.neuron.v_threshold()}")
+    print(f"  LR (Forced): {container.config.training.gradient_based.learning_rate()}")
+    print(f"  SPIKE_REG_W (Forced): {container.config.training.gradient_based.distillation.loss.spike_reg_weight()}")
+    print("=============================================\n")
 
     # 蒸留の実行
     await manager.run_distillation(

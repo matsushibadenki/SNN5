@@ -1,6 +1,4 @@
 # configs/models/spiking_transformer.yaml
-# ファイルの内容: スパイキングトランスフォーマーモデルの設定
-# 機能: 閾値の調整（0.05を維持）と、発火を妨げないよう動的閾値の機構を無効化（decay=1.0, step=0.0）。
 
 model:
   path: "spiking_transformer_model.pth"
@@ -13,5 +11,5 @@ model:
     type: "lif"
     v_threshold: 0.05 # 閾値を極限まで低く維持。
     # 動的閾値パラメータ（無効化）
-    threshold_decay: 1.0 # 修正: 閾値が減衰しないようにし、発火を促す。
-    threshold_step: 0.0 # 修正: 閾値がステップで増加しないようにし、発火を促す。
+    threshold_decay: 1.0 # 閾値が減衰しないようにし、発火を促す。
+    threshold_step: 0.0 # 閾値がステップで増加しないようにし、発火を促す。

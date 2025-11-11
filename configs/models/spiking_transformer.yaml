@@ -11,7 +11,7 @@ model:
   time_steps: 32 # 処理速度最適化を維持
   neuron:
     type: "lif"
-    v_threshold: 1e-6 # 致命的なバグ修正: 閾値を事実上のゼロに設定する最終手段。
+    v_threshold: 1e-6 # 閾値を事実上のゼロに設定（維持）。
     # 動的閾値パラメータ（無効化）
-    threshold_decay: 1.0 # 減衰なしを維持。
-    threshold_step: 0.0 # ステップ増加なしを維持。
+    threshold_decay: 1.0 # 減衰なし（維持）。
+    threshold_step: 0.0 # ステップ増加なし（維持）。

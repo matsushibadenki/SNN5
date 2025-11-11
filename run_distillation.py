@@ -121,15 +121,23 @@ async def main() -> None:
     # 6. 【致命的なバグ修正】 spike_rate=0 を解消するため、spike_reg_weight を強制的に低い値に固定
     #    (Optunaが探索する高すぎる値 (e.g., 2.839) をデバッグレベルでオーバーライド)
     try:
-        # provider API を使って上書き
         config_provider = container.config.training.gradient_based.distillation.loss.spike_reg_weight
-        DEBUG_SPIKE_REG_VALUE = 1e-6 # 非常に低い値
+        DEBUG_SPIKE_REG_VALUE = 1e-6 # 以前の修正を維持
         config_provider.from_value(DEBUG_SPIKE_REG_VALUE)
         print(f"  - 【DEBUG OVERRIDE】 Forced spike_reg_weight to: {DEBUG_SPIKE_REG_VALUE}")
     except Exception as e:
-        # この設定がない場合、エラーを無視して続行するが、警告を出す
         print(f"Warning: Could not force spike_reg_weight. This may cause spike_rate=0: {e}")
-    # --- ▲ 修正 ▲ ---
+        
+    # 7. 【最終手段】 learning_rate を強制的に高く設定 <<< ここを修正/追加
+    try:
+        config_provider_lr = container.config.training.gradient_based.learning_rate
+        DEBUG_LR_VALUE = 1e-3 # HPOの探索範囲（例: 6.5e-5）よりも高い値を強制
+        config_provider_lr.from_value(DEBUG_LR_VALUE)
+        print(f"  - 【DEBUG OVERRIDE】 Forced learning_rate to: {DEBUG_LR_VALUE}")
+    except Exception as e:
+        print(f"Warning: Could not force learning_rate: {e}")
+        
+        
 
     # --- ▼ 修正 (v_hpo_fix_tensor_size_mismatch) ▼ ---
     # HPO (spiking_transformer.yaml) と cifar10 タスクのミスマッチを修正

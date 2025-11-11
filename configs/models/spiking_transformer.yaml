@@ -1,6 +1,6 @@
 # configs/models/spiking_transformer.yaml
 # ファイルの内容: スパイキングトランスフォーマーモデルの設定
-# 機能: スパイク発火の問題を解決し、HPOの実行時間を短縮するため時間ステップ数を 32 に戻す。
+# 機能: スパイク発火の問題を解決するため、v_thresholdをさらに 0.05 に引き下げる。実行時間を短縮するため、時間ステップは 32 を維持。
 
 model:
   path: "spiking_transformer_model.pth"
@@ -8,10 +8,10 @@ model:
   d_model: 256
   num_layers: 6
   n_head: 8
-  time_steps: 32 # チューンナップ: 処理速度最適化のため、T=32 に戻す。
+  time_steps: 32 # チューンナップ: 処理速度最適化のため、T=32 を維持。
   neuron:
     type: "lif"
-    v_threshold: 0.2 # 以前の修正を維持: spike_rate=0 を解消するため閾値を低く維持。
+    v_threshold: 0.05 # 致命的なバグ修正: 閾値をさらに下げ、強制的に発火させる。
     # 動的閾値パラメータ
     threshold_decay: 0.99
     threshold_step: 0.05

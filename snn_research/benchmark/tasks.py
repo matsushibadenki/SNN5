@@ -14,7 +14,7 @@
 #   SHD (Spiking Heidelberg Digits) タスクを SpikingJelly を利用して追加。
 #
 # 修正 (v_hpo_fix_type_error_v2):
-# - HPO (run_distillation.py) から 'img_size' を渡されたときに
+# - HPO (run_distill_hpo.py) から 'img_size' を渡されたときに
 #   TypeError が発生する問題を解消するため、CIFAR10Task に __init__ を追加。
 # - prepare_data がハードコードされた 224x224 ではなく、
 #   __init__ で渡された img_size (32x32) を使用するように修正。

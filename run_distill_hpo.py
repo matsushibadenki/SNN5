@@ -1,4 +1,4 @@
-# ファイルパス: matsushibadenki/snn5/run_distill_hpo.py
+# ファイルパス: matsushibadenki/snn5/SNN5-dbc4f9d167f9df8d0c770008428a1d2832405ddf/run_distill_hpo.py
 # Title: 知識蒸留実行スクリプト (HPO専用)
 # Description: KnowledgeDistillationManagerを使用して、知識蒸留プロセスを開始します。
 #              【最終修正版】spike_rate=0 の問題を解決するため、LR、閾値、重み初期化を強制的に設定するデバッグロジックを含む。
@@ -140,20 +140,14 @@ async def main() -> None:
     except Exception as e:
         print(f"Warning: Could not force learning_rate: {e}")
 
-    # --- ▼ 修正 (v_hpo_fix_vth): V_THRESHOLDが極端に低い場合に安全な値に強制 ▼ ---
-    # 8. 【追加の最終手段】V_THRESHOLDが極端に低い場合に安全な値に強制
-    #    (極端に低い閾値(例: 1e-6)がスパイク率0の原因となる可能性に対処)
+    # 8. 追加の最終手段】V_THRESHOLDが極端に低い場合に安全な値に強制
     try:
-        config_provider_v_th = container.config.model.neuron.v_threshold
-        current_v_threshold = config_provider_v_th()
-        DEBUG_V_THRESHOLD_VALUE = 0.5
-        # ログから読み取ったV_THRESHOLD (1e-6)は非常に小さい
-        if current_v_threshold < 1e-5: 
-            config_provider_v_th.from_value(DEBUG_V_THRESHOLD_VALUE)
-            print(f"  - 【DEBUG OVERRIDE】 Forced V_THRESHOLD to: {DEBUG_V_THRESHOLD_VALUE} (Was: {current_v_threshold})")
+        config_provider_v_reset = container.config.model.neuron.v_reset
+        DEBUG_V_RESET_VALUE = 0.0
+        config_provider_v_reset.from_value(DEBUG_V_RESET_VALUE)
+        print(f"  - 【DEBUG OVERRIDE】 Forced v_reset to: {DEBUG_V_RESET_VALUE}")
     except Exception as e:
-        print(f"Warning: Could not force V_THRESHOLD: {e}")
-    # --- ▲ 修正 (v_hpo_fix_vth) ▲ ---
+        print(f"Warning: Could not force v_reset: {e}")
         
 
     # --- ▼ 修正 (v_hpo_fix_tensor_size_mismatch) ▼ ---
@@ -204,6 +198,22 @@ async def main() -> None:
     print("🔥 Forcing aggressive Xavier weight initialization to ensure initial spike activity.")
     student_model.apply(aggressive_init)
     # --- ▲▲▲ 【最優先修正】重み初期化の強制 (spike_rate=0の最終防衛線) ▼▼▼ ---
+    
+    # --- ▼▼▼ 【追加修正】ニューロンの初期膜電位を強制的に高く設定 ▼▼▼ ---
+    # 目的: spike_rate=0 の問題を解決するため、最初の計算で確実にスパイクさせる
+    try:
+        DEBUG_V_INIT_VALUE = 0.4
+        print(f"🧠 DEBUG: Setting initial membrane potential (V_init) to: {DEBUG_V_INIT_VALUE}")
+        # SNNモデル内のすべてのニューロン（LIF/IFなど）の初期電位を設定
+        for name, module in student_model.named_modules():
+            # snn_research.core.neurons.lif_neuron.LIFNeuronのインスタンスを検出
+            if hasattr(module, 'v_init'):
+                 # type: ignore[attr-defined] # mypyの誤検知または限界の可能性が高いため、# type: ignore[attr-defined] を該当行に追加する。
+                module.v_init = DEBUG_V_INIT_VALUE # type: ignore[attr-defined] 
+    except Exception as e:
+        print(f"Warning: Could not set V_init on all neurons: {e}")
+    # --- ▲▲▲ 【追加修正】ニューロンの初期膜電位を強制的に高く設定 ▲▲▲ ---
+    
     
     optimizer = container.optimizer(params=student_model.parameters())
     scheduler = container.scheduler(optimizer=optimizer) if container.config.training.gradient_based.use_scheduler() else None
@@ -286,15 +296,23 @@ async def main() -> None:
     print(f"  SPIKE_REG_W (Forced): {container.config.training.gradient_based.distillation.loss.spike_reg_weight()}")
     # --- V_THRESHOLDの強制をログに反映 ---
     try:
-        if container.config.model.neuron.v_threshold() == DEBUG_V_THRESHOLD_VALUE:
+        # V_THRESHOLDが強制されたか確認
+        if container.config.model.neuron.v_threshold() < 1e-5:
+            # 強制前の値が小さすぎる場合、強制値(0.5)をログに出力
             print(f"  V_THRESHOLD (Forced): {DEBUG_V_THRESHOLD_VALUE}")
         else:
-            print("  V_THRESHOLD (Forced): N/A (Did not meet condition or check)")
+            # 強制前の値が許容範囲の場合、強制はスキップされたことを示唆
+            print("  V_THRESHOLD (Forced): N/A (Did not meet condition)")
     except NameError:
         print("  V_THRESHOLD (Forced): N/A (DEBUG_V_THRESHOLD_VALUE not defined)")
+    # --- V_RESETの強制をログに反映 ---
+    try:
+        print(f"  V_RESET (Forced): {DEBUG_V_RESET_VALUE}")
+    except NameError:
+        print("  V_RESET (Forced): N/A (DEBUG_V_RESET_VALUE not defined)")
     # ----------------------------------------
     print("=============================================\n")
-    # --- ▲▲▲ 環境整合性チェック ▲▲▲ ---
+    
 
     # 蒸留の実行
     await manager.run_distillation(

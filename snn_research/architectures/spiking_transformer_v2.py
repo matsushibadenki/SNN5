@@ -1,4 +1,4 @@
-# ファイルパス: snn_research/architectures/spiking_transformer_v2.py
+# ファイルパス: matsushibadenki/snn5/SNN5-dbc4f9d167f9df8d0c770008428a1d2832405ddf/snn_research/architectures/spiking_transformer_v2.py
 # Title: Spiking Transformer v2 (SDSA統合版)
 # Description: Improvement-Plan.md に基づき、Spike-Driven Self-Attention (SDSA) を
 #              組み込んだ新しいSpiking Transformerアーキテクチャのスタブを実装します。
@@ -29,6 +29,7 @@ import logging # ロギングを追加
 
 # 必要なコアコンポーネントをインポート
 from snn_research.core.base import BaseModel, SNNLayerNorm
+# AdaptiveLIFNeuronはBioLIFNeuronのエイリアスとして動作している可能性が高い
 from snn_research.core.neurons import AdaptiveLIFNeuron
 from snn_research.core.attention import SpikeDrivenSelfAttention # 新しいSDSAモジュール
 from spikingjelly.activation_based import base as sj_base # type: ignore[import-untyped]
@@ -51,6 +52,9 @@ class PatchEmbedding(nn.Module):
             kernel_size=patch_size, 
             stride=patch_size
         )
+        
+        # PatchEmbeddingのConv層バイアスを強制注入するデバッグは、run_distill_hpo.pyのaggressive_initに任せる
+        # L180のaggressive_initが機能しているため、ここでは不要
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # (B, C, H, W) -> (B, EmbedDim, H_patch, W_patch)
@@ -83,6 +87,11 @@ class SDSAEncoderLayer(sj_base.MemoryModule):
         self.linear1 = nn.Linear(d_model, dim_feedforward)
         
         lif_params = {k: v for k, v in neuron_config.items() if k in ['tau_mem', 'base_threshold', 'adaptation_strength', 'target_spike_rate', 'noise_intensity', 'threshold_decay', 'threshold_step']}
+        
+        # --- ▼ 修正 (v_adathresh_disable): Adaptive Thresholding を無効化 (threshold_stepを0に固定) ▼ ---
+        lif_params['threshold_step'] = 0.0
+        # --- ▲ 修正 (v_adathresh_disable) ▲ ---
+
         self.neuron_ff = cast(AdaptiveLIFNeuron, AdaptiveLIFNeuron(features=dim_feedforward, **lif_params))
 
         self.linear2 = nn.Linear(dim_feedforward, d_model) # linear2 を初期化

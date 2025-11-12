@@ -1,7 +1,7 @@
 # ファイルパス: matsushibadenki/snn5/SNN5-dbc4f9d167f9df8d0c770008428a1d2832405ddf/run_distill_hpo.py
 # Title: 知識蒸留実行スクリプト (HPO専用)
 # Description: KnowledgeDistillationManagerを使用して、知識蒸留プロセスを開始します。
-#              【最終版】SNN起動に必要な構造的修正を前提とし、外部からの過剰なパラメータ強制を全て削除しました。
+#              【最終版】SNN起動に必要な構造的修正を前提とし、外部からのパラメータ強制を全て削除しました。
 
 import argparse
 import asyncio
@@ -30,7 +30,7 @@ from snn_research.benchmark import TASK_REGISTRY
 async def main() -> None:
     parser = argparse.ArgumentParser(description="SNN Knowledge Distillation Runner")
     parser.add_argument("--config", type=str, default="configs/base_config.yaml", help="Base config file path")
-    parser.add_argument("--model_config", type=str, default="configs/spiking_transformer.yaml", help="SNN model architecture config file path")
+    parser.add_argument("--model_config", type=str, default="configs/models/spiking_transformer.yaml", help="SNN model architecture config file path")
     parser.add_argument("--task", type=str, default="cifar10", help="The benchmark task to distill.")
     parser.add_argument("--teacher_model", type=str, default="resnet18", help="The torchvision teacher model to use.")
     parser.add_argument("--epochs", type=int, default=15, help="Number of distillation epochs.")
@@ -106,7 +106,7 @@ async def main() -> None:
     
     
     # --- ▼▼▼ 【デバッグ強制オーバーライドの削除】 HPOに任せる ▼▼▼ ---
-    # 以前のデバッグロジック（spike_reg_weight, LR, V_THRESHOLD, v_reset, v_decay, biasの強制設定、V_INIT強制）は全て削除
+    # 以前のデバッグロジックは全て削除
     
     # --- ▲▲▲ 【デバッグ強制オーバーライドの削除】 ▲▲▲ ---
         
@@ -147,7 +147,7 @@ async def main() -> None:
         if isinstance(m, torch.nn.Conv2d) or isinstance(m, torch.nn.Linear):
             torch.nn.init.xavier_uniform_(m.weight)
             if m.bias is not None:
-                # バイアス注入デバッグは削除し、標準の0初期化に戻す
+                # 最終バイアス注入デバッグを削除し、標準の0初期化に戻す
                 torch.nn.init.constant_(m.bias, 0)
     
     print("🔥 Forcing aggressive Xavier weight initialization to ensure initial spike activity.")
@@ -228,7 +228,7 @@ async def main() -> None:
     
     # --- ▼▼▼ 環境整合性チェック: HPOの正規のパラメータをログに表示 ▼▼▼ ---
     print("\n=============================================")
-    print("✅ FINAL HPO PARAMETER CHECK (DEBUG FORCING REMOVED) ✅")
+    print("✅ FINAL HPO PARAMETER CHECK (CLEAN STATE) ✅")
     
     # HPOが選択した/YAMLで定義された値を表示
     print(f"  V_THRESHOLD (HPO/YAML): {container.config.model.neuron.v_threshold()}")

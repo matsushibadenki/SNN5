@@ -1,4 +1,4 @@
-# ファイルパス: run_distill_hpo.py
+# ファイルパス: matsushibadenki/snn5/run_distill_hpo.py
 # Title: 知識蒸留実行スクリプト (HPO専用)
 # Description: KnowledgeDistillationManagerを使用して、知識蒸留プロセスを開始します。
 #              【最終修正版】spike_rate=0 の問題を解決するため、LR、閾値、重み初期化を強制的に設定するデバッグロジックを含む。
@@ -139,7 +139,7 @@ async def main() -> None:
         print(f"  - 【DEBUG OVERRIDE】 Forced learning_rate to: {DEBUG_LR_VALUE}")
     except Exception as e:
         print(f"Warning: Could not force learning_rate: {e}")
-        
+
     # --- ▼ 修正 (v_hpo_fix_vth): V_THRESHOLDが極端に低い場合に安全な値に強制 ▼ ---
     # 8. 【追加の最終手段】V_THRESHOLDが極端に低い場合に安全な値に強制
     #    (極端に低い閾値(例: 1e-6)がスパイク率0の原因となる可能性に対処)
@@ -153,6 +153,7 @@ async def main() -> None:
             print(f"  - 【DEBUG OVERRIDE】 Forced V_THRESHOLD to: {DEBUG_V_THRESHOLD_VALUE} (Was: {current_v_threshold})")
     except Exception as e:
         print(f"Warning: Could not force V_THRESHOLD: {e}")
+    # --- ▲ 修正 (v_hpo_fix_vth) ▲ ---
         
 
     # --- ▼ 修正 (v_hpo_fix_tensor_size_mismatch) ▼ ---
@@ -283,6 +284,15 @@ async def main() -> None:
     print(f"  V_THRESHOLD (from YAML): {container.config.model.neuron.v_threshold()}")
     print(f"  LR (Forced): {container.config.training.gradient_based.learning_rate()}")
     print(f"  SPIKE_REG_W (Forced): {container.config.training.gradient_based.distillation.loss.spike_reg_weight()}")
+    # --- V_THRESHOLDの強制をログに反映 ---
+    try:
+        if container.config.model.neuron.v_threshold() == DEBUG_V_THRESHOLD_VALUE:
+            print(f"  V_THRESHOLD (Forced): {DEBUG_V_THRESHOLD_VALUE}")
+        else:
+            print("  V_THRESHOLD (Forced): N/A (Did not meet condition or check)")
+    except NameError:
+        print("  V_THRESHOLD (Forced): N/A (DEBUG_V_THRESHOLD_VALUE not defined)")
+    # ----------------------------------------
     print("=============================================\n")
     # --- ▲▲▲ 環境整合性チェック ▲▲▲ ---
 

@@ -1,7 +1,7 @@
 # ファイルパス: matsushibadenki/snn5/SNN5-dbc4f9d167f9df8d0c770008428a1d2832405ddf/run_distill_hpo.py
 # Title: 知識蒸留実行スクリプト (HPO専用)
 # Description: KnowledgeDistillationManagerを使用して、知識蒸留プロセスを開始します。
-#              【最終修正版】spike_rate=0 の問題を解決するため、以前のデバッグ強制設定を復活させ、コア修正の確認ログを追加しました。
+#              【最終修正版】spike_rate=0 の問題を解決するため、デバッグ強制設定を復活させ、aggressive_initのグローバル変数参照エラーを修正しました。
 
 import argparse
 import asyncio
@@ -29,13 +29,15 @@ from snn_research.benchmark import TASK_REGISTRY
 
 async def main() -> None:
     # デバッグログ用の変数 (try/exceptブロックの外側で定義)
+    # NOTE: これらの変数は aggressive_init のクロージャで利用されます。
     DEBUG_LR_VALUE: float = 0.0
     DEBUG_SPIKE_REG_VALUE: float = 0.0
     DEBUG_V_THRESHOLD_VALUE: float = 0.0
     DEBUG_V_RESET_VALUE: float = 0.0
     DEBUG_V_DECAY_VALUE: float = 0.0
-    DEBUG_BIAS_VALUE: float = 0.0
-    
+    DEBUG_BIAS_VALUE: float = 0.0 # モデルバイアス注入用
+    DEBUG_V_INIT_VALUE_FORCED: float = 0.0 # 初期電位注入用
+
     parser = argparse.ArgumentParser(description="SNN Knowledge Distillation Runner")
     parser.add_argument("--config", type=str, default="configs/base_config.yaml", help="Base config file path")
     parser.add_argument("--model_config", type=str, default="configs/cifar10_spikingcnn_config.yaml", help="SNN model architecture config file path")
@@ -58,41 +60,30 @@ async def main() -> None:
     container.config.from_yaml(args.config)
 
     # 3. モデル設定をロード (AttributeError 修正)
-    #    cifar10_spikingcnn_config.yaml には 'model:' キーがないため、
-    #    'model' ノード配下にマージする
     try:
-        # --- ▼ 修正 (v_hpo_fix_3): インデントエラーとExceptブロックのロジックを修正 ▼ ---
+        # --- ▼ 修正 (v_hpo_fix_3): ロードロジックの修正 ▼ ---
         cfg_raw = OmegaConf.load(args.model_config)
         
-        # ロードした config が 'model:' キーをトップレベルに持っているか確認
         if isinstance(cfg_raw, DictConfig) and 'model' in cfg_raw:
-            # 既に 'model' キーがある場合 (spiking_transformer.yaml など)
-            # .model ノードを直接マージする
             container.config.model.from_dict(
                 cast(Dict[str, Any], OmegaConf.to_container(cfg_raw.model, resolve=True))
             )
         elif isinstance(cfg_raw, DictConfig):
-            # 'model' キーがない場合 (cifar10_spikingcnn_config.yaml など)
-            # 辞書全体を 'model' キーでラップしてマージする
             model_config_dict = OmegaConf.to_container(cfg_raw, resolve=True)
             if isinstance(model_config_dict, dict):
                 container.config.from_dict({'model': model_config_dict})
             else:
-                 # --- ▼ 修正: インデントを修正 (21 -> 20 spaces) ▼ ---
                  raise TypeError(f"Model config loaded from {args.model_config} is not a dictionary.")
         else:
-             # --- ▼ 修正: インデントを修正 (17 -> 16 spaces) ▼ ---
              raise TypeError(f"Model config loaded from {args.model_config} is not a dictionary.")
             
     except Exception as e:
         print(f"Warning: Could not load or merge model config '{args.model_config}': {e}")
-        # 'model' が設定されていない可能性があるため、空の辞書をマージしておく
         container.config.from_dict({'model': {}})
-        # --- ▲ 修正 ▲ ---
+    # --- ▲ 修正 ▲ ---
 
 
     # 4. コマンドライン引数からエポック数を上書き
-    #    (override_config よりも先に適用)
     container.config.training.epochs.from_value(args.epochs)
     
     # 5. HPOからの --override_config を適用
@@ -101,7 +92,6 @@ async def main() -> None:
         for override in args.override_config:
             try:
                 keys, value_str = override.split('=', 1)
-                # 型を推論
                 value: Any
                 try:
                     value = int(value_str)
@@ -114,16 +104,13 @@ async def main() -> None:
                         elif value_str.lower() == 'false':
                             value = False
                         else:
-                            value = value_str  # 文字列として保持
+                            value = value_str
 
-                # 修正: dependency-injector の provider API を使って上書き
                 key_parts = keys.split('.')
                 config_provider = container.config
                 for part in key_parts:
-                    # providerオブジェクトを辿る
                     config_provider = getattr(config_provider, part)
                 
-                # 最終的な provider に .from_value() で値を設定
                 config_provider.from_value(value)
                 print(f"  - Applied: {keys} = {value}")
             except Exception as e:
@@ -145,7 +132,7 @@ async def main() -> None:
     # 7. 【デバッグ復活】 learning_rate を強制的に高く設定
     try:
         config_provider_lr = container.config.training.gradient_based.learning_rate
-        DEBUG_LR_VALUE = 1e-2 # 以前の修正を復活 (1e-2)
+        DEBUG_LR_VALUE = 1e-2 # 以前の修正を復活
         config_provider_lr.from_value(DEBUG_LR_VALUE)
         print(f"  - 【DEBUG OVERRIDE】 Forced learning_rate to: {DEBUG_LR_VALUE}")
     except Exception as e:
@@ -155,11 +142,10 @@ async def main() -> None:
     try:
         config_provider_v_th = container.config.model.neuron.v_threshold
         DEBUG_V_THRESHOLD_VALUE = 0.5 
-        if config_provider_v_th() < 1e-5: # 非常に小さい値の場合のみ
+        if config_provider_v_th() < 1e-5:
             config_provider_v_th.from_value(DEBUG_V_THRESHOLD_VALUE)
             print(f"  - 【DEBUG OVERRIDE】 Forced V_THRESHOLD to: {DEBUG_V_THRESHOLD_VALUE}")
         else:
-             # V_THRESHOLDの値をDEBUG_V_THRESHOLD_VALUEに格納 (ログ表示用)
              DEBUG_V_THRESHOLD_VALUE = config_provider_v_th()
     except Exception as e:
         print(f"Warning: Could not force V_THRESHOLD: {e}")
@@ -182,7 +168,7 @@ async def main() -> None:
     except Exception as e:
         print(f"Warning: Could not force v_decay: {e}")
 
-    # 11. 【デバッグ復活】 bias を強制的に 2.0 に設定
+    # 11. 【デバッグ復活】 bias を強制的に 2.0 に設定 (ニューロン層バイアス)
     try:
         config_provider_bias = container.config.model.neuron.bias
         DEBUG_BIAS_VALUE = 2.0  
@@ -210,13 +196,11 @@ async def main() -> None:
             if container.config.data.img_size.provided:
                 container.config.data.img_size.from_value(32)
             else:
-                # 存在しない場合は作成 (base_configにdata.img_sizeがない場合)
                 container.config.data.from_dict({'img_size': 32})
                 
             if container.config.data.patch_size.provided:
                 container.config.data.patch_size.from_value(4)
             else:
-                # 存在しない場合は作成
                 container.config.data.from_dict({'patch_size': 4})
                 
         except Exception as e:
@@ -229,27 +213,29 @@ async def main() -> None:
 
     student_model = container.snn_model(vocab_size=10).to(device)
     
-    # --- ▼▼▼ 【重み初期化ロジックの修正】 Biasを強制注入する ▼▼▼ ---
-    # DEBUG_BIAS_VALUE (2.0) を使用して、Conv/Linear層のバイアスを初期化
+    # --- ▼▼▼ 【重み初期化ロジックの修正】 Biasを強制注入し、クロージャエラーを修正 ▼▼▼ ---
+    # NOTE: DEBUG_BIAS_VALUE, DEBUG_V_INIT_VALUE_FORCED はクロージャで参照されます。
+    
+    # V_INITの強制設定 (再々々復活)
+    DEBUG_V_INIT_VALUE_FORCED = 0.499 # 初期電位のデバッグ値を復活
+    
     def aggressive_init(m: torch.nn.Module):
-        """すべてのConv/Linear層にXavier初期化を適用し、確実に電流を流す。"""
+        """すべてのConv/Linear層にXavier初期化を適用し、バイアスに強制的に正の値(2.0)を注入する。"""
+        # NOTE: DEBUG_BIAS_VALUE はクロージャで利用可能
         if isinstance(m, torch.nn.Conv2d) or isinstance(m, torch.nn.Linear):
             # Glorot (Xavier) Uniform initializationを適用
             torch.nn.init.xavier_uniform_(m.weight)
             if m.bias is not None:
                 # 【修正: バイアス項に強制的に大きな値を注入】
-                # DEBUG_BIAS_VALUE がグローバルスコープからアクセスできることを前提
-                global DEBUG_BIAS_VALUE 
+                # (誤った global 宣言を削除し、クロージャを利用)
                 torch.nn.init.constant_(m.bias, DEBUG_BIAS_VALUE) # 2.0を直接注入
                 print(f"  - INJECTED BIAS: {DEBUG_BIAS_VALUE} for {m.__class__.__name__}")
     
     print("🔥 Forcing aggressive Xavier weight initialization to ensure initial spike activity.")
     student_model.apply(aggressive_init)
     
-    
-    # --- 初期膜電位 (V_init) の強制設定を復活 ---
+    # --- V_INITの強制設定 (再々々復活) ---
     try:
-        DEBUG_V_INIT_VALUE_FORCED = 0.499 # 初期電位のデバッグ値を復活
         print(f"🧠 DEBUG: Setting initial membrane potential (V_init) to: {DEBUG_V_INIT_VALUE_FORCED} (V_TH=0.5)")
         for name, module in student_model.named_modules():
             if hasattr(module, 'v_init'):
@@ -258,7 +244,7 @@ async def main() -> None:
     except Exception as e:
         print(f"Warning: Could not set V_init on all neurons: {e}")
     
-    # --- ▲▲▲ 【重み初期化ロジックと初期膜電位の再設定を復活】 ▲▲▲ ---
+    # --- ▲▲▲ 【重み初期化ロジックの修正】 ▲▲▲ ---
     
     optimizer = container.optimizer(params=student_model.parameters())
     scheduler = container.scheduler(optimizer=optimizer) if container.config.training.gradient_based.use_scheduler() else None
@@ -285,18 +271,17 @@ async def main() -> None:
     model_registry = container.model_registry()
 
     # --- ▼ 修正 (v_hpo_fix_attr_error): dict を DictConfig に変換 ▼ ---
-    # Managerの初期化に必要なconfigを取得
-    manager_config_dict: Dict[str, Any] = container.config() # これは dict を返す
-    manager_config_omegaconf: DictConfig = OmegaConf.create(manager_config_dict) # dict -> DictConfig
+    manager_config_dict: Dict[str, Any] = container.config()
+    manager_config_omegaconf: DictConfig = OmegaConf.create(manager_config_dict)
 
     manager = KnowledgeDistillationManager(
         student_model=student_model,
         teacher_model=teacher_model,
         trainer=distillation_trainer,
-        tokenizer_name=container.config.data.tokenizer_name(), # tokenizerはCIFARタスクでは使われないがインターフェースのため渡す
+        tokenizer_name=container.config.data.tokenizer_name(),
         model_registry=model_registry,
         device=device,
-        config=manager_config_omegaconf # 修正: DictConfig オブジェクトを渡す
+        config=manager_config_omegaconf
     )
     # --- ▲ 修正 (v_hpo_fix_attr_error) ▲ ---
 
@@ -312,7 +297,6 @@ async def main() -> None:
         "hardware_profile": {}
     }
     if args.task == 'cifar10':
-        # CIFAR10Task が img_size を __init__ で受け取ることを期待
         task_init_kwargs['img_size'] = container.config.data.img_size()
 
     task = TaskClass(**task_init_kwargs)
@@ -336,6 +320,7 @@ async def main() -> None:
     # --- ▼▼▼ 環境整合性チェック: コア修正の確認とデバッグ値の表示 ▼▼▼ ---
     CORE_TAU_MEM_VALUE = "NOT FOUND"
     try:
+        # student_model内のBioLIFNeuronのtau_mem値を読み取る
         for name, module in student_model.named_modules():
             if 'BioLIFNeuron' in module.__class__.__name__ and hasattr(module, 'tau_mem'):
                 CORE_TAU_MEM_VALUE = str(getattr(module, 'tau_mem'))
@@ -354,9 +339,11 @@ async def main() -> None:
     print(f"  V_THRESHOLD (Forced): {DEBUG_V_THRESHOLD_VALUE}")
     print(f"  V_RESET (Forced): {DEBUG_V_RESET_VALUE}")
     print(f"  V_DECAY (Forced): {DEBUG_V_DECAY_VALUE}")
-    print(f"  BIAS (Forced): {DEBUG_BIAS_VALUE}")
+    print(f"  NEURON_BIAS (Forced): {DEBUG_BIAS_VALUE} (Config Override)")
+    print(f"  LAYER_BIAS (Injected): {DEBUG_BIAS_VALUE} (Direct Weight Init)")
     
     print("--- STRUCTURAL FIX CHECK ---")
+    print(f"  V_INIT (Forced): {DEBUG_V_INIT_VALUE_FORCED}")
     print(f"  CORE_TAU_MEM (Hardcoded in LIF.py): {CORE_TAU_MEM_VALUE}")
     print("=============================================\n")
     # --- ▲▲▲ 環境整合性チェック ▲▲▲ ---

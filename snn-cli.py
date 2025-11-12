@@ -259,9 +259,9 @@ def convert_ann2snn_cnn(
 def hpo_run(
     model_config: str = typer.Argument(..., help="モデルアーキテクチャ設定ファイル"),
     task: str = typer.Argument(..., help="ターゲットタスク"),
-    target_script: str = typer.Option("run_distillation.py", help="最適化対象の学習スクリプト"),
+    target_script: str = typer.Option("run_distill_hpo.py", help="最適化対象の学習スクリプト"),
     base_config: str = typer.Option("configs/base_config.yaml", help="基本設定ファイル"),
-    teacher_model: Optional[str] = typer.Option(None, help="教師モデル (run_distillation.py用)"),
+    teacher_model: Optional[str] = typer.Option(None, help="教師モデル (run_distill_hpo.py用)"),
     n_trials: int = typer.Option(50, help="Optunaの試行回数"),
     eval_epochs: int = typer.Option(3, help="各試行で実行するエポック数"),
     metric_name: str = typer.Option("accuracy", help="最適化するメトリクス ('accuracy' or 'loss')"),

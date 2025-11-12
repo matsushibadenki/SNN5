@@ -141,13 +141,14 @@ async def main() -> None:
         print(f"Warning: Could not force learning_rate: {e}")
 
     # 8. 追加の最終手段】V_THRESHOLDが極端に低い場合に安全な値に強制
+    # 目的: spike_rate=0 の原因となる可能性のある極端な高速減衰を防ぎ、電位の蓄積を保証する
     try:
-        config_provider_v_reset = container.config.model.neuron.v_reset
-        DEBUG_V_RESET_VALUE = 0.0
-        config_provider_v_reset.from_value(DEBUG_V_RESET_VALUE)
-        print(f"  - 【DEBUG OVERRIDE】 Forced v_reset to: {DEBUG_V_RESET_VALUE}")
+        config_provider_v_decay = container.config.model.neuron.v_decay
+        DEBUG_V_DECAY_VALUE = 0.999 # ほぼ減衰しない積分器として動作
+        config_provider_v_decay.from_value(DEBUG_V_DECAY_VALUE)
+        print(f"  - 【DEBUG OVERRIDE】 Forced v_decay to: {DEBUG_V_DECAY_VALUE} (Minimal decay)")
     except Exception as e:
-        print(f"Warning: Could not force v_reset: {e}")
+        print(f"Warning: Could not force v_decay: {e}")
         
 
     # --- ▼ 修正 (v_hpo_fix_tensor_size_mismatch) ▼ ---
@@ -292,12 +293,11 @@ async def main() -> None:
     # --- ▼▼▼ 環境整合性チェック: 最終オーバーライド値の確認 ▼▼▼ ---
     print("\n=============================================")
     print("🚨 FINAL DEBUG CHECK BEFORE STARTING TRAINING 🚨")
-    print(f"  V_THRESHOLD (from YAML): 1e-06") # YAML値
-    print(f"  LR (Forced): 0.001")
-    print(f"  SPIKE_REG_W (Forced): 1e-06")
-    print(f"  V_THRESHOLD (Forced): 0.5") # 強制値
-    print(f"  V_RESET (Forced): 0.0") # 強制値
+    print(f"  V_THRESHOLD (from YAML): {container.config.model.neuron.v_threshold()}")
+    print(f"  LR (Forced): {container.config.training.gradient_based.learning_rate()}")
+    print(f"  SPIKE_REG_W (Forced): {container.config.training.gradient_based.distillation.loss.spike_reg_weight()}")
     # --- V_THRESHOLDの強制をログに反映 ---
+    
     try:
         # V_THRESHOLDが強制されたか確認
         if container.config.model.neuron.v_threshold() < 1e-5:
@@ -314,8 +314,15 @@ async def main() -> None:
     except NameError:
         print("  V_RESET (Forced): N/A (DEBUG_V_RESET_VALUE not defined)")
     # ----------------------------------------
-    print("=============================================\n")
     
+    # --- V_DECAYの強制をログに反映 ---
+    try:
+        print(f"  V_DECAY (Forced): {DEBUG_V_DECAY_VALUE}")
+    except NameError:
+        print("  V_DECAY (Forced): N/A (DEBUG_V_DECAY_VALUE not defined)")
+    # ----------------------------------------
+    print("=============================================\n")
+        
 
     # 蒸留の実行
     await manager.run_distillation(

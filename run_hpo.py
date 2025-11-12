@@ -1,7 +1,7 @@
 # ファイルパス: run_hpo.py
 # Title: Optunaによるハイパーパラメータ最適化スクリプト
 # Description: Optunaライブラリを使用し、指定された学習スクリプト
-#              (例: run_distillation.py, train.py) のハイパーパラメータを自動調整する。
+#              (例: run_distill_hpo.py, train.py) のハイパーパラメータを自動調整する。
 #
 # 修正 (v1):
 # - mypyエラー [operator] を解消するため、metric_valueがNoneでないことを確認。
@@ -76,7 +76,7 @@ def objective(trial: optuna.trial.Trial, args: argparse.Namespace) -> float:
     
     # --- 1. ハイパーパラメータの提案 ---
     # ここで探索したいパラメータとその範囲を定義
-    # 例: 知識蒸留 (run_distillation.py) のパラメータ
+    # 例: 知識蒸留 (run_distill_hpo.py) のパラメータ
     lr = trial.suggest_float("learning_rate", 1e-5, 1e-3, log=True)
     temperature = trial.suggest_float("temperature", 1.5, 3.5)
     ce_weight = trial.suggest_float("ce_weight", 0.1, 0.5)
@@ -117,7 +117,7 @@ def objective(trial: optuna.trial.Trial, args: argparse.Namespace) -> float:
         args.target_script,
         "--config", args.base_config,
         "--model_config", args.model_config,
-        "--task", args.task, # run_distillation.py が task 引数を取る場合
+        "--task", args.task, # run_distill_hpo.py が task 引数を取る場合
         # 必要に応じて他の引数を追加 (例: --teacher_model)
     ]
     if args.teacher_model:
@@ -175,7 +175,7 @@ def objective(trial: optuna.trial.Trial, args: argparse.Namespace) -> float:
         for line in reversed(stdout_full.strip().split('\n')):
             line_lower = line.lower()
             
-            # train.py / run_distillation.py のログ形式 (BreakthroughTrainer.evaluate)
+            # train.py / run_distill_hpo.py のログ形式 (BreakthroughTrainer.evaluate)
             # "Epoch 2 Validation Results: total: 2.5, ..., accuracy: 0.65"
             if "validation results" in line_lower and "accuracy:" in line_lower:
                 try:
@@ -244,11 +244,11 @@ def objective(trial: optuna.trial.Trial, args: argparse.Namespace) -> float:
 # --- Main Script ---
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Hyperparameter Optimization using Optuna")
-    parser.add_argument("--target_script", type=str, default="run_distillation.py", help="学習を実行するターゲットスクリプト (例: run_distillation.py, train.py)")
+    parser.add_argument("--target_script", type=str, default="run_distill_hpo.py", help="学習を実行するターゲットスクリプト (例: run_distill_hpo.py, train.py)")
     parser.add_argument("--base_config", type=str, default="configs/base_config.yaml", help="基本設定ファイル")
     parser.add_argument("--model_config", type=str, required=True, help="モデルアーキテクチャ設定ファイル (例: configs/cifar10_spikingcnn_config.yaml)")
     parser.add_argument("--task", type=str, required=True, help="ターゲットタスク (例: cifar10)")
-    parser.add_argument("--teacher_model", type=str, help="教師モデル (run_distillation.py用)")
+    parser.add_argument("--teacher_model", type=str, help="教師モデル (run_distill_hpo.py用)")
     parser.add_argument("--n_trials", type=int, default=50, help="Optunaの試行回数")
     parser.add_argument("--eval_epochs", type=int, default=3, help="各試行で実行するエポック数")
     parser.add_argument("--metric_name", type=str, default="accuracy", choices=["accuracy", "loss"], help="最適化するメトリクス ('accuracy' または 'loss')")

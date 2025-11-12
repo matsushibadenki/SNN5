@@ -140,6 +140,20 @@ async def main() -> None:
     except Exception as e:
         print(f"Warning: Could not force learning_rate: {e}")
         
+    # --- ▼ 修正 (v_hpo_fix_vth): V_THRESHOLDが極端に低い場合に安全な値に強制 ▼ ---
+    # 8. 【追加の最終手段】V_THRESHOLDが極端に低い場合に安全な値に強制
+    #    (極端に低い閾値(例: 1e-6)がスパイク率0の原因となる可能性に対処)
+    try:
+        config_provider_v_th = container.config.model.neuron.v_threshold
+        current_v_threshold = config_provider_v_th()
+        DEBUG_V_THRESHOLD_VALUE = 0.5
+        # ログから読み取ったV_THRESHOLD (1e-6)は非常に小さい
+        if current_v_threshold < 1e-5: 
+            config_provider_v_th.from_value(DEBUG_V_THRESHOLD_VALUE)
+            print(f"  - 【DEBUG OVERRIDE】 Forced V_THRESHOLD to: {DEBUG_V_THRESHOLD_VALUE} (Was: {current_v_threshold})")
+    except Exception as e:
+        print(f"Warning: Could not force V_THRESHOLD: {e}")
+        
 
     # --- ▼ 修正 (v_hpo_fix_tensor_size_mismatch) ▼ ---
     # HPO (spiking_transformer.yaml) と cifar10 タスクのミスマッチを修正

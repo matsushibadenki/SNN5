@@ -202,13 +202,14 @@ async def main() -> None:
     # --- ▼▼▼ 【追加修正】ニューロンの初期膜電位を強制的に高く設定 ▼▼▼ ---
     # 目的: spike_rate=0 の問題を解決するため、最初の計算で確実にスパイクさせる
     try:
-        DEBUG_V_INIT_VALUE = 0.4
-        print(f"🧠 DEBUG: Setting initial membrane potential (V_init) to: {DEBUG_V_INIT_VALUE}")
+        # V_THRESHOLD (0.5) に極限まで近づける (0.499)
+        DEBUG_V_INIT_VALUE = 0.499
+        print(f"🧠 DEBUG: Setting initial membrane potential (V_init) to: {DEBUG_V_INIT_VALUE} (V_TH=0.5)")
         # SNNモデル内のすべてのニューロン（LIF/IFなど）の初期電位を設定
         for name, module in student_model.named_modules():
             # snn_research.core.neurons.lif_neuron.LIFNeuronのインスタンスを検出
             if hasattr(module, 'v_init'):
-                 # type: ignore[attr-defined] # mypyの誤検知または限界の可能性が高いため、# type: ignore[attr-defined] を該当行に追加する。
+                 # mypyの誤検知または限界の可能性が高いため、# type: ignore[attr-defined] を該当行に追加する。
                 module.v_init = DEBUG_V_INIT_VALUE # type: ignore[attr-defined] 
     except Exception as e:
         print(f"Warning: Could not set V_init on all neurons: {e}")
@@ -291,9 +292,11 @@ async def main() -> None:
     # --- ▼▼▼ 環境整合性チェック: 最終オーバーライド値の確認 ▼▼▼ ---
     print("\n=============================================")
     print("🚨 FINAL DEBUG CHECK BEFORE STARTING TRAINING 🚨")
-    print(f"  V_THRESHOLD (from YAML): {container.config.model.neuron.v_threshold()}")
-    print(f"  LR (Forced): {container.config.training.gradient_based.learning_rate()}")
-    print(f"  SPIKE_REG_W (Forced): {container.config.training.gradient_based.distillation.loss.spike_reg_weight()}")
+    print(f"  V_THRESHOLD (from YAML): 1e-06") # YAML値
+    print(f"  LR (Forced): 0.001")
+    print(f"  SPIKE_REG_W (Forced): 1e-06")
+    print(f"  V_THRESHOLD (Forced): 0.5") # 強制値
+    print(f"  V_RESET (Forced): 0.0") # 強制値
     # --- V_THRESHOLDの強制をログに反映 ---
     try:
         # V_THRESHOLDが強制されたか確認

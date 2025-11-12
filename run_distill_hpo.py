@@ -229,17 +229,23 @@ async def main() -> None:
 
     student_model = container.snn_model(vocab_size=10).to(device)
     
-    # --- ▼▼▼ 【重み初期化ロジックと初期膜電位の再設定を復活】 (spike_rate=0の最終防衛線) ▼▼▼ ---
+    # --- ▼▼▼ 【重み初期化ロジックの修正】 Biasを強制注入する ▼▼▼ ---
+    # DEBUG_BIAS_VALUE (2.0) を使用して、Conv/Linear層のバイアスを初期化
     def aggressive_init(m: torch.nn.Module):
         """すべてのConv/Linear層にXavier初期化を適用し、確実に電流を流す。"""
         if isinstance(m, torch.nn.Conv2d) or isinstance(m, torch.nn.Linear):
             # Glorot (Xavier) Uniform initializationを適用
             torch.nn.init.xavier_uniform_(m.weight)
             if m.bias is not None:
-                torch.nn.init.constant_(m.bias, 0)
+                # 【修正: バイアス項に強制的に大きな値を注入】
+                # DEBUG_BIAS_VALUE がグローバルスコープからアクセスできることを前提
+                global DEBUG_BIAS_VALUE 
+                torch.nn.init.constant_(m.bias, DEBUG_BIAS_VALUE) # 2.0を直接注入
+                print(f"  - INJECTED BIAS: {DEBUG_BIAS_VALUE} for {m.__class__.__name__}")
     
     print("🔥 Forcing aggressive Xavier weight initialization to ensure initial spike activity.")
     student_model.apply(aggressive_init)
+    
     
     # --- 初期膜電位 (V_init) の強制設定を復活 ---
     try:

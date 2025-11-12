@@ -134,11 +134,15 @@ async def main() -> None:
     # 7. 【最終手段】 learning_rate を強制的に高く設定
     try:
         config_provider_lr = container.config.training.gradient_based.learning_rate
-        DEBUG_LR_VALUE = 1e-3 # HPOの探索範囲（例: 6.5e-5）よりも高い値を強制
+        # DEBUG_LR_VALUE = 1e-3 # HPOの探索範囲（例: 6.5e-5）よりも高い値を強制
+        # --- ▼ 【再々修正】学習率をさらに10倍の1e-2に強制設定 ▼ ---
+        DEBUG_LR_VALUE = 1e-2 
+        # --- ▲ 【再々修正】学習率をさらに10倍の1e-2に強制設定 ▲ ---
         config_provider_lr.from_value(DEBUG_LR_VALUE)
         print(f"  - 【DEBUG OVERRIDE】 Forced learning_rate to: {DEBUG_LR_VALUE}")
     except Exception as e:
         print(f"Warning: Could not force learning_rate: {e}")
+        
 
     # 8. 追加の最終手段】V_THRESHOLDが極端に低い場合に安全な値に強制
     # 目的: spike_rate=0 の原因となる可能性のある極端な高速減衰を防ぎ、電位の蓄積を保証する
@@ -149,6 +153,18 @@ async def main() -> None:
         print(f"  - 【DEBUG OVERRIDE】 Forced v_decay to: {DEBUG_V_DECAY_VALUE} (Minimal decay)")
     except Exception as e:
         print(f"Warning: Could not force v_decay: {e}")
+        
+    
+    # --- ▼ 修正 (bias_fix): ニューロンのバイアス項を強制的に正の値に設定 (スパイク活動開始の最終手段) ▼ ---
+    # 目的: 重み×入力が小さすぎる場合に、バイアスで強制的に膜電位を閾値(V_TH=0.5)以上に到達させる
+    try:
+        config_provider_bias = container.config.model.neuron.bias
+        DEBUG_BIAS_VALUE = 2.0  # 閾値 0.5 を大きく超える正の値に設定
+        config_provider_bias.from_value(DEBUG_BIAS_VALUE)
+        print(f"  - 【DEBUG OVERRIDE】 Forced neuron bias to: {DEBUG_BIAS_VALUE} (High positive value)")
+    except Exception as e:
+        print(f"Warning: Could not force neuron bias: {e}")
+    # --- ▲ 修正 (bias_fix) ▲ ---
         
 
     # --- ▼ 修正 (v_hpo_fix_tensor_size_mismatch) ▼ ---
@@ -296,7 +312,7 @@ async def main() -> None:
     print(f"  V_THRESHOLD (from YAML): {container.config.model.neuron.v_threshold()}")
     print(f"  LR (Forced): {container.config.training.gradient_based.learning_rate()}")
     print(f"  SPIKE_REG_W (Forced): {container.config.training.gradient_based.distillation.loss.spike_reg_weight()}")
-    # --- V_THRESHOLDの強制をログに反映 ---
+    # --- V_THRESHOLD, V_RESET, V_DECAYのロジックは変更なし ---
     
     try:
         # V_THRESHOLDが強制されたか確認
@@ -308,6 +324,7 @@ async def main() -> None:
             print("  V_THRESHOLD (Forced): N/A (Did not meet condition)")
     except NameError:
         print("  V_THRESHOLD (Forced): N/A (DEBUG_V_THRESHOLD_VALUE not defined)")
+    
     # --- V_RESETの強制をログに反映 ---
     try:
         print(f"  V_RESET (Forced): {DEBUG_V_RESET_VALUE}")
@@ -320,7 +337,14 @@ async def main() -> None:
         print(f"  V_DECAY (Forced): {DEBUG_V_DECAY_VALUE}")
     except NameError:
         print("  V_DECAY (Forced): N/A (DEBUG_V_DECAY_VALUE not defined)")
+    
+    # --- BIASの強制をログに反映 ---
+    try:
+        print(f"  BIAS (Forced): {DEBUG_BIAS_VALUE}")
+    except NameError:
+        print("  BIAS (Forced): N/A (DEBUG_BIAS_VALUE not defined)")
     # ----------------------------------------
+    
     print("=============================================\n")
         
 

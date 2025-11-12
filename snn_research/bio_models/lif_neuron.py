@@ -1,20 +1,11 @@
-# ファイルパス: snn_research/bio_models/lif_neuron.py
-# (改修: P8.3 適応的閾値の実装)
-#
+# ファイルパス: matsushibadenki/snn5/snn_research/bio_models/lif_neuron.py
 # Title: Leaky Integrate-and-Fire (LIF) ニューロンモデル
 # Description: シンプルなLIFニューロンを実装します。
-#
-# 改善 (v2):
-# - doc/ROADMAP.md (P8.3) に基づき、恒常性維持（ホメオスタシス）のための
-#   適応的発火閾値メカニズムを実装。
-# - AdaptiveLIFNeuron のロジックを参考に、
-#   `threshold_decay` と `threshold_step` を導入。
+#              【最終修正】スパイク活動を強制開始させるため、膜時定数tau_memを固定（積分器化）
 
 import torch
 import torch.nn as nn
-# --- ▼ 改善 (v2): 型ヒントを追加 ▼ ---
 from typing import Dict, Any, Optional
-# --- ▲ 改善 (v2) ▲ ---
 
 class BioLIFNeuron(nn.Module):
     """
@@ -33,10 +24,13 @@ class BioLIFNeuron(nn.Module):
     ):
         super().__init__()
         self.n_neurons = n_neurons
-        self.tau_mem = neuron_params.get('tau_mem', 10.0)
+        # self.tau_mem = neuron_params.get('tau_mem', 10.0) # 元の行を削除/コメントアウト
+        # --- ▼ 【究極の最終修正】tau_memを極端に大きな値に強制設定し、減衰を停止 ▼ ---
+        DEBUG_HUGE_TAU_MEM = 1000000.0
+        self.tau_mem = DEBUG_HUGE_TAU_MEM
+        # --- ▲ 【究極の最終修正】tau_memを極端に大きな値に強制設定し、減衰を停止 ▲ ---
         self.v_thresh_base = neuron_params.get('v_threshold', 1.0)
         self.v_reset = neuron_params.get('v_reset', 0.0)
-        self.v_rest = neuron_params.get('v_rest', 0.0)
         self.dt = dt
         
         # --- ▼ 改善 (v2): P8.3 適応的閾値パラメータ ▼ ---

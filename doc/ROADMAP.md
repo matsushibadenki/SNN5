@@ -8,7 +8,8 @@
 | :---- | :---- | :---- | :---- | :---- | :---- |
 | P1.1 | SOTA変換パイプラインの確立 | ANNモデル（ResNet, ViT, MoE）からSNNへの損失の少ない変換（ANN-to-SNN）を実現する。最適な正規化（BN、LN）の統合。 | ann\_to\_snn\_converter.py, fold\_bn.py | 中 | 進行中 |
 | P1.2 | SNN-MoE/Transformer 実装 | Llama 4/Gemma 3クラスのMoE構造をSNNに移植。スパイク駆動型MoEルーティングと注意機構の効率化。 | spiking\_moe.py, spiking\_transformer\_v2.py | 中 | 計画済み |
-| **P1.3** | **階層的時系列アーキテクチャ (HOPE)** | **（新規 \- 最優先）HOPEアーキテクチャに基づき、モチーフ（短時間）と構文（長時間）の処理を階層的に分離する構造を**TSkipsSNN**に導入し、長期依存性を効率的に処理する。** | **tskips\_snn.py, temporal\_snn.py** | **極めて高** | **計画済み** |
+| **P1.3** | **階層的時系列アーキテクチャ (HOPE)** | **（新規 \- 最優先）HOPEアーキテクチャ（Nested Learning: The Illusion of Deep Learning
+Architectures）に基づき、モチーフ（短時間）と構文（長時間）の処理を階層的に分離する構造を**TSkipsSNN**に導入し、長期依存性を効率的に処理する。** | **tskips\_snn.py, temporal\_snn.py** | **極めて高** | **計画済み** |
 | **P1.4** | **学習則の理論的深化 (NL-DSAM)** | **（新規 \- 最優先）NL-DSAM（KLダイバージェンス最小化）の理論に基づき、プロジェクトの三因子学習則（CausalTrace）の誤差信号を改良し、STDPとの整合性を高める。** | **learning\_rules/causal\_trace.py, bio\_models/simple\_network.py** | **極めて高** | **計画済み** |
 | P1.5 | T=1 低遅延推論の最適化 | 演算時間のステップ数 $T$ を最小限に抑えるための学習手法（DTTFS、ASR）の適用。 | trainer.py, losses.py | 中 | 進行中 |
 | P1.6 | ハードウェアコンパイルとベンチマーク | 開発したSNNモデルをニューロモルフィックハードウェア（ Loihi, TPU, ASIC ）向けに最適化し、エネルギー効率を検証。 | compiler.py, metrics.py | 中 | 計画済み |

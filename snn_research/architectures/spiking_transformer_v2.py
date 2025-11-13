@@ -1,4 +1,4 @@
-# ファイルパス: matsushibadenki/snn5/SNN5-3acb4dd4029b197f15649dbb0ab217b995d64666/snn_research/architectures/spiking_transformer_v2.py
+# ファイルパス: matsushibadenki/snn5/SNN5-0ef1c958e21ecc0d0510951d04ad720b4d7d25bf/snn_research/architectures/spiking_transformer_v2.py
 # Title: Spiking Transformer v2 (SDSA統合版)
 # Description: Spike-Driven Self-Attention (SDSA) を組み込んだSpiking Transformerアーキテクチャ。
 #
@@ -10,6 +10,10 @@
 # - 'linear2' が __init__ で定義されているにも関わらず、
 #   forward で 'AttributeError' が発生する問題に対処。
 #   (クラス属性としての定義と __init__ での初期化を確実に行う)
+#
+# 【修正 v_fix_spike_rate_zero】:
+# - `run_distill_hpo.py` から渡される `neuron_config` 内の `bias` キーを
+#   `bias_init` にマッピングするロジックを追加。
 
 import torch
 import torch.nn as nn
@@ -69,7 +73,7 @@ class SDSAEncoderLayer(sj_base.MemoryModule):
         self.sdsa = SpikeDrivenSelfAttention(d_model, nhead, time_steps, neuron_config)
         self.linear1 = nn.Linear(d_model, dim_feedforward)
         
-        # --- ▼ 【修正 v_fix_bias_key_mapping】: バイアスキーマッピング ▼ ---
+        # --- ▼ 【修正 v_fix_bias_key_mapping】 + 【修正 v_fix_spike_rate_zero】: バイアスキーマッピング ▼ ---
         # 1. LIFパラメータをフィルタリング
         lif_params_filtered = {k: v for k, v in neuron_config.items() if k in [
             'tau_mem', 
@@ -83,7 +87,8 @@ class SDSAEncoderLayer(sj_base.MemoryModule):
             'gate_input_features',
             'bias_init',      
             'neuron_bias',    
-            'NEURON_BIAS',    
+            'NEURON_BIAS',
+            'bias', # <-- 【修正 v_fix_spike_rate_zero】 'bias' キーを追加
         ]}
         
         # 2. キーマッピングの強化
@@ -91,9 +96,11 @@ class SDSAEncoderLayer(sj_base.MemoryModule):
             lif_params_filtered['bias_init'] = lif_params_filtered.pop('NEURON_BIAS')
         elif 'neuron_bias' in lif_params_filtered: 
             lif_params_filtered['bias_init'] = lif_params_filtered.pop('neuron_bias')
+        elif 'bias' in lif_params_filtered: # <-- 【修正 v_fix_spike_rate_zero】 'bias' キーのマッピングを追加
+            lif_params_filtered['bias_init'] = lif_params_filtered.pop('bias')
         
         lif_params = lif_params_filtered 
-        # --- ▲ 【修正 v_fix_bias_key_mapping】 ▲ ---
+        # --- ▲ 【修正 v_fix_bias_key_mapping】 + 【修正 v_fix_spike_rate_zero】 ▲ ---
 
         lif_params['threshold_step'] = 0.0
 
@@ -111,7 +118,7 @@ class SDSAEncoderLayer(sj_base.MemoryModule):
         self.norm2 = SNNLayerNorm(d_model)
 
         lif_input_params = lif_params.copy() 
-        lif_input_params['base_threshold'] = lif_input_params.get('base_threshold', 0.5) 
+        lif_input_params['base_threshold'] = lif_params.get('base_threshold', 0.5) 
         self.input_spike_converter = cast(AdaptiveLIFNeuron, AdaptiveLIFNeuron(features=d_model, **lif_input_params))
 
     def set_stateful(self, stateful: bool):

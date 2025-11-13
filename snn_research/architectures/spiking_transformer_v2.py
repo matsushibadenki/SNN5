@@ -2,14 +2,7 @@
 # Title: Spiking Transformer v2 (SDSA統合版)
 # Description: Spike-Driven Self-Attention (SDSA) を組み込んだSpiking Transformerアーキテクチャ。
 #
-# 【修正 v_fix_bias_key_mapping】:
-# - neuron_config 内のキー 'NEURON_BIAS' を AdaptiveLIFNeuron が期待する 'bias_init' に
-#   確実にマッピングするようにロジックを強化。
-#
-# 【修正 v_fix_attribute_error】:
-# - 'linear2' が __init__ で定義されているにも関わらず、
-#   forward で 'AttributeError' が発生する問題に対処。
-#   (クラス属性としての定義と __init__ での初期化を確実に行う)
+# (中略)
 #
 # 【修正 v_fix_spike_rate_zero】:
 # - `run_distill_hpo.py` から渡される `neuron_config` 内の `bias` キーを
@@ -18,6 +11,10 @@
 #
 # 【修正 v_fix_import_error】:
 # - 存在しない 'SpikingSelfAttention' のインポートを削除 (log6.txt)
+#
+# 【修正 v_fix_type_error】:
+# - num_patches の計算で float が発生し TypeError になる問題 (log7.txt) を
+#   int() キャストで修正。
 
 import torch
 import torch.nn as nn
@@ -116,16 +113,21 @@ class SpikingTransformerV2(BaseModel):
 
         # --- ViT パッチ埋め込み ---
         self.patch_size = patch_size
-        num_patches = (img_size // patch_size) ** 2
-        patch_dim = in_channels * (patch_size ** 2)
+
+        # --- 修正 v_fix_type_error ---
+        # img_size, patch_size が float として渡された場合 (e.g., 32.0) に
+        # num_patches が 64.0 (float) になり、torch.randn で TypeError が発生する (log7.txt)
+        # したがって、int() にキャストする
+        num_patches = (int(img_size) // int(patch_size)) ** 2
+        patch_dim = in_channels * (int(patch_size) ** 2)
         
         self.patch_embed = nn.Conv2d(
-            in_channels, d_model, 
-            kernel_size=patch_size, stride=patch_size
+            in_channels, int(d_model), 
+            kernel_size=int(patch_size), stride=int(patch_size)
         )
         
-        # 位置エンベディング
-        self.pos_embed = nn.Parameter(torch.randn(1, num_patches, d_model))
+        # 位置エンベディング (num_patches と d_model も int にキャスト)
+        self.pos_embed = nn.Parameter(torch.randn(1, int(num_patches), int(d_model)))
         # -------------------------
 
         self.layers = nn.ModuleList([

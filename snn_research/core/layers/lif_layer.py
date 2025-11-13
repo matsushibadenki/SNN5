@@ -1,15 +1,12 @@
 # ファイルパス: snn_research/core/layers/lif_layer.py
 # タイトル: Leaky Integrate-and-Fire (LIF) SNNレイヤー
 # 機能説明: 
-#   AbstractSNNLayer (P4-1) を継承する具象LIFレイヤー。
+#   AbstractSNNLayerを継承する具象LIFレイヤー。
 #
-#   【重要な修正とデバッグ機能の統合】:
-#   1. スパイクが発生しない問題を解決するため、LIFのダイナミクスを
-#      「閾値減算リセット」から、より安定した「ゼロへの**ハードリセット**」に変更。
-#   2. モデル設定で強制されたバイアス値 (NEURON_BIAS=2.0) が
-#      build()内でゼロに上書きされるバグを修正。
-#   3. 【CRITICAL DEBUG LOGGING】: forwardメソッドに主要な計算結果を
-#      INFOレベルで強制出力するログを追加し、信号が途切れる箇所を特定する。
+#   【最終修正版】:
+#   1. LIFダイナミクスを安定性の高い「ゼロへのハードリセット」に変更。
+#   2. モデル設定で指定されたバイアス値 (bias_init) が、build()でのゼロ初期化により
+#      上書きされないよう修正。
 
 import logging
 from typing import Dict, Any, Optional, Tuple, cast
@@ -64,7 +61,7 @@ def lif_update(
     V_new: Tensor = V_leaked + I_t
     spikes: Tensor = (V_new > threshold).float()
     
-    # 【ロジック修正】: ゼロへのハードリセット
+    # 【ロジック修正】: ゼロへのハードリセットを採用 (安定性向上)
     V_reset: Tensor = V_new * (1.0 - spikes)
     
     return V_reset, spikes
@@ -83,7 +80,7 @@ class LIFLayer(AbstractSNNLayer):
         name: str = "LIFLayer",
         decay: float = 0.95, 
         threshold: float = 1.0,
-        # (前回追加)
+        # 【構造修正】: バイアスの初期値を受け取る
         bias_init: float = 0.0,
     ) -> None:
         
@@ -100,15 +97,12 @@ class LIFLayer(AbstractSNNLayer):
             torch.empty(self._neurons, self._input_features), 
             requires_grad=False
         )
-        # 【重要デバッグ修正】: 設定が無視される可能性を検証するため、
-        # バイアスをデバッグ設定の値 (2.0) にハードコードで上書きします。
-        DEBUG_FORCED_BIAS: float = 2.0 
-        
+        # 【構造修正】: bias_init の値を初期値として設定
         self.b: nn.Parameter = nn.Parameter(
-            # (前回修正) bias_init を使用。デバッグ中は DEBUG_FORCED_BIAS で上書きされます。
-            torch.full((self._neurons,), DEBUG_FORCED_BIAS),
+            torch.full((self._neurons,), bias_init),
             requires_grad=False
-        )        
+        )
+        
         self.membrane_potential: Optional[Tensor] = None
 
 
@@ -120,8 +114,8 @@ class LIFLayer(AbstractSNNLayer):
             logger.debug(f"Building layer: {self.name}")
             
         nn.init.kaiming_uniform_(self.W, a=0.01)
-        # 【バグ修正】: __init__ で設定されたカスタムバイアスを上書きする
-        # nn.init.zeros_(self.b) は削除済み。
+        # 【構造修正】: __init__で設定されたカスタムバイアスを上書きするゼロ初期化を削除
+        # nn.init.zeros_(self.b) 
         
         # P1-4: 学習可能なパラメータとして登録
         self.params = [self.W, self.b]
@@ -162,33 +156,21 @@ class LIFLayer(AbstractSNNLayer):
         
         V_t_minus_1: Tensor = cast(Tensor, self.membrane_potential)
 
-        # 【デバッグ用の中間値再計算】: logger.info で出力するために再計算する
-        I_t: Tensor = nn.functional.linear(inputs, self.W, self.b)
-        V_new: Tensor = V_t_minus_1 * self.decay + I_t
+        # 【デバッグ用の中間値再計算 - 削除またはDEBUGレベルへ戻すことを推奨】
+        # デバッグログが機能しない可能性があるため、中間計算は行わない
         
-        # LIF更新計算の呼び出し
         V_t: Tensor
         spikes_t: Tensor
+        # LIF更新計算の呼び出し
         V_t, spikes_t = lif_update(
             inputs, V_t_minus_1, self.W, self.b, self.decay, self.threshold
         )
         
         self.membrane_potential = V_t
         
-        # --- 【CRITICAL DEBUG LOG (INFOレベルで強制出力)】 ---
-        if logger:
-            b_mean = self.b.mean().item()
-            inputs_max = inputs.max().item()
-            V_new_max = V_new.max().item()
-            spike_rate = spikes_t.mean().item()
-
-            logger.info(
-                f"[CRITICAL LIF DYNAMICS: {self.name}] "
-                f"T_H={self.threshold:.4f}, Decay={self.decay:.4f}. "
-                f"Bias_Mean={b_mean:.4f}. Input_Max={inputs_max:.4f}. "
-                f"V_new_Max={V_new_max:.4f}. Spike_Rate={spike_rate:.4f}"
-            )
-        # --- -------------------------------------------- ---
+        # --- 【デバッグログは削除/DEBUGレベルへ】 ---
+        # 実行環境のロギング設定に依存しないよう、INFOレベルのデバッグログは削除
+        # --------------------------------------------
 
         return {
             'activity': spikes_t, # (スパイク)

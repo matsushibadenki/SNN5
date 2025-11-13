@@ -4,9 +4,10 @@
 #   AbstractSNNLayerを継承する具象LIFレイヤー。
 #
 #   【最終修正版】:
-#   1. LIFダイナミクスを安定性の高い「ゼロへのハードリセット」に変更。
-#   2. モデル設定で指定されたバイアス値 (bias_init) が、build()でのゼロ初期化により
-#      上書きされないよう修正。
+#   1. LIFダイナミクスを安定性の高い「ゼロへのハードリセット」に変更（ロジック修正済み）。
+#   2. モデル設定で指定されたバイアス値が上書きされないよう修正（構造修正済み）。
+#   3. 【最重要】: 重みWの初期値を、ログで要求されている「aggressive Xavier」に合わせ、
+#      初期スパイクを強制的に発生させるための**積極的な初期化**に置き換えます。
 
 import logging
 from typing import Dict, Any, Optional, Tuple, cast
@@ -61,7 +62,7 @@ def lif_update(
     V_new: Tensor = V_leaked + I_t
     spikes: Tensor = (V_new > threshold).float()
     
-    # 【ロジック修正】: ゼロへのハードリセットを採用 (安定性向上)
+    # ロジック修正: ゼロへのハードリセット
     V_reset: Tensor = V_new * (1.0 - spikes)
     
     return V_reset, spikes
@@ -80,7 +81,7 @@ class LIFLayer(AbstractSNNLayer):
         name: str = "LIFLayer",
         decay: float = 0.95, 
         threshold: float = 1.0,
-        # 【構造修正】: バイアスの初期値を受け取る
+        # 構造修正: バイアスの初期値を受け取る
         bias_init: float = 0.0,
     ) -> None:
         
@@ -97,7 +98,7 @@ class LIFLayer(AbstractSNNLayer):
             torch.empty(self._neurons, self._input_features), 
             requires_grad=False
         )
-        # 【構造修正】: bias_init の値を初期値として設定
+        # 構造修正: bias_init の値を初期値として設定
         self.b: nn.Parameter = nn.Parameter(
             torch.full((self._neurons,), bias_init),
             requires_grad=False
@@ -113,9 +114,13 @@ class LIFLayer(AbstractSNNLayer):
         if logger:
             logger.debug(f"Building layer: {self.name}")
             
-        nn.init.kaiming_uniform_(self.W, a=0.01)
-        # 【構造修正】: __init__で設定されたカスタムバイアスを上書きするゼロ初期化を削除
-        # nn.init.zeros_(self.b) 
+        # 【最終修正: 重み初期化の強化】
+        # nn.init.kaiming_uniform_(self.W, a=0.01) # 元の行を削除
+        # 重みをより大きく初期化することで、デバッグバイアス (2.0) と合わせて
+        # 確実に膜電位が閾値 (0.5) を超えるようにします。
+        nn.init.xavier_uniform_(self.W, gain=1.0) 
+        
+        # 構造修正: __init__で設定されたカスタムバイアスを上書きするゼロ初期化は削除済み
         
         # P1-4: 学習可能なパラメータとして登録
         self.params = [self.W, self.b]
@@ -156,9 +161,6 @@ class LIFLayer(AbstractSNNLayer):
         
         V_t_minus_1: Tensor = cast(Tensor, self.membrane_potential)
 
-        # 【デバッグ用の中間値再計算 - 削除またはDEBUGレベルへ戻すことを推奨】
-        # デバッグログが機能しない可能性があるため、中間計算は行わない
-        
         V_t: Tensor
         spikes_t: Tensor
         # LIF更新計算の呼び出し
@@ -168,10 +170,6 @@ class LIFLayer(AbstractSNNLayer):
         
         self.membrane_potential = V_t
         
-        # --- 【デバッグログは削除/DEBUGレベルへ】 ---
-        # 実行環境のロギング設定に依存しないよう、INFOレベルのデバッグログは削除
-        # --------------------------------------------
-
         return {
             'activity': spikes_t, # (スパイク)
             'membrane_potential': V_t

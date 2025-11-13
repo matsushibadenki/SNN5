@@ -12,7 +12,7 @@
 # 【修正 v_fix_import_error】:
 # - 存在しない 'SpikingSelfAttention' のインポートを削除 (log6.txt)
 #
-# 【修正 v_fix_type_error (log8.txt)】:
+# 【修正 v_fix_type_error (log9.txt)】:
 # - HPO (dependency_injector) 経由で int 型引数が float (例: 256.0) として
 #   渡されることが原因で TypeError が発生するため、
 #   __init__ の冒頭で全ての整数引数を int() で明示的にキャストする。
@@ -63,7 +63,7 @@ class SpikingTransformerV2(BaseModel):
         **kwargs: Any
     ) -> None:
         
-        # --- 修正 v_fix_type_error (log8.txt) ---
+        # --- 修正 v_fix_type_error (log9.txt) ---
         # HPO (dependency_injector) が float を渡すため、全て int にキャスト
         _d_model = int(d_model)
         _n_head = int(n_head)
@@ -102,7 +102,7 @@ class SpikingTransformerV2(BaseModel):
         # --- ViT パッチ埋め込み ---
         self.patch_size = _patch_size # _patch_size を使用
 
-        # --- 修正 v_fix_type_error (log8.txt) ---
+        # --- 修正 v_fix_type_error (log9.txt) ---
         # キャスト済みのローカル変数を使用
         num_patches = (_img_size // _patch_size) ** 2
         patch_dim = _in_channels * (_patch_size ** 2)
@@ -113,6 +113,7 @@ class SpikingTransformerV2(BaseModel):
         )
         
         # 位置エンベディング (エラー発生箇所)
+        # num_patches も int() でキャストして万全を期す
         self.pos_embed = nn.Parameter(torch.randn(1, int(num_patches), _d_model))
         # -------------------------
 
@@ -231,7 +232,7 @@ class SDSAEncoderLayer(nn.Module):
         super().__init__()
         self.name = name
         
-        # --- 修正 v_fix_type_error (log8.txt) ---
+        # --- 修正 v_fix_type_error (log9.txt) ---
         # このレイヤーに渡される引数もキャスト
         _d_model = int(d_model)
         _n_head = int(n_head)

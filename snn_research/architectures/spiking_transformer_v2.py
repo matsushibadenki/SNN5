@@ -15,6 +15,9 @@
 # - `run_distill_hpo.py` から渡される `neuron_config` 内の `bias` キーを
 #   `bias_init` にマッピングするロジックを追加。
 # - 【v_init 修正】: `v_init` (初期膜電位) をニューロンに渡すロジックを追加。
+#
+# 【修正 v_fix_import_error】:
+# - 存在しない 'SpikingSelfAttention' のインポートを削除 (log6.txt)
 
 import torch
 import torch.nn as nn
@@ -26,7 +29,12 @@ import logging
 from snn_research.core.base import BaseModel, SNNLayerNorm
 # from snn_research.core.neurons.lif_neuron import LIFNeuron # 古いインポート (使用されていない)
 from snn_research.core.neurons.adaptive_lif_neuron import AdaptiveLIFNeuron # これが使用されている
-from snn_research.core.attention import SpikingSelfAttention, SpikeDrivenSelfAttention
+
+# --- 修正 v_fix_import_error ---
+# 'SpikingSelfAttention' は ssn_research.core.attention に存在しないため削除 (log6.txt)
+# from snn_research.core.attention import SpikingSelfAttention, SpikeDrivenSelfAttention # 元の行
+from snn_research.core.attention import SpikeDrivenSelfAttention # 修正後の行
+# ---------------------------------
 
 # (Pdb)
 # import pdb

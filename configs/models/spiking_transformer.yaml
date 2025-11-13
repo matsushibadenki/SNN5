@@ -9,6 +9,12 @@ model:
   num_layers: 6
   n_head: 8
   time_steps: 32 # 処理速度最適化を維持
+  
+  # --- ▼ 修正: 不足している引数を追加 ▼ ---
+  dropout: 0.1  # 一般的なデフォルト値 (0.0でも可)
+  sdsa_config: {} # SpikeDrivenSelfAttention用の空設定
+  # --- ▲ 修正 ▲ ---
+
   neuron:
     type: "lif"
     # 修正: 1e-6ではスパイクが発生しなかったため、

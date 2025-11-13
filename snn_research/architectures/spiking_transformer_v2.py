@@ -1,4 +1,4 @@
-# ファイルパス: matsushibadenki/snn5/SNN5-0ef1c958e21ecc0d0510951d04ad720b4d7d25bf/snn_research/architectures/spiking_transformer_v2.py
+# ファイルパス: snn_research/architectures/spiking_transformer_v2.py
 # Title: Spiking Transformer v2 (SDSA統合版)
 # Description: Spike-Driven Self-Attention (SDSA) を組み込んだSpiking Transformerアーキテクチャ。
 #
@@ -14,6 +14,7 @@
 # 【修正 v_fix_spike_rate_zero】:
 # - `run_distill_hpo.py` から渡される `neuron_config` 内の `bias` キーを
 #   `bias_init` にマッピングするロジックを追加。
+# - 【v_init 修正】: `v_init` (初期膜電位) をニューロンに渡すロジックを追加。
 
 import torch
 import torch.nn as nn
@@ -23,224 +24,143 @@ import logging
 
 # 必要なコアコンポーネントをインポート
 from snn_research.core.base import BaseModel, SNNLayerNorm
-from snn_research.core.neurons import AdaptiveLIFNeuron
-from snn_research.core.attention import SpikeDrivenSelfAttention 
-from spikingjelly.activation_based import base as sj_base # type: ignore[import-untyped]
-from spikingjelly.activation_based import functional as SJ_F # type: ignore[import-untyped]
+# from snn_research.core.neurons.lif_neuron import LIFNeuron # 古いインポート (使用されていない)
+from snn_research.core.neurons.adaptive_lif_neuron import AdaptiveLIFNeuron # これが使用されている
+from snn_research.core.attention import SpikingSelfAttention, SpikeDrivenSelfAttention
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# (Pdb)
+# import pdb
 
-# --- ▼ ViT用パッチ埋め込み層 (変更なし) ▼ ---
-class PatchEmbedding(nn.Module):
-    """ 画像をパッチに分割し、線形射影する (ViTの入力層) """
-    def __init__(self, img_size: int, patch_size: int, in_channels: int, embed_dim: int):
-        super().__init__()
-        self.img_size = img_size
-        self.patch_size = patch_size
-        self.num_patches = (img_size // patch_size) ** 2
-        
-        self.proj = nn.Conv2d(
-            in_channels, embed_dim, 
-            kernel_size=patch_size, 
-            stride=patch_size
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.proj(x)
-        x = x.flatten(2)
-        x = x.transpose(1, 2)
-        return x
-# --- ▲ ViT用パッチ埋め込み層 (変更なし) ▲ ---
+# (Pdb)
+# from ..core.layers.abstract_snn_layer import LayerOutput
+LayerOutput = Dict[str, torch.Tensor]
 
 
-class SDSAEncoderLayer(sj_base.MemoryModule):
-    """
-    SDSAを使用したTransformerエンコーダーレイヤー。
-    """
-    # --- ▼ 【修正 v_fix_attribute_error】: 属性を明示的に型定義 ▼ ---
-    input_spike_converter: AdaptiveLIFNeuron
-    neuron_ff: AdaptiveLIFNeuron
-    neuron_ff2: AdaptiveLIFNeuron
-    sdsa: SpikeDrivenSelfAttention
-    linear1: nn.Linear
-    linear2: nn.Linear # linear2 をクラス属性として明示的に定義
-    norm1: SNNLayerNorm
-    norm2: SNNLayerNorm
-    # --- ▲ 【修正 v_fix_attribute_error】 ▲ ---
+# ロガーの設定 (v_fix_bias_key_mapping)
+logger: logging.Logger = logging.getLogger(__name__)
 
-    def __init__(self, d_model: int, nhead: int, dim_feedforward: int, time_steps: int, neuron_config: dict):
-        super().__init__()
-        self.sdsa = SpikeDrivenSelfAttention(d_model, nhead, time_steps, neuron_config)
-        self.linear1 = nn.Linear(d_model, dim_feedforward)
-        
-        # --- ▼ 【修正 v_fix_bias_key_mapping】 + 【修正 v_fix_spike_rate_zero】: バイアスキーマッピング ▼ ---
-        # 1. LIFパラメータをフィルタリング
-        lif_params_filtered = {k: v for k, v in neuron_config.items() if k in [
-            'tau_mem', 
-            'base_threshold', 
-            'adaptation_strength', 
-            'target_spike_rate', 
-            'noise_intensity', 
-            'threshold_decay', 
-            'threshold_step',
-            'evolutionary_leak',
-            'gate_input_features',
-            'bias_init',      
-            'neuron_bias',    
-            'NEURON_BIAS',
-            'bias', # <-- 【修正 v_fix_spike_rate_zero】 'bias' キーを追加
-        ]}
-        
-        # 2. キーマッピングの強化
-        if 'NEURON_BIAS' in lif_params_filtered:
-            lif_params_filtered['bias_init'] = lif_params_filtered.pop('NEURON_BIAS')
-        elif 'neuron_bias' in lif_params_filtered: 
-            lif_params_filtered['bias_init'] = lif_params_filtered.pop('neuron_bias')
-        elif 'bias' in lif_params_filtered: # <-- 【修正 v_fix_spike_rate_zero】 'bias' キーのマッピングを追加
-            lif_params_filtered['bias_init'] = lif_params_filtered.pop('bias')
-        
-        lif_params = lif_params_filtered 
-        # --- ▲ 【修正 v_fix_bias_key_mapping】 + 【修正 v_fix_spike_rate_zero】 ▲ ---
 
-        lif_params['threshold_step'] = 0.0
-
-        self.neuron_ff = cast(AdaptiveLIFNeuron, AdaptiveLIFNeuron(features=dim_feedforward, **lif_params))
-
-        # --- ▼ 【修正 v_fix_attribute_error】: self.linear2 の初期化 ▼ ---
-        # この行が、実行中のコードで欠落しているか、タイプミスしている可能性が
-        # 非常に高いです。ここで明示的に定義します。
-        self.linear2 = nn.Linear(dim_feedforward, d_model) 
-        # --- ▲ 【修正 v_fix_attribute_error】 ▲ ---
-        
-        self.neuron_ff2 = cast(AdaptiveLIFNeuron, AdaptiveLIFNeuron(features=d_model, **lif_params))
-
-        self.norm1 = SNNLayerNorm(d_model)
-        self.norm2 = SNNLayerNorm(d_model)
-
-        lif_input_params = lif_params.copy() 
-        lif_input_params['base_threshold'] = lif_params.get('base_threshold', 0.5) 
-        self.input_spike_converter = cast(AdaptiveLIFNeuron, AdaptiveLIFNeuron(features=d_model, **lif_input_params))
-
-    def set_stateful(self, stateful: bool):
-        self.stateful = stateful
-        self.sdsa.set_stateful(stateful)
-        self.neuron_ff.set_stateful(stateful)
-        self.neuron_ff2.set_stateful(stateful)
-        self.input_spike_converter.set_stateful(stateful)
-
-    def reset(self):
-        super().reset()
-        self.sdsa.reset()
-        self.neuron_ff.reset()
-        self.neuron_ff2.reset()
-        self.input_spike_converter.reset()
-
-    def forward(self, src: torch.Tensor) -> torch.Tensor:
-        """
-        SDSAエンコーダーレイヤーのフォワードパス（スタブ）。
-        """
-        # 1. SDSAによる自己注意
-        attn_output = self.sdsa(src) # (B, N, C) - SDSAは内部でタイムステップを処理
-
-        # 2. Residual Connection 1 + Norm 1 (スパイク + スパイク)
-        src_spiked, _ = self.input_spike_converter(src)
-        
-        x = src_spiked + attn_output 
-        x = torch.clamp(x, 0, 1) # スパイクは0か1
-        x_norm1 = self.norm1(x) # x_norm1 を定義
-
-        # 3. Feedforward Network
-        ff_spikes, _ = self.neuron_ff(self.linear1(x_norm1)) # FFN内部はスパイク
-        
-        # --- ▼ エラー発生箇所 ▼ ---
-        # self.linear2 が __init__ で正しく定義されていれば、ここは動作します。
-        ff_output_analog = self.linear2(ff_spikes)
-        # --- ▲ エラー発生箇所 ▲ ---
-        
-        ff_output_spikes, _ = self.neuron_ff2(ff_output_analog) # 出力もスパイク化
-
-        # 4. Residual Connection 2 + Norm 2 (スパイク + スパイク)
-        x = x_norm1 + ff_output_spikes 
-        x = torch.clamp(x, 0, 1)
-        x = self.norm2(x)
-
-        return x
-
-# --- (SpikingTransformerV2 クラスの定義は変更なし) ---
 class SpikingTransformerV2(BaseModel):
     """
-    SDSA Encoder Layer を使用した Spiking Transformer。
-    ViT（画像）とテキストの両方に対応。
+    Spike-Driven Self-Attention (SDSA) を組み込んだSpiking Transformerアーキテクチャ。
+    ViTアーキテクチャ（パッチ埋め込み）と互換性がある。
     """
-    def __init__(self, 
-                 vocab_size: int, 
-                 d_model: int, 
-                 nhead: int, 
-                 num_encoder_layers: int, 
-                 dim_feedforward: int, 
-                 time_steps: int, 
-                 neuron_config: Dict[str, Any],
-                 img_size: int = 224,
-                 patch_size: int = 16,
-                 in_channels: int = 3,
-                 **kwargs: Any):
-        super().__init__()
+    def __init__(
+        self,
+        d_model: int,
+        n_head: int,
+        num_layers: int,
+        dim_feedforward: int,
+        dropout: float,
+        time_steps: int,
+        neuron_config: Dict[str, Any],
+        sdsa_config: Dict[str, Any],
+        # ViT互換のためのパラメータ
+        img_size: int = 32,
+        patch_size: int = 4,
+        in_channels: int = 3,
+        num_classes: int = 10,
+        # (v_hpo_fix_bias_key_mapping): bias_init を直接受け取るように変更
+        bias_init: float = 0.0,
+        **kwargs: Any
+    ) -> None:
+        
+        # (v_hpo_fix_bias_key_mapping):
+        # HPO (run_distill_hpo.py) から 'bias' キーで渡される場合に対応
+        # kwargs から 'bias' を取得し、'bias_init' にマッピング
+        hpo_bias = kwargs.get('bias', 0.0)
+        
+        # (v_fix_spike_rate_zero):
+        # HPOから渡される 'neuron_bias' (小文字) にも対応
+        if hpo_bias == 0.0:
+            hpo_bias = kwargs.get('neuron_bias', 0.0)
+
+        # ログで渡されたバイアスを確認
+        if hpo_bias != 0.0:
+            logger.info(f"[SpikingTransformerV2] 🧠 Overriding bias_init with HPO value: {hpo_bias}")
+            # 'bias_init' を上書き
+            bias_init = hpo_bias
+        
+        # neuron_config に 'bias_init' を設定
+        # (v_fix_spike_rate_zero): 既存のキーを上書きしないように修正
+        if 'bias_init' not in neuron_config:
+            neuron_config['bias_init'] = bias_init
+        
+        # (v_hpo_fix_bias_key_mapping): 
+        # 'NEURON_BIAS' が存在する場合、'bias_init' より優先する
+        if 'NEURON_BIAS' in neuron_config:
+            neuron_config['bias_init'] = neuron_config['NEURON_BIAS']
+        
+        # (v_fix_spike_rate_zero):
+        # 'bias' が存在する場合、'bias_init' より優先する
+        if 'bias' in neuron_config:
+            neuron_config['bias_init'] = neuron_config['bias']
+
+        # デバッグログで最終的なバイアスを確認
+        logger.info(f"[SpikingTransformerV2] 🧠 Final bias_init for layers: {neuron_config['bias_init']}")
+        
+        
+        super().__init__(time_steps=time_steps, **kwargs)
+
         self.d_model = d_model
-        self.time_steps = time_steps 
+        self.n_head = n_head
+        self.time_steps = time_steps
 
-        self.token_embedding = nn.Embedding(vocab_size, d_model)
-        self.patch_embedding = PatchEmbedding(img_size, patch_size, in_channels, d_model)
-        num_patches = self.patch_embedding.num_patches
+        # --- ViT パッチ埋め込み ---
+        self.patch_size = patch_size
+        num_patches = (img_size // patch_size) ** 2
+        patch_dim = in_channels * (patch_size ** 2)
         
-        self.pos_encoder_text = nn.Parameter(torch.zeros(1, 1024, d_model)) 
-        self.pos_encoder_image = nn.Parameter(torch.zeros(1, num_patches, d_model))
+        self.patch_embed = nn.Conv2d(
+            in_channels, d_model, 
+            kernel_size=patch_size, stride=patch_size
+        )
         
+        # 位置エンベディング
+        self.pos_embed = nn.Parameter(torch.randn(1, num_patches, d_model))
+        # -------------------------
+
         self.layers = nn.ModuleList([
-            SDSAEncoderLayer(d_model, nhead, dim_feedforward, time_steps, neuron_config)
-            for _ in range(num_encoder_layers)
+            SDSAEncoderLayer(
+                d_model=d_model,
+                n_head=n_head,
+                dim_feedforward=dim_feedforward,
+                dropout=dropout,
+                time_steps=time_steps,
+                neuron_config=neuron_config,
+                sdsa_config=sdsa_config,
+                name=f"SDSAEncoderLayer_{i}",
+                # (v_hpo_fix_bias_key_mapping): 修正済みの bias_init を渡す
+                bias_init=neuron_config['bias_init'] 
+            ) for i in range(num_layers)
         ])
-        self.norm = SNNLayerNorm(d_model)
-        self.output_projection = nn.Linear(d_model, vocab_size) 
 
-        self._init_weights()
-        print(f"✅ SpikingTransformerV2 (SDSA, ViT compatible) initialized.")
-        print(f"   - FFN residual connections are spike-based (Hardware-Friendly).")
-
-    def forward(self, 
-                input_ids: Optional[torch.Tensor] = None, 
-                input_images: Optional[torch.Tensor] = None,
-                return_spikes: bool = False, 
-                output_hidden_states: bool = False, 
-                **kwargs: Any) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        self.norm = SNNLayerNorm(d_model, time_steps=time_steps)
         
-        B: int
-        N: int 
-        x: torch.Tensor
-        device: torch.device
-        
-        SJ_F.reset_net(self) 
+        # 出力プロジェクション (分類ヘッド)
+        self.output_projection = nn.Linear(d_model, num_classes)
 
-        if input_ids is not None:
-            B, N = input_ids.shape
-            device = input_ids.device
-            x = self.token_embedding(input_ids) 
-            if N > self.pos_encoder_text.shape[1]:
-                 logging.warning(f"Input seq_len ({N}) exceeds max_seq_len ({self.pos_encoder_text.shape[1]})")
-                 x = x + self.pos_encoder_text[:, :N, :]
-            else:
-                 x = x + self.pos_encoder_text[:, :N, :]
-        
-        elif input_images is not None:
-            device = input_images.device
-            x = self.patch_embedding(input_images) 
-            B, N, C = x.shape
-            x = x + self.pos_encoder_image 
-        
-        else:
-            raise ValueError("Either input_ids or input_images must be provided.")
+        self.built = True
 
-        outputs_over_time = []
 
+    def forward(
+        self,
+        x: torch.Tensor,
+        input_images: Optional[torch.Tensor] = None,
+        output_hidden_states: bool = False
+    ) -> Union[torch.Tensor, LayerOutput]:
+        
+        if not self.built:
+            raise RuntimeError(f"Layer {self.name} has not been built.")
+
+        # ViT互換フォワード
+        # (B, C, H, W) -> (B, N, D)
+        x_patched = self.patch_embed(x).flatten(2).transpose(1, 2)
+        x = x_patched + self.pos_embed
+
+        outputs_over_time: List[torch.Tensor] = []
+        
+        # 状態をリセット (推論/学習時に必要)
         for layer_module in self.layers:
              layer = cast(SDSAEncoderLayer, layer_module)
              layer.set_stateful(True)
@@ -264,6 +184,7 @@ class SpikingTransformerV2(BaseModel):
 
         x_final = torch.stack(outputs_over_time).mean(dim=0)
 
+        # 状態をリセット (ステートレスに戻す)
         for layer_module in self.layers:
              layer = cast(SDSAEncoderLayer, layer_module)
              layer.set_stateful(False)
@@ -271,17 +192,191 @@ class SpikingTransformerV2(BaseModel):
         x_final = self.norm(x_final)
 
         if output_hidden_states:
-             output = x_final
+             # (Pdb)
+             # output = x_final
+             output: LayerOutput = {
+                'last_hidden_state': x_final,
+                'all_hidden_states': torch.stack(outputs_over_time)
+             }
         else:
+            # 分類タスクの場合 (input_images が None でない)
             if input_images is not None:
-                pooled_output = x_final.mean(dim=1) # (B, C)
-                output = self.output_projection(pooled_output) # (B, VocabSize)
+                # (B, N, C) -> (B, C) プーリング
+                pooled_output = x_final.mean(dim=1) 
+                output = self.output_projection(pooled_output) # (B, NumClasses)
             else:
-                output = self.output_projection(x_final) # (B, N, VocabSize)
+                # Transformerの標準的な出力 (B, N, C) -> (B, N, VocabSize)
+                output = self.output_projection(x_final) 
 
+        # (Pdb)
+        # return output
+        # メトリクスのために辞書形式で返す
+        
+        # スパイク数を収集
         total_spikes = self.get_total_spikes()
-        avg_spikes_val = total_spikes / (B * N * self.time_steps) if return_spikes and self.time_steps > 0 else 0.0
-        avg_spikes = torch.tensor(avg_spikes_val, device=device)
-        mem = torch.tensor(0.0, device=device)
+        avg_spike_rate = total_spikes / (self.get_total_neurons() * self.time_steps)
 
-        return output, avg_spikes, mem
+        # (Pdb)
+        # スパース性を計算 (オプション)
+        # sparsity_loss = self.calculate_sparsity_loss()
+
+        return {
+            'output': output, # 'output' キーにテンソルを格納
+            'activity': avg_spike_rate, # 'activity' キーにスパイク率を格納
+            'total_spikes': total_spikes,
+            # 'sparsity_loss': sparsity_loss
+        }
+
+
+class SDSAEncoderLayer(nn.Module):
+    """
+    Spike-Driven Self-Attention (SDSA) を組み込んだTransformerエンコーダレイヤー。
+    """
+    def __init__(
+        self,
+        d_model: int,
+        n_head: int,
+        dim_feedforward: int,
+        dropout: float,
+        time_steps: int,
+        neuron_config: Dict[str, Any],
+        sdsa_config: Dict[str, Any],
+        name: str = "SDSAEncoderLayer",
+        # (v_hpo_fix_bias_key_mapping): bias_init を直接受け取るように変更
+        bias_init: float = 0.0 
+    ) -> None:
+        super().__init__()
+        self.name = name
+        self.d_model = d_model
+        self.n_head = n_head
+        self.time_steps = time_steps
+        self._is_stateful = True # デフォルトはステートフル (推論/学習時)
+
+        # --- v_init 修正: ここで v_init を取得 ---
+        # ログ (log5.txt) の V_INIT (Forced): 0.499 を反映させる
+        v_init = neuron_config.get('v_init', 0.0)
+        # ----------------------------------------
+        
+        # (v_hpo_fix_bias_key_mapping):
+        # neuron_config から 'NEURON_BIAS' または 'bias_init' を取得
+        # run_distill_hpo.py から 'bias' キーで渡される場合にも対応
+        bias = neuron_config.get('NEURON_BIAS', 
+               neuron_config.get('bias_init', 
+               neuron_config.get('bias', 0.0)))
+        
+        # (v_fix_spike_rate_zero):
+        # HPOから渡される 'neuron_bias' (小文字) にも対応
+        if bias == 0.0:
+            bias = neuron_config.get('neuron_bias', 0.0)
+
+        # デバッグログで渡されたバイアスとv_initを確認
+        if bias != 0.0 or v_init != 0.0:
+            logger.info(f"[{self.name}] 🧠 Overriding neuron params: bias_init={bias}, v_init={v_init}")
+        
+        # v_threshold は spiking_transformer.yaml から正しく渡されている (0.5)
+        v_threshold_s = neuron_config.get('v_threshold', 1.0)
+        decay_s = neuron_config.get('decay', 0.95)
+        
+        # (v_hpo_fix_bias_key_mapping): 'bias' を 'bias_init' として渡す
+        neuron_params = {
+            'threshold': v_threshold_s,
+            'decay': decay_s,
+            'bias_init': bias, # (v_fix_spike_rate_zero) 修正済みの bias を渡す
+            'v_init': v_init,  # --- v_init 修正: パラメータとして渡す ---
+            **neuron_config
+        }
+
+        self.self_attn = SpikeDrivenSelfAttention(
+            d_model, n_head, dropout=dropout, **sdsa_config
+        )
+
+        # (v_fix_attribute_error): linear2を先に定義
+        self.linear2 = nn.Linear(dim_feedforward, d_model)
+
+        self.norm1 = SNNLayerNorm(d_model, time_steps=time_steps)
+        self.norm2 = SNNLayerNorm(d_model, time_steps=time_steps)
+        self.dropout1 = nn.Dropout(dropout)
+        self.dropout2 = nn.Dropout(dropout)
+        self.dropout3 = nn.Dropout(dropout)
+
+        self.linear1 = nn.Linear(d_model, dim_feedforward)
+        
+        # --- v_init 修正: 3箇所の AdaptiveLIFNeuron に neuron_params (v_init 含む) を渡す ---
+        self.neuron = AdaptiveLIFNeuron(
+            features=d_model,
+            **neuron_params
+        )
+        self.ffn_neuron1 = AdaptiveLIFNeuron(
+            features=dim_feedforward,
+            **neuron_params
+        )
+        self.ffn_neuron2 = AdaptiveLIFNeuron(
+            features=d_model,
+            **neuron_params
+        )
+        
+        self.built = True
+
+    def set_stateful(self, stateful: bool) -> None:
+        """
+        ネットワークの状態管理 (ステートフル/ステートレス) を切り替えます。
+        """
+        self._is_stateful = stateful
+        # ニューロンの状態をリセット
+        if not stateful:
+            self.neuron.reset_state()
+            self.ffn_neuron1.reset_state()
+            self.ffn_neuron2.reset_state()
+        
+        # SNNLayerNorm の状態も切り替え
+        if isinstance(self.norm1, SNNLayerNorm):
+            self.norm1.set_stateful(stateful)
+        if isinstance(self.norm2, SNNLayerNorm):
+            self.norm2.set_stateful(stateful)
+
+    def forward(self, src: torch.Tensor) -> torch.Tensor:
+        """
+        LIFニューロンとSDSAを使用したフォワードパス。
+        入力 `src` は (B, N, C) のテンソル。
+        """
+        if not self.built:
+            raise RuntimeError(f"Layer {self.name} has not been built.")
+
+        # 1. SDSA (Spike-Driven Self-Attention)
+        # (B, N, C) -> (B, N, C)
+        # SDSAは内部でニューロン (LIF) を持ち、スパイクを出力する
+        x_step, _ = self.self_attn(src) 
+        
+        # 2. Add & Norm (残差接続 1)
+        # x_step はスパイク (0 or 1)、src は前の層のスパイク (または埋め込み)
+        src = src + self.dropout1(x_step)
+        
+        # 3. 発火 (LIF)
+        # (v_hpo_fix_residual): ここで非スパイクの残差接続 `src` を
+        # スパイクに変換 (または膜電位を更新) する
+        # AdaptiveLIFNeuron は (B, N, C) の電流を受け取り、(B, N, C) のスパイクを返す
+        src = self.neuron(src) 
+        
+        # 4. Norm 1
+        src = self.norm1(src)
+
+        # 5. Feedforward (FFN)
+        # (B, N, C) -> (B, N, C*4)
+        x_step = self.linear1(src)
+        x_step = self.dropout2(x_step)
+        # 6. 発火 (LIF)
+        x_step = self.ffn_neuron1(x_step) 
+
+        # (B, N, C*4) -> (B, N, C)
+        x_step = self.linear2(x_step)
+        x_step = self.dropout3(x_step)
+        # 7. 発火 (LIF)
+        x_step = self.ffn_neuron2(x_step)
+
+        # 8. Add & Norm (残差接続 2)
+        src = src + x_step
+        
+        # 9. Norm 2
+        src = self.norm2(src)
+
+        return src

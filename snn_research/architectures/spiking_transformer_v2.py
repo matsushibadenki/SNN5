@@ -12,7 +12,7 @@
 # 【修正 v_fix_import_error】:
 # - 存在しない 'SpikingSelfAttention' のインポートを削除 (log6.txt)
 #
-# 【修正 v_fix_type_error (log9.txt)】:
+# 【修正 v_fix_type_error (log10.txt)】:
 # - HPO (dependency_injector) 経由で int 型引数が float (例: 256.0) として
 #   渡されることが原因で TypeError が発生するため、
 #   __init__ の冒頭で全ての整数引数を int() で明示的にキャストする。
@@ -63,7 +63,7 @@ class SpikingTransformerV2(BaseModel):
         **kwargs: Any
     ) -> None:
         
-        # --- 修正 v_fix_type_error (log9.txt) ---
+        # --- 修正 v_fix_type_error (log10.txt) ---
         # HPO (dependency_injector) が float を渡すため、全て int にキャスト
         _d_model = int(d_model)
         _n_head = int(n_head)
@@ -102,7 +102,7 @@ class SpikingTransformerV2(BaseModel):
         # --- ViT パッチ埋め込み ---
         self.patch_size = _patch_size # _patch_size を使用
 
-        # --- 修正 v_fix_type_error (log9.txt) ---
+        # --- 修正 v_fix_type_error (log10.txt) ---
         # キャスト済みのローカル変数を使用
         num_patches = (_img_size // _patch_size) ** 2
         patch_dim = _in_channels * (_patch_size ** 2)
@@ -204,7 +204,14 @@ class SpikingTransformerV2(BaseModel):
 
         # スパイク数を収集
         total_spikes = self.get_total_spikes()
-        avg_spike_rate = total_spikes / (self.get_total_neurons() * self.time_steps)
+        # (Pdb)
+        # ゼロ除算を回避
+        total_neurons = self.get_total_neurons()
+        if total_neurons == 0 or self.time_steps == 0:
+            avg_spike_rate = torch.tensor(0.0, device=x.device)
+        else:
+            avg_spike_rate = total_spikes / (total_neurons * self.time_steps)
+
 
         return {
             'output': output, # 'output' キーにテンソルを格納
@@ -232,7 +239,7 @@ class SDSAEncoderLayer(nn.Module):
         super().__init__()
         self.name = name
         
-        # --- 修正 v_fix_type_error (log9.txt) ---
+        # --- 修正 v_fix_type_error (log10.txt) ---
         # このレイヤーに渡される引数もキャスト
         _d_model = int(d_model)
         _n_head = int(n_head)

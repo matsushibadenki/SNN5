@@ -69,12 +69,12 @@ class SNNCore(nn.Module):
 
         # (v_hpo_fix_value_error, v_hpo_fix_oom_v3 のロジックを維持)
         if model_type == "spiking_transformer":
-            if "num_layers" in params and "num_encoder_layers" not in params:
-                params["num_encoder_layers"] = params.pop("num_layers")
+            # if "num_layers" in params and "num_encoder_layers" not in params:
+            #     params["num_encoder_layers"] = params.pop("num_layers") # 削除
             if "d_model" in params and "dim_feedforward" not in params:
-                params["dim_feedforward"] = params["d_model"] * 4
-            if "n_head" in params and "nhead" not in params:
-                params["nhead"] = params.pop("n_head")
+                params["dim_feedforward"] = params["d_model"] * 4 # これは正しい
+            # if "n_head" in params and "nhead" not in params:
+            #     params["nhead"] = params.pop("n_head") # 削除
             if vocab_size == 10: # cifar10
                 logger.info("Detected vocab_size=10 (likely CIFAR-10). Overriding ViT params for SpikingTransformerV2.")
                 params["img_size"] = 32

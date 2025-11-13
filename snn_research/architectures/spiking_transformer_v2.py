@@ -1,5 +1,11 @@
-# ファイルパス: snn_research/architectures/spiking_transformer_v2.py
+# ファイルパス: matsushibadenki/snn5/SNN5-3acb4dd4029b197f15649dbb0ab217b995d64666/snn_research/architectures/spiking_transformer_v2.py
 # Title: Spiking Transformer v2 (SDSA統合版)
+# Description: Spike-Driven Self-Attention (SDSA) を組み込んだSpiking Transformerアーキテクチャ。
+#
+# 【最終修正 v_fix_bias_key_mapping】:
+# - neuron_config 内のキー 'neuron_bias' (コンフィグで使われる可能性が高い名称) を
+#   AdaptiveLIFNeuron が期待する 'bias_init' にマッピングして渡すように修正。
+# - これにより、NEURON_BIAS=2.0 の設定が LIF ニューロンに確実に適用されます。
 
 import torch
 import torch.nn as nn
@@ -9,12 +15,14 @@ import logging
 
 # 必要なコアコンポーネントをインポート
 from snn_research.core.base import BaseModel, SNNLayerNorm
+# AdaptiveLIFNeuronはBioLIFNeuronのエイリアスとして動作している可能性が高い
 from snn_research.core.neurons import AdaptiveLIFNeuron
 from snn_research.core.attention import SpikeDrivenSelfAttention 
 from spikingjelly.activation_based import base as sj_base # type: ignore[import-untyped]
 from spikingjelly.activation_based import functional as SJ_F # type: ignore[import-untyped]
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
 
 # --- ▼ 改善 (v4): ViT用パッチ埋め込み層 ▼ ---
 class PatchEmbedding(nn.Module):
@@ -25,25 +33,17 @@ class PatchEmbedding(nn.Module):
         self.patch_size = patch_size
         self.num_patches = (img_size // patch_size) ** 2
         
-        # (B, C, H, W) -> (B, N_Patches, EmbedDim)
         self.proj = nn.Conv2d(
             in_channels, embed_dim, 
             kernel_size=patch_size, 
             stride=patch_size
         )
-        
-        # PatchEmbeddingのConv層バイアスを強制注入するデバッグは、run_distill_hpo.pyのaggressive_initに任せる
-        # L180のaggressive_initが機能しているため、ここでは不要
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # (B, C, H, W) -> (B, EmbedDim, H_patch, W_patch)
         x = self.proj(x)
-        # (B, EmbedDim, H_patch, W_patch) -> (B, EmbedDim, N_Patches)
         x = x.flatten(2)
-        # (B, EmbedDim, N_Patches) -> (B, N_Patches, EmbedDim)
         x = x.transpose(1, 2)
         return x
-# --- ▲ 改善 (v4) ▲ ---
 
 
 class SDSAEncoderLayer(sj_base.MemoryModule):
@@ -65,8 +65,8 @@ class SDSAEncoderLayer(sj_base.MemoryModule):
         self.sdsa = SpikeDrivenSelfAttention(d_model, nhead, time_steps, neuron_config)
         self.linear1 = nn.Linear(d_model, dim_feedforward)
         
-        # 【バグ修正】: bias_init をパラメータフィルタリングに追加
-        lif_params = {k: v for k, v in neuron_config.items() if k in [
+        # 1. LIFパラメータをフィルタリング (bias_init, neuron_biasを含める)
+        lif_params_filtered = {k: v for k, v in neuron_config.items() if k in [
             'tau_mem', 
             'base_threshold', 
             'adaptation_strength', 
@@ -74,18 +74,24 @@ class SDSAEncoderLayer(sj_base.MemoryModule):
             'noise_intensity', 
             'threshold_decay', 
             'threshold_step',
-            # --- 【修正L108】: bias_init を追加 ---
-            'bias_init', 
-            # --- ------------------------ ---
+            'bias_init',      # 以前の修正で追加
+            'neuron_bias',    # 【最終修正】: コンフィグで使われる可能性のあるキーを追加
         ]}
-                
-        # --- (修正 v_adathresh_disable) ---
+        
+        # 2. 【キーマッピング】: 'neuron_bias'を'bias_init'に変換し、優先させる
+        # AdaptiveLIFNeuronが'bias_init'を期待していると仮定
+        if 'neuron_bias' in lif_params_filtered:
+            lif_params_filtered['bias_init'] = lif_params_filtered.pop('neuron_bias')
+        
+        lif_params = lif_params_filtered # 変数名を戻す
+
+        # --- ▼ 修正 (v_adathresh_disable) ---
         lif_params['threshold_step'] = 0.0
-        # --- (修正 v_adathresh_disable) ---
+        # --- ▲ 修正 (v_adathresh_disable) ▲ ---
 
         self.neuron_ff = cast(AdaptiveLIFNeuron, AdaptiveLIFNeuron(features=dim_feedforward, **lif_params))
 
-        self.linear2 = nn.Linear(dim_feedforward, d_model) 
+        self.linear2 = nn.Linear(dim_feedforward, d_model)
         self.neuron_ff2 = cast(AdaptiveLIFNeuron, AdaptiveLIFNeuron(features=d_model, **lif_params))
 
         self.norm1 = SNNLayerNorm(d_model)
@@ -94,7 +100,7 @@ class SDSAEncoderLayer(sj_base.MemoryModule):
         lif_input_params = lif_params.copy() 
         lif_input_params['base_threshold'] = lif_input_params.get('base_threshold', 0.5) 
         self.input_spike_converter = cast(AdaptiveLIFNeuron, AdaptiveLIFNeuron(features=d_model, **lif_input_params))
-        
+                
     def set_stateful(self, stateful: bool):
         """
         このレイヤーおよびサブモジュール（SDSA, LIF）のステートフルモードを設定する。

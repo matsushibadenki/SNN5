@@ -1,6 +1,6 @@
 # configs/models/spiking_transformer.yaml
 # ファイルの内容: スパイキングトランスフォーマーモデルの設定
-# 機能: spike_rate=0 を解決するための最終手段として、v_thresholdを事実上のゼロに設定する。
+# 機能: スパイク発生のため、v_thresholdを初期化の想定値に合わせる。
 
 model:
   path: "spiking_transformer_model.pth"
@@ -11,7 +11,11 @@ model:
   time_steps: 32 # 処理速度最適化を維持
   neuron:
     type: "lif"
-    v_threshold: 1e-6 # 閾値を事実上のゼロに設定（維持）。
+    # 修正: 1e-6ではスパイクが発生しなかったため、
+    # lif_layer.py の積極的初期化が想定している 0.5 に設定を変更する。
+    v_threshold: 0.5 
+    # v_threshold: 1e-6 # 元の行
+    
     # 動的閾値パラメータ（無効化）
     threshold_decay: 1.0 # 減衰なし（維持）。
     threshold_step: 0.0 # ステップ増加なし（維持）。

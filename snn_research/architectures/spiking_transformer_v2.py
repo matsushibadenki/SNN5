@@ -1,37 +1,16 @@
-# ファイルパス: matsushibadenki/snn5/SNN5-dbc4f9d167f9df8d0c770008428a1d2832405ddf/snn_research/architectures/spiking_transformer_v2.py
+# ファイルパス: snn_research/architectures/spiking_transformer_v2.py
 # Title: Spiking Transformer v2 (SDSA統合版)
-# Description: Improvement-Plan.md に基づき、Spike-Driven Self-Attention (SDSA) を
-#              組み込んだ新しいSpiking Transformerアーキテクチャのスタブを実装します。
-#
-# 改善 (v2):
-# - SDSAEncoderLayer が spikingjelly.activation_based.base.MemoryModule を継承。
-# - set_stateful と reset メソッドを実装し、内部ニューロンの状態管理を
-#   学習/推論ループと連携できるように修正。
-#
-# 修正 (v3):
-# - mypy [import-untyped], [name-defined] エラーを修正。
-#
-# 改善 (v4):
-# - doc/ROADMAP.md (セクション5.1, 引用[9]) に基づき、
-#   FFNの残差接続を「スパイク+スパイク」に変更し、「非スパイク計算」を排除。
-# - doc/SNN開発：SNN5プロジェクト改善のための情報収集.md (セクション5.1, SSSA) に基づき、
-#   画像入力 (ViT) のための PatchEmbedding を追加。
-#
-# 修正 (v_hpo_fix_attribute_error):
-# - AttributeError: 'super' object has no attribute 'set_stateful' を修正。
-# - super().set_stateful(stateful) を self.stateful = stateful に変更。
 
 import torch
 import torch.nn as nn
 from typing import List, Tuple, Dict, Any, Optional, Union, cast 
 import math
-import logging # ロギングを追加
+import logging 
 
 # 必要なコアコンポーネントをインポート
 from snn_research.core.base import BaseModel, SNNLayerNorm
-# AdaptiveLIFNeuronはBioLIFNeuronのエイリアスとして動作している可能性が高い
 from snn_research.core.neurons import AdaptiveLIFNeuron
-from snn_research.core.attention import SpikeDrivenSelfAttention # 新しいSDSAモジュール
+from snn_research.core.attention import SpikeDrivenSelfAttention 
 from spikingjelly.activation_based import base as sj_base # type: ignore[import-untyped]
 from spikingjelly.activation_based import functional as SJ_F # type: ignore[import-untyped]
 
@@ -86,19 +65,28 @@ class SDSAEncoderLayer(sj_base.MemoryModule):
         self.sdsa = SpikeDrivenSelfAttention(d_model, nhead, time_steps, neuron_config)
         self.linear1 = nn.Linear(d_model, dim_feedforward)
         
-        lif_params = {k: v for k, v in neuron_config.items() if k in ['tau_mem', 'base_threshold', 'adaptation_strength', 'target_spike_rate', 'noise_intensity', 'threshold_decay', 'threshold_step']}
-        
-        # --- ▼ 修正 (v_adathresh_disable): Adaptive Thresholding を無効化 (threshold_stepを0に固定) ▼ ---
+        # 【バグ修正】: bias_init をパラメータフィルタリングに追加
+        lif_params = {k: v for k, v in neuron_config.items() if k in [
+            'tau_mem', 
+            'base_threshold', 
+            'adaptation_strength', 
+            'target_spike_rate', 
+            'noise_intensity', 
+            'threshold_decay', 
+            'threshold_step',
+            # --- 【修正L108】: bias_init を追加 ---
+            'bias_init', 
+            # --- ------------------------ ---
+        ]}
+                
+        # --- (修正 v_adathresh_disable) ---
         lif_params['threshold_step'] = 0.0
-        # --- ▲ 修正 (v_adathresh_disable) ▲ ---
+        # --- (修正 v_adathresh_disable) ---
 
         self.neuron_ff = cast(AdaptiveLIFNeuron, AdaptiveLIFNeuron(features=dim_feedforward, **lif_params))
 
-        self.linear2 = nn.Linear(dim_feedforward, d_model) # linear2 を初期化
-        # --- ▼ 改善 (v4): FFN出力用LIFを追加 ▼ ---
-        # FFNの出力 (linear2 の後) もスパイクさせる
+        self.linear2 = nn.Linear(dim_feedforward, d_model) 
         self.neuron_ff2 = cast(AdaptiveLIFNeuron, AdaptiveLIFNeuron(features=d_model, **lif_params))
-        # --- ▲ 改善 (v4) ▲ ---
 
         self.norm1 = SNNLayerNorm(d_model)
         self.norm2 = SNNLayerNorm(d_model)
@@ -106,7 +94,7 @@ class SDSAEncoderLayer(sj_base.MemoryModule):
         lif_input_params = lif_params.copy() 
         lif_input_params['base_threshold'] = lif_input_params.get('base_threshold', 0.5) 
         self.input_spike_converter = cast(AdaptiveLIFNeuron, AdaptiveLIFNeuron(features=d_model, **lif_input_params))
-
+        
     def set_stateful(self, stateful: bool):
         """
         このレイヤーおよびサブモジュール（SDSA, LIF）のステートフルモードを設定する。

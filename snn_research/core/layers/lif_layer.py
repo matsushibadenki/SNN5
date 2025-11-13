@@ -118,7 +118,11 @@ class LIFLayer(AbstractSNNLayer):
         # nn.init.kaiming_uniform_(self.W, a=0.01) # 元の行を削除
         # 重みをより大きく初期化することで、デバッグバイアス (2.0) と合わせて
         # 確実に膜電位が閾値 (0.5) を超えるようにします。
-        nn.init.xavier_uniform_(self.W, gain=1.0) 
+        
+        # 修正: gain=1.0 では「積極的 (aggressive)」な初期化として不十分です。
+        # スパイクを強制的に発生させるため、gainを大きな値（例: 3.0）に変更します。
+        # nn.init.xavier_uniform_(self.W, gain=1.0) # 元の行
+        nn.init.xavier_uniform_(self.W, gain=3.0) # 修正後の行
         
         # 構造修正: __init__で設定されたカスタムバイアスを上書きするゼロ初期化は削除済み
         

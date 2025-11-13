@@ -1,33 +1,13 @@
 # ファイルパス: snn_research/core/neurons/__init__.py
 # (更新)
 # Title: SNNニューロンモデル定義
-# Description:
-# - プロジェクトで使用される様々なSNNニューロンモデルを定義します。
-# - AdaptiveLIFNeuron: 動的閾値と学習可能な膜時定数を持つLIFニューロン。
-# - IzhikevichNeuron: 生物学的に複雑な発火パターンを再現可能なニューロン。
-# - ProbabilisticLIFNeuron: 確率的にスパイクを生成するLIFニューロン。
-# - GLIFNeuron (SNN5改善): 入力依存のゲートで膜時定数を動的に制御するニューロン (セクション5.1)。
-# - TC_LIF (SNN5改善): 長期時系列依存性のための2区画ニューロン (セクション5.1)。
-# - DualThresholdNeuron (SNN5改善): ANN-SNN変換のエラー補償学習(ECL)用ニューロン (セクション3.1)。
-# - ScaleAndFireNeuron (SNN5改善): T=1でのANN-SNN変換を実現する空間的マルチ閾値ニューロン (セクション3.2)。
 #
-# 改善 (v2):
-# - doc/ROADMAP.md (セクション3.1, PLIF) および
-#   doc/SNN開発：SNN5プロジェクト改善のための情報収集.md (セクション3.1) に基づき、
-#   AdaptiveLIFNeuron, ProbabilisticLIFNeuron, DualThresholdNeuron の
-#   膜時定数 (tau_mem) を固定値から学習可能なパラメータ (nn.Parameter) に変更。
-#
-# mypy --strict 準拠。
-#
-# 改善 (v3):
-# - ロードマップ P2.1 (PLIF) / P2.2 (GLIF) の実装を再検証・強化。
-#
-# 修正 (v4): BistableIFNeuron をインポート
-# 修正 (v5): 末尾の不要な '}' を削除し、__all__ リストを追加
-#
-# 改善 (v6):
-# - doc/ROADMAP.md (P2.1) および doc/SNN5プロジェクトの技術的解決策リサーチ.md (セクション2.2, 引用[47]) に基づき、
-#   AdaptiveLIFNeuron に「Evolutionary Leak (EL)」機構（入力依存の動的リーク）を実装。
+# 【最終修正 v_fix_bias_logic】:
+# - AdaptiveLIFNeuron にバイアス (bias_init) を受け取る機能を追加。
+# - forwardメソッドにバイアス (+ b) を加算するロジックを追加。
+# - これまで修正してきた lif_layer.py ではなく、spiking_transformer_v2.py が
+#   実際にインポートしているこのファイルが、スパイクが発生しない根本原因であったため、
+#   この修正により NEURON_BIAS: 2.0 が機能するようになります。
 
 from typing import Optional, Tuple, Any, List, cast
 import torch
@@ -35,29 +15,25 @@ from torch import Tensor, nn
 import torch.nn.functional as F
 import math
 from spikingjelly.activation_based import surrogate, base # type: ignore[import-untyped]
-import logging # logging をインポート
+import logging 
 
-# --- ▼ 修正: BistableIFNeuron をインポート ▼ ---
 from .bif_neuron import BistableIFNeuron
-# --- ▲ 修正 ▲ ---
 
-# --- ▼ 改善 (v6): ロガーを追加 ▼ ---
 logger = logging.getLogger(__name__)
-# --- ▲ 改善 (v6) ▲ ---
+
 
 class AdaptiveLIFNeuron(base.MemoryModule):
     """
     Adaptive Leaky Integrate-and-Fire (LIF) neuron with threshold adaptation.
-    Designed for vectorized operations and to be BPTT-friendly.
     
     v2: Implements PLIF (Parametric LIF) by making tau_mem a learnable parameter.
     v6: Implements EL (Evolutionary Leak) [P2.1] by making tau_mem input-dependent.
+    v_fix_bias_logic: Adds bias parameter (bias_init) and applies it in the forward pass.
     """
     log_tau_mem: nn.Parameter
-    # --- ▼ 改善 (v6): EL用モジュールを追加 ▼ ---
     gate_tau_lin: Optional[nn.Linear]
     gate_input_proj_el: Optional[nn.Linear]
-    # --- ▲ 改善 (v6) ▲ ---
+    bias: nn.Parameter # 【v_fix_bias_logic】 バイアスパラメータを追加
 
     def __init__(
         self,
@@ -72,18 +48,20 @@ class AdaptiveLIFNeuron(base.MemoryModule):
         threshold_step: float = 0.05,
         # --- ▼ 改善 (v6): P2.1 (EL) 追加 ▼ ---
         evolutionary_leak: bool = False, # ELフラグ
-        gate_input_features: Optional[int] = None # GLIF互換
+        gate_input_features: Optional[int] = None, # GLIF互換
         # --- ▲ 改善 (v6) ▲ ---
+        
+        # --- ▼ 【v_fix_bias_logic】 バイアス引数を追加 ▼ ---
+        bias_init: float = 0.0,
+        # --- ▲ 【v_fix_bias_logic】 ▲ ---
     ):
         super().__init__()
         self.features = features
         
-        # --- ▼ 修正: tau_mem を学習可能なパラメータに変更 (P2.1 PLIF) ▼ ---
-        # tau_mem を nn.Parameter として初期化
-        # 勾配が安定するように対数空間で学習 (exp(log_tau) + 1.1 が実際のtau)
+        # --- (PLIF 修正済み) ---
         initial_log_tau = torch.full((features,), math.log(max(1.1, tau_mem - 1.1)))
         self.log_tau_mem = nn.Parameter(initial_log_tau)
-        # --- ▲ 修正 ▲ ---
+        # --- (PLIF 修正済み) ---
         
         self.base_threshold = nn.Parameter(torch.full((features,), base_threshold))
         self.adaptation_strength = adaptation_strength
@@ -93,17 +71,20 @@ class AdaptiveLIFNeuron(base.MemoryModule):
         self.threshold_step = threshold_step
         self.surrogate_function = surrogate.ATan(alpha=2.0)
 
-        # --- ▼ 改善 (v6): P2.1 (EL) 追加 ▼ ---
+        # --- ▼ 【v_fix_bias_logic】 バイアスをパラメータとして初期化 ▼ ---
+        self.bias = nn.Parameter(torch.full((features,), bias_init))
+        # --- ▲ 【v_fix_bias_logic】 ▲ ---
+
+        # --- (v6: EL 修正済み) ---
         self.evolutionary_leak = evolutionary_leak
         self.gate_tau_lin = None
-        self.gate_input_proj_el = None # mypyのために初期化
+        self.gate_input_proj_el = None 
         if self.evolutionary_leak:
             if gate_input_features is None:
                 gate_input_features = features
-            # GLIFと同様のゲート層を追加
             self.gate_tau_lin = nn.Linear(gate_input_features, features)
             logger.info(f"AdaptiveLIFNeuron (features={features}): Evolutionary Leak (EL) [P2.1] ENABLED.")
-        # --- ▲ 改善 (v6) ▲ ---
+        # --- (v6: EL 修正済み) ---
 
         self.register_buffer("mem", None)
         self.register_buffer("adaptive_threshold", None)
@@ -112,13 +93,11 @@ class AdaptiveLIFNeuron(base.MemoryModule):
         self.stateful = False
 
     def set_stateful(self, stateful: bool):
-        """時系列データの処理モードを設定"""
         self.stateful = stateful
         if not stateful:
             self.reset()
 
     def reset(self):
-        """Resets the neuron's state variables."""
         super().reset()
         self.mem = None
         self.adaptive_threshold = None
@@ -136,33 +115,36 @@ class AdaptiveLIFNeuron(base.MemoryModule):
         if self.adaptive_threshold is None or self.adaptive_threshold.shape != x.shape:
             self.adaptive_threshold = torch.zeros_like(x)
 
+        # --- ▼ 【v_fix_bias_logic】 バイアスを入力電流に加算 ▼ ---
+        current_input = x + self.bias
+        # --- ▲ 【v_fix_bias_logic】 ▲ ---
+
         # --- ▼ 改善 (v6): P2.1 (EL) 修正 ▼ ---
         mem_decay: torch.Tensor
         
         if self.evolutionary_leak and self.gate_tau_lin is not None:
-            # EL (Evolutionary Leak) [47]
-            # ゲート入力 (x) の次元チェック (GLIFNeuronと同様)
+            # EL (Evolutionary Leak)
             gate_input: torch.Tensor
-            if x.shape[1] != self.gate_tau_lin.in_features:
+            if current_input.shape[1] != self.gate_tau_lin.in_features: # x を current_input に変更
                  if self.gate_tau_lin.in_features == self.features:
-                     gate_input = x
+                     gate_input = current_input # x を current_input に変更
                  else:
                      if not hasattr(self, 'gate_input_proj_el') or self.gate_input_proj_el is None:
-                         self.gate_input_proj_el = nn.Linear(x.shape[1], self.gate_tau_lin.in_features).to(x.device)
-                     gate_input = self.gate_input_proj_el(x) # type: ignore[operator]
+                         self.gate_input_proj_el = nn.Linear(current_input.shape[1], self.gate_tau_lin.in_features).to(current_input.device) # x を current_input に変更
+                     gate_input = self.gate_input_proj_el(current_input) # type: ignore[operator] # x を current_input に変更
             else:
-                 gate_input = x
+                 gate_input = current_input # x を current_input に変更
             
-            # ゲートの出力を Sigmoid で 0-1 に
             mem_decay_gate = torch.sigmoid(self.gate_tau_lin(gate_input))
-            # (1.0 - mem_decay_gate) が入力 (x) の結合強度になる
-            self.mem = self.mem * mem_decay_gate + (1.0 - mem_decay_gate) * x
+            # 【v_fix_bias_logic】 x を current_input に変更
+            self.mem = self.mem * mem_decay_gate + (1.0 - mem_decay_gate) * current_input
             
         else:
-            # PLIF (Parametric LIF) [v2]
+            # PLIF (Parametric LIF)
             current_tau_mem = torch.exp(self.log_tau_mem) + 1.1
             mem_decay = torch.exp(-1.0 / current_tau_mem)
-            self.mem = self.mem * mem_decay + x
+            # 【v_fix_bias_logic】 x を current_input に変更
+            self.mem = self.mem * mem_decay + current_input
         # --- ▲ 改善 (v6) ▲ ---
         
         if self.training and self.noise_intensity > 0:
@@ -178,7 +160,7 @@ class AdaptiveLIFNeuron(base.MemoryModule):
             self.total_spikes += spike.detach().sum()
 
         reset_mask = spike.detach() 
-        self.mem = self.mem * (1.0 - reset_mask)
+        self.mem = self.mem * (1.0 - reset_mask) # ゼロリセット (修正不要)
         
         if self.training:
             self.adaptive_threshold = (
@@ -193,7 +175,6 @@ class AdaptiveLIFNeuron(base.MemoryModule):
         return spike, self.mem
 
     def get_spike_rate_loss(self) -> torch.Tensor:
-        """スパイク率の目標値からの乖離を損失として返す"""
         current_rate = self.spikes.mean()
         target = torch.tensor(self.target_spike_rate, device=current_rate.device)
         return F.mse_loss(current_rate, target)

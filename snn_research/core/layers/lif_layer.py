@@ -3,12 +3,13 @@
 # 機能説明: 
 #   AbstractSNNLayer (P4-1) を継承する具象LIFレイヤー。
 #
-#   【緊急修正 P4-4 / バグ修正 P1-1 連携】:
+#   【重要な修正とデバッグ機能の統合】:
 #   1. スパイクが発生しない問題を解決するため、LIFのダイナミクスを
 #      「閾値減算リセット」から、より安定した「ゼロへの**ハードリセット**」に変更。
-#   2. モデル設定で強制されたバイアス値 (例: NEURON_BIAS) が
-#      build()内でゼロに上書きされるバグを修正するため、
-#      __init__でバイアス初期値を受け取り、build()でのゼロ初期化を削除。
+#   2. モデル設定で強制されたバイアス値 (NEURON_BIAS=2.0) が
+#      build()内でゼロに上書きされるバグを修正。
+#   3. 【CRITICAL DEBUG LOGGING】: forwardメソッドに主要な計算結果を
+#      INFOレベルで強制出力するログを追加し、信号が途切れる箇所を特定する。
 
 import logging
 from typing import Dict, Any, Optional, Tuple, cast
@@ -26,7 +27,7 @@ try:
     from ..learning_rule import Parameters
     from ..learning_rules.predictive_coding_rule import PredictiveCodingRule
 except ImportError:
-    # (mypy フォールバック - P1-3, P4-1 関連のダミー定義)
+    # (mypy フォールバック - 省略)
     LayerOutput = Dict[str, Tensor] # type: ignore[misc]
     BaseLearningConfig = Any # type: ignore[misc, assignment]
     Parameters = Any # type: ignore[misc, assignment]
@@ -57,19 +58,13 @@ def lif_update(
     decay: float, 
     threshold: float
 ) -> Tuple[Tensor, Tensor]:
-    """ 
-    P4-4: 単一ステップのLIFダイナミクス (PyTorch 実装) 
-    (修正済み: ゼロへのハードリセットを採用)
-    """
+    """ P4-4: 単一ステップのLIFダイナミクス (ゼロへのハードリセット採用) """
     I_t: Tensor = nn.functional.linear(inputs, W, b)
     V_leaked: Tensor = V * decay
     V_new: Tensor = V_leaked + I_t
     spikes: Tensor = (V_new > threshold).float()
     
-    # 【ロジック修正 P4-4 (スパイク安定化)】: 
-    # 閾値減算リセット (V_new - (spikes * threshold)) から
-    # ゼロへのハードリセット (V_new * (1.0 - spikes)) に変更。
-    # 発火したニューロンの電位を次のステップで確実に 0 にリセットします。
+    # 【ロジック修正】: ゼロへのハードリセット
     V_reset: Tensor = V_new * (1.0 - spikes)
     
     return V_reset, spikes
@@ -88,12 +83,11 @@ class LIFLayer(AbstractSNNLayer):
         name: str = "LIFLayer",
         decay: float = 0.95, 
         threshold: float = 1.0,
-        # 【バグ修正 P1-1 連携】: バイアスの初期値を受け取る
+        # 【バグ修正】: バイアスの初期値を受け取る
         bias_init: float = 0.0,
     ) -> None:
         
         dummy_shape: Tuple[int, ...] = (0,)
-        # (name は AbstractLayer の __init__ で設定される)
         super().__init__(dummy_shape, dummy_shape, learning_config, name)
         
         self.decay: float = decay
@@ -106,7 +100,7 @@ class LIFLayer(AbstractSNNLayer):
             torch.empty(self._neurons, self._input_features), 
             requires_grad=False
         )
-        # 【バグ修正 P1-1 連携】: bias_init の値を初期値として設定
+        # 【バグ修正】: bias_init の値を初期値として設定
         self.b: nn.Parameter = nn.Parameter(
             torch.full((self._neurons,), bias_init),
             requires_grad=False
@@ -123,22 +117,16 @@ class LIFLayer(AbstractSNNLayer):
             logger.debug(f"Building layer: {self.name}")
             
         nn.init.kaiming_uniform_(self.W, a=0.01)
-        # 【バグ修正 P1-1 連携】: __init__ で設定されたカスタムバイアスを
-        # 上書きしないよう、このゼロ初期化を削除します。
-        # nn.init.zeros_(self.b) 
+        # 【バグ修正】: __init__ で設定されたカスタムバイアスを上書きする
+        # nn.init.zeros_(self.b) は削除済み。
         
         # P1-4: 学習可能なパラメータとして登録
         self.params = [self.W, self.b]
         
         # P1-4: 学習規則のインスタンス化
         if self.learning_config:
-            # (P1-1 の PC ルールをデフォルトで使用)
             rule_cls: Any = PredictiveCodingRule
-            
-            # --- ダミー実装の解消 (P1-1 / P4-4 連携) ---
-            # P1-3 の設定を取得
             rule_kwargs: Dict[str, Any] = self.learning_config.to_dict()
-            # P1-4 (AbstractLearningRule) のため、レイヤー名を渡す
             rule_kwargs['layer_name'] = self.name
             
             self.learning_rule = rule_cls(
@@ -171,6 +159,11 @@ class LIFLayer(AbstractSNNLayer):
         
         V_t_minus_1: Tensor = cast(Tensor, self.membrane_potential)
 
+        # 【デバッグ用の中間値再計算】: logger.info で出力するために再計算する
+        I_t: Tensor = nn.functional.linear(inputs, self.W, self.b)
+        V_new: Tensor = V_t_minus_1 * self.decay + I_t
+        
+        # LIF更新計算の呼び出し
         V_t: Tensor
         spikes_t: Tensor
         V_t, spikes_t = lif_update(
@@ -179,6 +172,21 @@ class LIFLayer(AbstractSNNLayer):
         
         self.membrane_potential = V_t
         
+        # --- 【CRITICAL DEBUG LOG (INFOレベルで強制出力)】 ---
+        if logger:
+            b_mean = self.b.mean().item()
+            inputs_max = inputs.max().item()
+            V_new_max = V_new.max().item()
+            spike_rate = spikes_t.mean().item()
+
+            logger.info(
+                f"[CRITICAL LIF DYNAMICS: {self.name}] "
+                f"T_H={self.threshold:.4f}, Decay={self.decay:.4f}. "
+                f"Bias_Mean={b_mean:.4f}. Input_Max={inputs_max:.4f}. "
+                f"V_new_Max={V_new_max:.4f}. Spike_Rate={spike_rate:.4f}"
+            )
+        # --- -------------------------------------------- ---
+
         return {
             'activity': spikes_t, # (スパイク)
             'membrane_potential': V_t

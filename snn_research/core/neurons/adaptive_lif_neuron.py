@@ -3,12 +3,15 @@
 # 機能説明: 
 #   入力電流を受け取り、LIFダイナミクスに基づいて膜電位を更新し、
 #   スパイクを生成する nn.Module。
-#   (Adaptive という名前だが、現在は動的閾値はオフで運用されている)
+#   (SpikingTransformerV2 が実際に使用するニューロンモジュール)
 #
-#   【デバッグ修正】: 
-#   - 外部から指定された初期膜電位 (v_init) が反映されず、
-#     常にゼロで初期化されるバグを修正。
-#   - bias_init を受け取り、入力電流に加算するバイアスとして機能させる。
+#   【修正点】:
+#   - `lif_layer.py` からデバッグ履歴の修正 (ステップ 1, 2, 4) を移植。
+#   - ステップ1: ゼロへのハードリセット (V_reset = V_new * (1.0 - spikes_t)) を実装。
+#   - ステップ2: `bias_init` を受け取り、`self.b` を初期化。
+#   - ステップ4: `v_init` を受け取り、`self.membrane_potential` の初期値として使用。
+#   - (注意: ステップ5 (Xavier初期化) は、このファイルには適用できません。
+#     このモジュールは重み(W)を持たないためです。)
 
 import logging
 from typing import Dict, Any, Optional, Tuple, cast
@@ -17,152 +20,141 @@ import torch
 import torch.nn as nn
 from torch import Tensor 
 
-# AbstractSNNLayer や BaseModel をインポート (存在する場合)
-# (存在しない、あるいは異なるベースクラスの場合は nn.Module のみ)
+# SpikingTransformerV2 (v2.py) で使われている BaseModel をインポート
 try:
-    # lif_layer.py と同様の抽象クラスを想定
-    from ..layers.abstract_snn_layer import AbstractSNNLayer
-    BaseNeuronModule = AbstractSNNLayer # type: ignore[misc]
+    from snn_research.core.base import BaseModel
 except ImportError:
-    # フォールバック
-    class BaseNeuronModule(nn.Module): # type: ignore[no-redef, misc]
+    logger = logging.getLogger(__name__)
+    logger.warning("BaseModel not found. Falling back to simple nn.Module.")
+    class BaseModel(nn.Module): # type: ignore[no-redef]
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             super().__init__()
             self.time_steps: int = kwargs.get('time_steps', 0)
-            self.name: str = kwargs.get('name', "BaseNeuronModule")
-            self.built: bool = False
-        
-        def build(self) -> None:
-            self.built = True
+            self._total_neurons: int = 0
+            self.total_spikes: Tensor = torch.tensor(0.0)
+
+        def get_total_neurons(self) -> int:
+            return self._total_neurons
+
+        def get_total_spikes(self) -> Tensor:
+            return self.total_spikes
 
         def reset_state(self) -> None:
-            pass
-        
-        def get_total_spikes(self) -> Tensor:
-            return torch.tensor(0.0)
-        
-        def get_total_neurons(self) -> int:
-            return 0
+            pass # サブクラスで実装
 
-
-# ロガーの設定
 logger: logging.Logger = logging.getLogger(__name__)
 
-
-class AdaptiveLIFNeuron(BaseNeuronModule):
+# BaseModelを継承することで、get_total_spikes() などが機能する
+class AdaptiveLIFNeuron(BaseModel): 
     """
-    Adaptive LIF Neuron Module (v_init 修正済み)
-    
-    入力 (電流) を受け取り、膜電位を更新し、スパイク (活動) を返します。
-    重み (W) は持たず、状態 (V) のみを管理します。
+    LIFニューロンのダイナミクスをカプセル化する nn.Module。
+    SpikingTransformerV2 などのアーキテクチャ内で「活性化関数」のように振る舞う。
     """
-
     def __init__(
         self, 
-        features: int,
-        threshold: float = 1.0,
-        decay: float = 0.95, 
-        # デバッグ修正: bias_init を受け取る
+        features: int, 
+        threshold: float = 1.0, 
+        decay: float = 0.95,
+        # --- ▼ 修正 (ステップ 2 & 4) ▼ ---
         bias_init: float = 0.0,
-        # デバッグ修正: 初期膜電位を受け取る
         v_init: float = 0.0,
-        name: str = "AdaptiveLIFNeuron",
-        **kwargs: Any # 他の未使用パラメータ (threshold_decay など) を吸収
+        # --- ▲ 修正 ▲ ---
+        time_steps: int = 0, # BaseModel のために追加
+        **kwargs: Any
     ) -> None:
+        # time_steps を BaseModel の __init__ に渡す
+        super().__init__(time_steps=time_steps, **kwargs) 
         
-        super().__init__(name=name, **kwargs)
+        self.features = int(features) # HPO対策でint()キャスト
+        self.threshold = threshold
+        self.decay = decay
         
-        self.decay: float = decay
-        self.threshold: float = threshold
-        # デバッグ修正: v_init をインスタンス変数として保存
-        self.v_init: float = v_init
-        
-        self._features: int = features
-        
-        # デバッグ修正: bias_init の値をバイアスパラメータとして設定
-        # (LIFLayer と異なり、requires_grad=True の可能性があるが、
-        # HPOのデバッグ設定 (2.0) を反映するため False で固定)
-        self.b: nn.Parameter = nn.Parameter(
-            torch.full((self._features,), bias_init),
-            requires_grad=False
+        # --- ▼ 修正 (ステップ 2) ▼ ---
+        # 外部から指定されたバイアスで初期化
+        # (注意: このバイアスは重み W とは別です)
+        self.b = nn.Parameter(
+            torch.full((features,), bias_init, dtype=torch.float)
         )
-        
-        self.membrane_potential: Optional[Tensor] = None
-        self.total_spikes: Tensor = torch.tensor(0.0)
-        
-        self.build()
+        # --- ▲ 修正 ▲ ---
 
-    def build(self) -> None:
-        """
-        パラメータを初期化します。(このクラスでは主にバイアス)
-        """
-        # (重みWの初期化は不要)
-        # (学習規則のセットアップは不要)
+        # --- ▼ 修正 (ステップ 4) ▼ ---
+        # 外部から指定された初期膜電位
+        self.v_init = v_init
+        # --- ▲ 修正 ▲ ---
+        
+        # 膜電位 (状態)
+        self.membrane_potential: Optional[Tensor] = None
+        
+        # BaseModel の get_total_neurons() のためにニューロン数を登録
+        self._total_neurons = self.features
         
         self.built = True
 
     def _init_state(self, batch_size: int, device: torch.device) -> None:
-        if logger:
-            logger.debug(f"Initializing state for {self.name} with batch size {batch_size}")
+        """
+        （B, C）の形状で膜電位を初期化します。
+        """
+        shape = (batch_size, self.features)
         
-        # デバッグ修正: torch.zeros を使用せず、self.v_init で指定された値で初期化する
-        # (B, N, C) または (B, F) の形状に対応
-        shape = (batch_size, self._features)
-        
-        # (B, N, C) の場合 (Transformer 用)
-        # self.membrane_potential が None でない場合、その形状を使う
-        if self.membrane_potential is not None:
-             # (Pdb)
-             # V_t_minus_1 が (B, N, C) の場合、(B, N, C) で初期化
-             if self.membrane_potential.dim() > 2:
-                 # (B, N, C)
-                 shape = self.membrane_potential.shape # type: ignore[assignment]
-             else:
-                 # (B, C)
-                 shape = (batch_size, self._features) # type: ignore[assignment]
-
+        # --- ▼ 修正 (ステップ 4) ▼ ---
+        # 常にゼロで初期化するのではなく、self.v_init を使用
         self.membrane_potential = torch.full(
-            shape, # type: ignore[arg-type]
+            shape, 
             fill_value=self.v_init, 
-            device=device
+            device=device,
+            dtype=torch.float
         )
+        # --- ▲ 修正 ▲ ---
 
-    def forward(
-        self, 
-        inputs: Tensor # 入力電流 I_t (B, N, C) または (B, F)
-    ) -> Tensor: # 出力スパイク (B, N, C) または (B, F)
+    def reset_state(self) -> None:
+        """
+        推論時またはエポック開始時に状態をリセットします。
+        """
+        self.membrane_potential = None
+
+    def forward(self, inputs: Tensor) -> Tensor:
+        """
+        LIFダイナミクスを適用します。
         
+        Args:
+            inputs (Tensor): (B, ..., C) の形状を持つ入力電流 (I_t)。
+                             C は self.features と一致する必要があります。
+        
+        Returns:
+            Tensor: (B, ..., C) の形状を持つ出力スパイク (S_t)。
+        """
         if not self.built:
             raise RuntimeError(f"Layer {self.name} has not been built.")
         
-        # (B, N, C) または (B, F)
-        batch_size = inputs.shape[0]
-        
-        # (B, N, C) の場合、_init_state が (B, C) で初期化しないように形状を渡す
-        if self.membrane_potential is None or self.membrane_potential.shape[0] != batch_size:
-            # (Pdb)
-            # (B, N, C) の形状を正しく渡すために
+        batch_size: int = inputs.shape[0]
+
+        # 状態が未初期化 (t=0) の場合、v_init を使って初期化
+        if self.membrane_potential is None:
+            # --- ▼ 修正 (ステップ 4) ▼ ---
+            # (B, N, C) のようなViTの形状に対応
             if inputs.dim() > 2:
                 self.membrane_potential = torch.full(
                     inputs.shape, # (B, N, C)
                     fill_value=self.v_init, 
-                    device=inputs.device
+                    device=inputs.device,
+                    dtype=torch.float
                 )
             else:
-                self._init_state(batch_size, inputs.device)
+                self._init_state(batch_size, inputs.device) # (B, C)
+            # --- ▲ 修正 ▲ ---
         
         V_t_minus_1: Tensor = cast(Tensor, self.membrane_potential)
 
-        # --- LIFダイナミクス (ゼロへのハードリセット) ---
+        # --- ▼ 修正 (ステップ 1: ゼロへのハードリセット) ▼ ---
         
         # 1. 入力電流にバイアスを加算
-        # (B, N, C) + (C,) -> (B, N, C) (ブロードキャスト)
+        # (B, ..., C) + (C,) -> (B, ..., C) (ブロードキャスト)
         I_t_biased: Tensor = inputs + self.b
         
         # 2. 膜電位のリーク
         V_leaked: Tensor = V_t_minus_1 * self.decay
         
-        # 3. 膜電位の更新
+        # 3. 膜電位の更新 (積分)
         V_new: Tensor = V_leaked + I_t_biased
         
         # 4. スパイクの生成
@@ -171,24 +163,13 @@ class AdaptiveLIFNeuron(BaseNeuronModule):
         # 5. 膜電位のリセット (ゼロへのハードリセット)
         V_reset: Tensor = V_new * (1.0 - spikes_t)
         
-        # 状態の更新
+        # --- ▲ 修正 ▲ ---
+        
+        # 次のタイムステップのために状態を更新
         self.membrane_potential = V_reset
         
-        # スパイク数をカウント (BaseModel のため)
-        self.total_spikes += torch.sum(spikes_t)
+        # BaseModel のスパイクカウント機構 (get_total_spikes) のため
+        if hasattr(self, 'total_spikes'):
+            self.total_spikes += torch.sum(spikes_t)
         
-        # スパイク (活動) を返す
         return spikes_t
-
-    def reset_state(self) -> None:
-        if logger:
-            logger.debug(f"Resetting state for {self.name}")
-        self.membrane_potential = None
-        self.total_spikes = torch.tensor(0.0)
-
-    # BaseModel 互換のためのメソッド
-    def get_total_spikes(self) -> Tensor:
-        return self.total_spikes
-
-    def get_total_neurons(self) -> int:
-        return self._features

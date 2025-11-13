@@ -83,7 +83,7 @@ class LIFLayer(AbstractSNNLayer):
         name: str = "LIFLayer",
         decay: float = 0.95, 
         threshold: float = 1.0,
-        # 【バグ修正】: バイアスの初期値を受け取る
+        # (前回追加)
         bias_init: float = 0.0,
     ) -> None:
         
@@ -100,12 +100,15 @@ class LIFLayer(AbstractSNNLayer):
             torch.empty(self._neurons, self._input_features), 
             requires_grad=False
         )
-        # 【バグ修正】: bias_init の値を初期値として設定
-        self.b: nn.Parameter = nn.Parameter(
-            torch.full((self._neurons,), bias_init),
-            requires_grad=False
-        )
+        # 【重要デバッグ修正】: 設定が無視される可能性を検証するため、
+        # バイアスをデバッグ設定の値 (2.0) にハードコードで上書きします。
+        DEBUG_FORCED_BIAS: float = 2.0 
         
+        self.b: nn.Parameter = nn.Parameter(
+            # (前回修正) bias_init を使用。デバッグ中は DEBUG_FORCED_BIAS で上書きされます。
+            torch.full((self._neurons,), DEBUG_FORCED_BIAS),
+            requires_grad=False
+        )        
         self.membrane_potential: Optional[Tensor] = None
 
 

@@ -85,7 +85,7 @@ class LIFLayer(AbstractSNNLayer):
         threshold: float = 1.0,
         # 構造修正: バイアスの初期値を受け取る
         bias_init: float = 0.0,
-        # デバッグ修正: 初期膜電位を受け取る
+        # デバッグ修正: 初期膜電位を受け取る (v_init を追加)
         v_init: float = 0.0,
     ) -> None:
         

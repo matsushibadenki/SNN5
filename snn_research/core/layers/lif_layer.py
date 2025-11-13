@@ -8,6 +8,8 @@
 #   2. モデル設定で指定されたバイアス値が上書きされないよう修正（構造修正済み）。
 #   3. 【最重要】: 重みWの初期値を、ログで要求されている「aggressive Xavier」に合わせ、
 #      初期スパイクを強制的に発生させるための**積極的な初期化**に置き換えます。
+#   4. 【デバッグ修正】: 外部から指定された初期膜電位 (v_init) が反映されず、
+#      常にゼロで初期化されるバグを修正。
 
 import logging
 from typing import Dict, Any, Optional, Tuple, cast
@@ -83,6 +85,8 @@ class LIFLayer(AbstractSNNLayer):
         threshold: float = 1.0,
         # 構造修正: バイアスの初期値を受け取る
         bias_init: float = 0.0,
+        # デバッグ修正: 初期膜電位を受け取る
+        v_init: float = 0.0,
     ) -> None:
         
         dummy_shape: Tuple[int, ...] = (0,)
@@ -90,6 +94,8 @@ class LIFLayer(AbstractSNNLayer):
         
         self.decay: float = decay
         self.threshold: float = threshold
+        # デバッグ修正: v_init をインスタンス変数として保存
+        self.v_init: float = v_init
         
         self._input_features: int = input_features
         self._neurons: int = neurons
@@ -121,8 +127,7 @@ class LIFLayer(AbstractSNNLayer):
         
         # 修正: gain=1.0 では「積極的 (aggressive)」な初期化として不十分です。
         # スパイクを強制的に発生させるため、gainを大きな値（例: 3.0）に変更します。
-        # nn.init.xavier_uniform_(self.W, gain=1.0) # 元の行
-        nn.init.xavier_uniform_(self.W, gain=3.0) # 修正後の行
+        nn.init.xavier_uniform_(self.W, gain=3.0) 
         
         # 構造修正: __init__で設定されたカスタムバイアスを上書きするゼロ初期化は削除済み
         
@@ -146,9 +151,15 @@ class LIFLayer(AbstractSNNLayer):
         if logger:
             logger.debug(f"Initializing state for {self.name} with batch size {batch_size}")
         
-        self.membrane_potential = torch.zeros(
-            (batch_size, self._neurons), device=device
+        # デバッグ修正: torch.zeros を使用せず、self.v_init で指定された値で初期化する
+        self.membrane_potential = torch.full(
+            (batch_size, self._neurons), 
+            fill_value=self.v_init, 
+            device=device
         )
+        # self.membrane_potential = torch.zeros( # 元の行
+        #     (batch_size, self._neurons), device=device
+        # )
 
     def forward(
         self, 

@@ -58,7 +58,7 @@ class SDSAEncoderLayer(sj_base.MemoryModule):
         self.sdsa = SpikeDrivenSelfAttention(d_model, nhead, time_steps, neuron_config)
         self.linear1 = nn.Linear(d_model, dim_feedforward)
         
-        # 1. LIFパラメータをフィルタリング (bias_init, neuron_biasを含める)
+        # 1. LIFパラメータをフィルタリング
         lif_params_filtered = {k: v for k, v in neuron_config.items() if k in [
             'tau_mem', 
             'base_threshold', 
@@ -67,31 +67,27 @@ class SDSAEncoderLayer(sj_base.MemoryModule):
             'noise_intensity', 
             'threshold_decay', 
             'threshold_step',
+            'evolutionary_leak', # v6
+            'gate_input_features', # v6
             'bias_init',      
             'neuron_bias',    
-            'NEURON_BIAS',    # 【修正】: 大文字のキーも取り込む
+            'NEURON_BIAS',    
         ]}
-        
-        # 2. 【キーマッピングの強化】: 'NEURON_BIAS'または'neuron_bias'を'bias_init'に変換し、優先させる
-        # コンフィグで使われるキーを LIFLayer の __init__ が期待するキーにマッピング
+                
+        # 2. 【キーマッピングの強化】
         if 'NEURON_BIAS' in lif_params_filtered:
-            # 大文字の NEURON_BIAS があればそれを採用
             lif_params_filtered['bias_init'] = lif_params_filtered.pop('NEURON_BIAS')
         elif 'neuron_bias' in lif_params_filtered: 
-            # なければ小文字の neuron_bias を採用
             lif_params_filtered['bias_init'] = lif_params_filtered.pop('neuron_bias')
         
         lif_params = lif_params_filtered 
 
-        # --- ▼ 修正 (v_adathresh_disable) ---
         lif_params['threshold_step'] = 0.0
-        # --- ▲ 修正 (v_adathresh_disable) ▲ ---
 
+        # この lif_params が AdaptiveLIFNeuron の __init__ に渡される
         self.neuron_ff = cast(AdaptiveLIFNeuron, AdaptiveLIFNeuron(features=dim_feedforward, **lif_params))
-
-        self.linear2 = nn.Linear(dim_feedforward, d_model)
         self.neuron_ff2 = cast(AdaptiveLIFNeuron, AdaptiveLIFNeuron(features=d_model, **lif_params))
-
+        
         self.norm1 = SNNLayerNorm(d_model)
         self.norm2 = SNNLayerNorm(d_model)
 

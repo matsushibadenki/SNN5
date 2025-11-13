@@ -62,7 +62,15 @@ def lif_update(
     V_leaked: Tensor = V * decay
     V_new: Tensor = V_leaked + I_t
     spikes: Tensor = (V_new > threshold).float()
-    V_reset: Tensor = V_new - (spikes * threshold)
+    
+    # V_resetのロジックを修正:
+    # 既存: V_new - (spikes * threshold) (閾値減算リセット)
+    # 修正: V_new * (1.0 - spikes) (ゼロへのハードリセット)
+    #
+    # Hard Reset to Zero は、発火したニューロンの膜電位を必ず 0 に戻すことで、
+    # 発火率の安定化と、過剰な電位の累積による発火の失敗を防ぎます。
+    V_reset: Tensor = V_new * (1.0 - spikes) 
+    
     return V_reset, spikes
 
 

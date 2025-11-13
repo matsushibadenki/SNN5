@@ -12,7 +12,7 @@
 # 【修正 v_fix_import_error】:
 # - 存在しない 'SpikingSelfAttention' のインポートを削除 (log6.txt)
 #
-# 【修正 v_fix_type_error (log10.txt)】:
+# 【修正 v_fix_type_error (log11.txt)】:
 # - HPO (dependency_injector) 経由で int 型引数が float (例: 256.0) として
 #   渡されることが原因で TypeError が発生するため、
 #   __init__ の冒頭で全ての整数引数を int() で明示的にキャストする。
@@ -63,7 +63,7 @@ class SpikingTransformerV2(BaseModel):
         **kwargs: Any
     ) -> None:
         
-        # --- 修正 v_fix_type_error (log10.txt) ---
+        # --- 修正 v_fix_type_error (log11.txt) ---
         # HPO (dependency_injector) が float を渡すため、全て int にキャスト
         _d_model = int(d_model)
         _n_head = int(n_head)
@@ -93,7 +93,7 @@ class SpikingTransformerV2(BaseModel):
         logger.info(f"[SpikingTransformerV2] 🧠 Final bias_init for layers: {neuron_config['bias_init']}")
         
         
-        super().__init__(time_steps=_time_steps, **kwargs) # _time_steps を使用
+        super().__init__(**kwargs) # _time_steps を削除
 
         self.d_model = _d_model # _d_model を使用
         self.n_head = _n_head # _n_head を使用
@@ -102,7 +102,7 @@ class SpikingTransformerV2(BaseModel):
         # --- ViT パッチ埋め込み ---
         self.patch_size = _patch_size # _patch_size を使用
 
-        # --- 修正 v_fix_type_error (log10.txt) ---
+        # --- 修正 v_fix_type_error (log11.txt) ---
         # キャスト済みのローカル変数を使用
         num_patches = (_img_size // _patch_size) ** 2
         patch_dim = _in_channels * (_patch_size ** 2)
@@ -239,7 +239,7 @@ class SDSAEncoderLayer(nn.Module):
         super().__init__()
         self.name = name
         
-        # --- 修正 v_fix_type_error (log10.txt) ---
+        # --- 修正 v_fix_type_error (log11.txt) ---
         # このレイヤーに渡される引数もキャスト
         _d_model = int(d_model)
         _n_head = int(n_head)

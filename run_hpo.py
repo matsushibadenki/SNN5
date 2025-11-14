@@ -40,6 +40,15 @@
 #   対して正則化項の寄与(〜0.0003)が小さすぎると判明。
 # - losses.py(v6)で正規化された損失値(0.0-1.0)と競合できるよう、
 #   重みの探索範囲を (0.1〜10.0) のオーダーに「拡大」する。
+# 修正 (v11):
+# - Trial 856 で lr=5e-3 まで上げたが、spike_w=3.48 が
+#   選ばれたため、依然としてネットワークが沈黙 (spike_rate=0) した。
+# - v8 で導入した spike_w の探索範囲 (0.1〜10.0) は、
+#   run_distill_hpo.py の強制バイアス設定 (BIAS=2.0) と
+#   致命的に競合すると判断。
+# - spike_w の探索範囲を、デバッグ時に機能していた 1e-6 付近の
+#   (1e-7, 1e-4) に大幅に引き下げる。
+
 
 import optuna
 import argparse
@@ -90,9 +99,17 @@ def objective(trial: optuna.trial.Trial, args: argparse.Namespace) -> float:
     # CE/Distill損失 (〜0.8) と競合させるため、正則化の「重み」は
     # 1e-3 のような小さな値ではなく、0.1や1.0、あるいは10.0といった
     # オーダーである必要がある。
-    spike_reg_weight = trial.suggest_float("spike_reg_weight", 0.1, 10.0, log=True)
-    sparsity_reg_weight = trial.suggest_float("sparsity_reg_weight", 0.01, 5.0, log=True)
-    # --- ▲▲▲ 修正 (v8) ▲▲▲ ---
+    
+    # --- ▼▼▼ 修正 (v11): 探索範囲を「大幅に縮小」 ▼▼▼ ---
+    # v8のロジックはデバッグ設定と競合するため、探索範囲を元に戻す
+    # spike_reg_weight = trial.suggest_float("spike_reg_weight", 0.1, 10.0, log=True)
+    spike_reg_weight = trial.suggest_float("spike_reg_weight", 1e-7, 1e-4, log=True)
+    
+    # sparsity_reg_weight も同様に縮小する
+    # sparsity_reg_weight = trial.suggest_float("sparsity_reg_weight", 0.01, 5.0, log=True)
+    sparsity_reg_weight = trial.suggest_float("sparsity_reg_weight", 1e-7, 1e-4, log=True)
+    # --- ▲▲▲ 修正 (v11) ▲▲▲ ---
+    
     
     # --- 2. 設定の上書き ---
     # 各試行にユニークな出力ディレクトリを作成

@@ -4,9 +4,12 @@
 #
 # (中略)
 #
-# 【!!! エラー修正 (log.txt v6) !!!】
-# 1. SyntaxError: unterminated string literal
-#    - (L407) 'type',fs', 'lif' というタイポを 'type', 'lif' に修正。
+# 【!!! エラー修正 (log.txt v7) !!!】
+# 1. ValueError: too many values to unpack (expected 3)
+#    - (L335-L339) SpikingTransformerV2.forward が (logits) の1値しか
+#      返していなかった。
+#    - HPOのトレーナー (trainers.py) が (logits, spikes, mem) の3値を
+#      期待しているため、戻り値を3つに変更する。
 
 import torch
 import torch.nn as nn
@@ -280,9 +283,12 @@ class SpikingTransformerV2(BaseModel):
             if isinstance(layer, SDSAEncoderLayer):
                 layer.set_stateful(stateful)
 
-    def forward(self, input_images: torch.Tensor, *args, **kwargs) -> torch.Tensor:
+    def forward(self, input_images: torch.Tensor, *args, **kwargs) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, None]]:
         """
         input_images: (B, C, H, W)
+        
+        Returns: (logits, avg_spikes, avg_mem)
+        - HPO/Trainer が3つの戻り値を期待しているため、(logits, spikes, mem) を返す
         """
         B = input_images.shape[0]
         
@@ -323,7 +329,18 @@ class SpikingTransformerV2(BaseModel):
         # (B, D) -> (B, NumClasses)
         output = self.head(x_final)
         
-        return output
+        # --- ▼▼▼ 【!!! エラー修正 (ValueError) !!!】 ▼▼▼
+        # 6. HPOトレーナー (trainers.py) のために3つの値を返す
+        
+        # スパイク正則化のため、最後のアテンション層のスパイク
+        # (x_spikes) の平均値を計算
+        avg_spikes = torch.mean(x_spikes) 
+        
+        # 膜電位はトラッキングしていないため None を返す
+        avg_mem = None
+        
+        return output, avg_spikes, avg_mem
+        # --- ▲▲▲ 【!!! エラー修正 (ValueError) !!!】 ▲▲▲
 
 
 class SDSAEncoderLayer(nn.Module):
@@ -375,7 +392,7 @@ class SDSAEncoderLayer(nn.Module):
         self.linear2 = nn.Linear(dim_feedforward, d_model)
         
         # 3. Normalization
-        # (TypeError fix v4) `eps` を削除
+        # (TypeError fix v4) `eps` と `time_steps` を削除
         self.norm1 = SNNLayerNorm(d_model)
         self.norm2 = SNNLayerNorm(d_model)
 
@@ -401,13 +418,11 @@ class SDSAEncoderLayer(nn.Module):
         
         neuron_config_ffn2 = neuron_config_mapped.copy()
         neuron_config_ffn2['features'] = d_model
-        # --- ▼▼▼ 【!!! エラー修正 (SyntaxError) !!!】 ▼▼▼
-        # 'type',fs', 'lif' というタイポを修正
+        # (SyntaxError fix v6) タイポを修正
         self.ffn_neuron2 = get_neuron_by_name(
             neuron_config_ffn2.get('type', 'lif'), 
             neuron_config_ffn2
         )
-        # --- ▲▲▲ 【!!! エラー修正 (SyntaxError) !!!】 ▲▲▲
 
         self._is_stateful = False
         self.built = True
@@ -418,13 +433,11 @@ class SDSAEncoderLayer(nn.Module):
         """
         self._is_stateful = stateful
         
-        # --- (AttributeError fix v5) ---
-        # SNNLayerNorm には set_stateful がないため、呼び出しを削除
+        # (AttributeError fix v5) SNNLayerNorm の呼び出しを削除
         # if isinstance(self.norm1, SNNLayerNorm):
         #     self.norm1.set_stateful(stateful)
         # if isinstance(self.norm2, SNNLayerNorm):
         #     self.norm2.set_stateful(stateful)
-        # --- ▲▲▲ ---
 
         # ニューロンの状態をリセット
         if not stateful:

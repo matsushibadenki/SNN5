@@ -7,6 +7,11 @@
 #   インスタンス化するための「ファクトリ」クラスである SNNCore のみを定義します。
 # - 実際のレイヤーやモデル定義は core/layers/ および core/models/ に分離されました。
 # - 修正: 削除対象の旧式モデル (v1, simple) への参照を削除。
+#
+# 【エラー修正】
+# - TypeError: SpikingTransformerV2.__init__() got an unexpected keyword argument 'vocab_size'
+# - 'spiking_transformer' (SpikingTransformerV2) は 'vocab_size' ではなく 'num_classes' を
+#   期待していると仮定し、インスタンス化時の引数を修正。 (L138-L147)
 
 import torch
 import torch.nn as nn
@@ -134,11 +139,22 @@ class SNNCore(nn.Module):
         # if 'time_steps' not in params and model_type == 'simple':
         #      params['time_steps'] = config.get('time_steps', 16) 
              
-        if model_type in ["spiking_cnn", "sew_resnet"]:
+        # --- ▼▼▼ 【!!! エラー修正 !!!】 ▼▼▼
+        # 'spiking_transformer' (SpikingTransformerV2) は 'vocab_size' ではなく
+        # 'num_classes' を期待すると仮定し、リストに追加する。
+        if model_type in ["spiking_cnn", "sew_resnet", "spiking_transformer"]:
             num_classes_cfg = OmegaConf.select(config, "num_classes", default=None)
             params['num_classes'] = num_classes_cfg if num_classes_cfg is not None else vocab_size
         
-        self.model = model_map[model_type](vocab_size=vocab_size, neuron_config=neuron_config, **params)
+        # 'spiking_transformer' の場合、'vocab_size' 引数を渡さないように修正
+        if model_type in ["spiking_transformer"]:
+            # SpikingTransformerV2 は vocab_size を期待していない (TypeError の原因)
+            # 代わりに num_classes を params 経由で渡す (上記で設定済み)
+            self.model = model_map[model_type](neuron_config=neuron_config, **params)
+        else:
+            # 他モデルは vocab_size を期待している
+            self.model = model_map[model_type](vocab_size=vocab_size, neuron_config=neuron_config, **params)
+        # --- ▲▲▲ 【!!! エラー修正 !!!】 ▲▲▲
         
     def forward(self, *args: Any, **kwargs: Any) -> Any:
         # (元の forward ロジックは変更なし)

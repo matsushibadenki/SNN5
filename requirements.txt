@@ -31,3 +31,6 @@ h5py
 GPyOpt
 GPy
 optuna
+langchain-huggingface
+faiss-cpu
+tensorboard

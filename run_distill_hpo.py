@@ -6,6 +6,10 @@
 # 【!!! エラー修正 (HSEO module not found) !!!】
 # (L17-20) sys.path の設定を、app.containers (L25) などの
 #          プロジェクト内インポートよりも *前* に移動する。
+#
+# 【!!! エラー修正 (tokenizer_name is None) !!!】
+# (L61-69) --task 引数に基づき、data config (例: configs/data/cifar10.yaml) を
+#          ロードするロジックを追加。
 
 import argparse
 import asyncio
@@ -70,6 +74,17 @@ async def main() -> None:
     
     # 2. 基本設定をロード
     container.config.from_yaml(args.config)
+
+    # --- ▼▼▼ 【!!! エラー修正 (tokenizer_name is None) !!!】 ▼▼▼
+    # 2.5. データ設定をロード
+    # --task "cifar10" に基づき、"configs/data/cifar10.yaml" をロードする
+    data_config_path = f"configs/data/{args.task}.yaml"
+    if os.path.exists(data_config_path):
+        print(f"INFO: Loading data config: {data_config_path}")
+        container.config.from_yaml(data_config_path)
+    else:
+        print(f"WARNING: Data config file not found: {data_config_path}. 'data' config might be incomplete.")
+    # --- ▲▲▲ 【!!! エラー修正 !!!】 ▲▲▲
 
     # 3. モデル設定をロード 
     try:

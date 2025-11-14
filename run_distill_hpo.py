@@ -1,6 +1,11 @@
 # ファイルパス: run_distill_hpo.py
 # Title: 知識蒸留実行スクリプト (HPO専用)
-# (中略)
+# Description: KnowledgeDistillationManagerを使用して、知識蒸留プロセスを開始します。
+#              【デバッグ強制設定復活版】spike_rate=0 の問題を回避するため、全ての積極的な設定を強制的に適用します。
+#
+# 【!!! エラー修正 (HSEO module not found) !!!】
+# (L17-20) sys.path の設定を、app.containers (L25) などの
+#          プロジェクト内インポートよりも *前* に移動する。
 
 import argparse
 import asyncio
@@ -19,10 +24,11 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 # --- ▲▲▲ 【!!! 修正 !!!】 ▲▲▲
 
+
 # プロジェクトルートをPythonパスに追加 (run_hpo.py と同じ修正)
-# project_root: str = os.path.abspath(os.path.dirname(__file__)) # <-- 削除 (上に移動)
-# if project_root not in sys.path: # <-- 削除
-#     sys.path.insert(0, project_root) # <-- 削除
+# project_root: str = os.path.abspath(os.path.dirname(__file__)) # 削除 (上に移動)
+# if project_root not in sys.path: # 削除
+#     sys.path.insert(0, project_root) # 削除
 
 # --- ▼▼▼ 【最優先追加】現在の実行パスをログに出力 (環境不整合の確認用) ▼▼▼ ---
 print(f"🚨 DEBUG: Currently executing script from: {os.path.abspath(__file__)}")

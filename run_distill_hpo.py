@@ -10,6 +10,12 @@
 # 【!!! エラー修正 (tokenizer_name is None) !!!】
 # (L61-69) --task 引数に基づき、data config (例: configs/data/cifar10.yaml) を
 #          ロードするロジックを追加。
+# 修正 (v12 - HPO正常化):
+# - HPO (Trial 857等) のログ分析に基づき、ネットワークが「沈黙」
+#   しているのではなく、「スパイクで爆発 (損失 4.04)」していると断定。
+# - 原因は、BIAS=2.0, V_init=0.499, aggressive_init などの
+#   強制デバッグ設定が強すぎることにある。
+# - HPOを正しく機能させるため、これらの強制設定をすべてコメントアウトする。
 
 import argparse
 import asyncio
@@ -148,6 +154,7 @@ async def main() -> None:
     
     
     # --- ▼▼▼ 【デバッグ強制オーバーライドの復活と再導入】 ▼▼▼ ---
+    # 【!!! HPO修正 (v12): HPOの邪魔になるため、すべてコメントアウト !!!】
 
     # 6. 【デバッグ復活】 spike_reg_weight を強制的に低い値に固定
     # try:
@@ -168,6 +175,7 @@ async def main() -> None:
     #     print(f"Warning: Could not force learning_rate: {e}")
 
     # 8. 【デバッグ復活】 V_THRESHOLD を強制的に設定 (※これはHPO対象外なので残してもOK)
+    #    (ただし、HPOが v_threshold を探索する場合は、ここもコメントアウトが必要)
     try:
         config_provider_v_th = container.config.model.neuron.v_threshold
         DEBUG_V_THRESHOLD_VALUE = 0.5 
@@ -180,31 +188,31 @@ async def main() -> None:
         print(f"Warning: Could not force V_THRESHOLD: {e}")
     
     # 9. 【デバッグ復活】 v_reset を強制的に 0.0 に設定 (ゼロリセット固定)
-    try:
-        config_provider_v_reset = container.config.model.neuron.v_reset
-        DEBUG_V_RESET_VALUE = 0.0 
-        config_provider_v_reset.from_value(DEBUG_V_RESET_VALUE)
-        print(f"  - 【DEBUG OVERRIDE】 Forced v_reset to: {DEBUG_V_RESET_VALUE}")
-    except Exception as e:
-        print(f"Warning: Could not force v_reset: {e}")
+    # try:
+    #     config_provider_v_reset = container.config.model.neuron.v_reset
+    #     DEBUG_V_RESET_VALUE = 0.0 
+    #     config_provider_v_reset.from_value(DEBUG_V_RESET_VALUE)
+    #     print(f"  - 【DEBUG OVERRIDE】 Forced v_reset to: {DEBUG_V_RESET_VALUE}")
+    # except Exception as e:
+    #     print(f"Warning: Could not force v_reset: {e}")
 
     # 10. 【デバッグ復活】 v_decay を強制的に 0.999 に設定
-    try:
-        config_provider_v_decay = container.config.model.neuron.v_decay
-        DEBUG_V_DECAY_VALUE = 0.999 
-        config_provider_v_decay.from_value(DEBUG_V_DECAY_VALUE)
-        print(f"  - 【DEBUG OVERRIDE】 Forced v_decay to: {DEBUG_V_DECAY_VALUE}")
-    except Exception as e:
-        print(f"Warning: Could not force v_decay: {e}")
+    # try:
+    #     config_provider_v_decay = container.config.model.neuron.v_decay
+    #     DEBUG_V_DECAY_VALUE = 0.999 
+    #     config_provider_v_decay.from_value(DEBUG_V_DECAY_VALUE)
+    #     print(f"  - 【DEBUG OVERRIDE】 Forced v_decay to: {DEBUG_V_DECAY_VALUE}")
+    # except Exception as e:
+    #     print(f"Warning: Could not force v_decay: {e}")
 
     # 11. 【デバッグ復活】 bias を強制的に 2.0 に設定 (ニューロン層バイアス)
-    try:
-        config_provider_bias = container.config.model.neuron.bias
-        DEBUG_BIAS_VALUE = 2.0  
-        config_provider_bias.from_value(DEBUG_BIAS_VALUE)
-        print(f"  - 【DEBUG OVERRIDE】 Forced neuron bias to: {DEBUG_BIAS_VALUE}")
-    except Exception as e:
-        print(f"Warning: Could not force neuron bias: {e}")
+    # try:
+    #     config_provider_bias = container.config.model.neuron.bias
+    #     DEBUG_BIAS_VALUE = 2.0  
+    #     config_provider_bias.from_value(DEBUG_BIAS_VALUE)
+    #     print(f"  - 【DEBUG OVERRIDE】 Forced neuron bias to: {DEBUG_BIAS_VALUE}")
+    # except Exception as e:
+    #     print(f"Warning: Could not force neuron bias: {e}")
     # --- ▲▲▲ 【デバッグ強制オーバーライドの復活と再導入】 ▲▲▲ ---
         
 
@@ -239,36 +247,37 @@ async def main() -> None:
     # ssn_core.py 側で vocab_size を処理するように修正したため、ここは変更不要
     student_model = container.snn_model(vocab_size=10).to(device)
     
-    # --- ▼▼▼ 【重み初期化ロジックの修正】 Biasを強制注入とV_INIT強制を復活 ▼▼▼ ---
+    # --- ▼▼▼ 【!!! HPO修正 (v12): 強制バイアス注入とV_INIT強制を *無効化* !!!】 ▼▼▼ ---
     
-    # V_INITの強制設定 (再々々復活)
-    DEBUG_V_INIT_VALUE_FORCED = 0.499 # 初期電位のデバッグ値を復活
+    # V_INITの強制設定 (無効化)
+    # DEBUG_V_INIT_VALUE_FORCED = 0.499 # 初期電位のデバッグ値を復活
     
     def aggressive_init(m: torch.nn.Module):
-        """すべてのConv/Linear層にXavier初期化を適用し、バイアスに強制的に正の値(2.0)を注入する。"""
+        """ (v12: この関数は呼び出されなくなるが、念のため内部も無効化) """
         # NOTE: DEBUG_BIAS_VALUE はクロージャで参照されます。
         if isinstance(m, torch.nn.Conv2d) or isinstance(m, torch.nn.Linear):
             # Glorot (Xavier) Uniform initializationを適用
             torch.nn.init.xavier_uniform_(m.weight)
             if m.bias is not None:
                 # 【修正: バイアス項に強制的に大きな値を注入】
-                torch.nn.init.constant_(m.bias, DEBUG_BIAS_VALUE) # 2.0を直接注入
-                print(f"  - INJECTED BIAS: {DEBUG_BIAS_VALUE} for {m.__class__.__name__}")
+                # torch.nn.init.constant_(m.bias, DEBUG_BIAS_VALUE) # 2.0を直接注入 (無効化)
+                torch.nn.init.constant_(m.bias, 0.0) # 通常のゼロ初期化に戻す
+                # print(f"  - INJECTED BIAS: {DEBUG_BIAS_VALUE} for {m.__class__.__name__}")
+                    
+    print("INFO: Using standard weight initialization (Forced bias injection is DISABLED for HPO).")
+    # student_model.apply(aggressive_init) # (無効化)
     
-    print("🔥 Forcing aggressive Xavier weight initialization to ensure initial spike activity.")
-    student_model.apply(aggressive_init)
+    # --- V_INITの強制設定 (無効化) ---
+    # try:
+    #     print(f"🧠 DEBUG: Setting initial membrane potential (V_init) to: {DEBUG_V_INIT_VALUE_FORCED} (V_TH=0.5)")
+    #     for name, module in student_model.named_modules():
+    #         if hasattr(module, 'v_init'):
+    #              # type: ignore[attr-defined]
+    #             module.v_init = DEBUG_V_INIT_VALUE_FORCED # type: ignore[attr-defined] 
+    # except Exception as e:
+    #     print(f"Warning: Could not set V_init on all neurons: {e}")
     
-    # --- V_INITの強制設定 (再々々復活) ---
-    try:
-        print(f"🧠 DEBUG: Setting initial membrane potential (V_init) to: {DEBUG_V_INIT_VALUE_FORCED} (V_TH=0.5)")
-        for name, module in student_model.named_modules():
-            if hasattr(module, 'v_init'):
-                 # type: ignore[attr-defined]
-                module.v_init = DEBUG_V_INIT_VALUE_FORCED # type: ignore[attr-defined] 
-    except Exception as e:
-        print(f"Warning: Could not set V_init on all neurons: {e}")
-    
-    # --- ▲▲▲ 【重み初期化ロジックの修正】 ▲▲▲ ---
+    # --- ▲▲▲ 【!!! HPO修正 (v12) !!!】 ▲▲▲ ---
     
     optimizer = container.optimizer(params=student_model.parameters())
     scheduler = container.scheduler(optimizer=optimizer) if container.config.training.gradient_based.use_scheduler() else None
@@ -350,25 +359,27 @@ async def main() -> None:
     except Exception as e:
         CORE_TAU_MEM_VALUE = f"Error: {e}"
         
+    # --- ▼▼▼ 【!!! HPO修正 (v12): デバッグログの表示を修正 !!!】 ▼▼▼ ---
+    # ...
     print("\n=============================================")
     print("🚨 FINAL DEBUG CHECK (RE-FORCED PARAMETERS) 🚨")
     print(f"  V_THRESHOLD (HPO/YAML): {container.config.model.neuron.v_threshold()}")
     print(f"  LR (HPO/YAML): {container.config.training.gradient_based.learning_rate()}")
     print(f"  SPIKE_REG_W (HPO/YAML): {container.config.training.gradient_based.distillation.loss.spike_reg_weight()}")
     
-    print("--- FORCED VALUES ---")
-    print(f"  LR (Forced): {DEBUG_LR_VALUE}")
-    print(f"  V_THRESHOLD (Forced): {DEBUG_V_THRESHOLD_VALUE}")
-    print(f"  V_RESET (Forced): {DEBUG_V_RESET_VALUE}")
-    print(f"  V_DECAY (Forced): {DEBUG_V_DECAY_VALUE}")
-    print(f"  NEURON_BIAS (Forced): {DEBUG_BIAS_VALUE} (Config Override)")
-    print(f"  LAYER_BIAS (Injected): {DEBUG_BIAS_VALUE} (Direct Weight Init)")
+    print("--- FORCED VALUES (v12: Most should be DISABLED) ---")
+    # print(f"  LR (Forced): {DEBUG_LR_VALUE}") # 無効化
+    # print(f"  V_THRESHOLD (Forced): {DEBUG_V_THRESHOLD_VALUE}") # v_threshold は残す
+    # print(f"  V_RESET (Forced): {DEBUG_V_RESET_VALUE}") # 無効化
+    # print(f"  V_DECAY (Forced): {DEBUG_V_DECAY_VALUE}") # 無効化
+    # print(f"  NEURON_BIAS (Forced): {DEBUG_BIAS_VALUE} (Config Override)") # 無効化
+    # print(f"  LAYER_BIAS (Injected): {DEBUG_BIAS_VALUE} (Direct Weight Init)") # 無効化
     
     print("--- STRUCTURAL FIX CHECK ---")
-    print(f"  V_INIT (Forced): {DEBUG_V_INIT_VALUE_FORCED}")
+    # print(f"  V_INIT (Forced): {DEBUG_V_INIT_VALUE_FORCED}") # 無効化
     print(f"  CORE_TAU_MEM (Hardcoded in LIF.py): {CORE_TAU_MEM_VALUE}")
     print("=============================================\n")
-    # --- ▲▲▲ 環境整合性チェック ▲▲▲ ---
+    # --- ▲▲▲ 【!!! HPO修正 (v12) !!!】 ▲▲▲ ---
 
     # 蒸留の実行
     await manager.run_distillation(

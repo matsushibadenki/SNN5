@@ -2,20 +2,12 @@
 # Title: 知識蒸留実行スクリプト (HPO専用)
 # Description: KnowledgeDistillationManagerを使用して、知識蒸留プロセスを開始します。
 #
-# 【v16 - HPO正常化】:
-# - v15 (bias=0.1, v_init=0.0) でも spike_rate=0 だった。
-# - bias=0.1 では V_threshold=0.5 を超えるのに不十分と判断。
-# - キックスタートを確実にするため、強制バイアスを 0.5 に引き上げる。
+# 修正 (v17 - HPO正常化):
+# - v15(bias=0.1) と v16(bias=0.5) の両方で、spike_reg_loss が 4.0 を
+#   超える「スパイク爆発」が発生していたことを特定 (spike_rate メトリックはバグ)。
+# - bias=0.1 でも強すぎたと判断し、強制バイアスを 0.01 に引き下げる。
 # - v_init=0.0 の強制は v15 から維持する。
-# - aggressive_init (Linear/Convへのバイアス注入) は無効のまま。
 #
-# 【!!! エラー修正 (HSEO module not found) !!!】
-# (L17-20) sys.path の設定を、app.containers (L25) などの
-#          プロジェクト内インポートよりも *前* に移動する。
-#
-# 【!!! エラー修正 (tokenizer_name is None) !!!】
-# (L61-69) --task 引数に基づき、data config (例: configs/data/cifar10.yaml) を
-#          ロードするロジックを追加。
 
 import argparse
 import asyncio
@@ -216,17 +208,16 @@ async def main() -> None:
         print(f"Warning: Could not force v_init: {e}")
     # --- ▲▲▲ 修正 (v15) ▲▲▲ ---
 
-    # 11. 【デバッグ復活】 bias を強制的に 0.5 に設定 (ニューロン層バイアス)
+    # 11. 【デバッグ復活】 bias を強制的に 0.01 に設定 (ニューロン層バイアス)
     try:
         config_provider_bias = container.config.model.neuron.bias
-        # --- ▼▼▼ 修正 (v16): 0.1 -> 0.5 に引き上げ ▼▼▼ ---
-        DEBUG_BIAS_VALUE = 0.5  # 0.1 から 0.5 に変更
-        # --- ▲▲▲ 修正 (v16) ▲▲▲ ---
+        # --- ▼▼▼ 修正 (v17): 0.5 -> 0.01 に引き下げ ▼▼▼ ---
+        DEBUG_BIAS_VALUE = 0.01  # 0.5 から 0.01 に変更
+        # --- ▲▲▲ 修正 (v17) ▲▲▲ ---
         
         # --- ▼▼▼ 修正 (v14/v15): このブロックを *復活* させる ▼▼▼ ---
         config_provider_bias.from_value(DEBUG_BIAS_VALUE)
         print(f"  - 【DEBUG OVERRIDE】 Forced neuron bias to: {DEBUG_BIAS_VALUE}")
-        # --- ▲▲▲ 修正 (v14/v15) ▲▲▲ ---
     except Exception as e:
         print(f"Warning: Could not force neuron bias: {e}")
     # --- ▲▲▲ 【デバッグ強制オーバーライドの復活と再導入】 ▲▲▲ ---

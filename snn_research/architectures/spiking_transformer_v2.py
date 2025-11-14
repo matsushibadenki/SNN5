@@ -4,21 +4,11 @@
 #
 # (中略)
 #
-# 【エラー修正 (log.txt)】:
-# - (L226) SpikingTransformerV2 の親クラスである BaseModel の __init__ は
-#   引数を取らないため、super() 呼び出しから引数を削除。
-#
-# 【エラー修正 (log.txt)】:
-# - TypeError: AdaptiveLIFNeuron.__init__() missing 1 required positional argument: 'features'
-# - get_neuron_by_name に渡す neuron_config_mapped 辞書に、
-#   'features' (d_model または dim_feedforward) が含まれていなかった。
-# - 各クラスの __init__ で、get_neuron_by_name を呼び出す直前に
-#   neuron_config_mapped['features'] = [適切な次元] を追加。
-#
 # 【!!! エラー修正 (log.txt) !!!】
-# - TypeError: SpikeDrivenSelfAttention.__init__() got an unexpected keyword argument 'd_model'
+# - TypeError: SpikeDrivenSelfAttention.__init__() got an unexpected keyword argument '...'
 # - (L390付近) SDSAEncoderLayer が SpikeDrivenSelfAttention を呼び出す際、
-#   引数名が 'd_model' -> 'embed_dim'、'nhead' -> 'num_heads' であると推測し、修正。
+#   引数名を 'attention.py' の定義 (dim, num_heads, time_steps, neuron_config) と
+#   完全に一致させる。
 
 import torch
 import torch.nn as nn
@@ -381,19 +371,21 @@ class SDSAEncoderLayer(nn.Module):
         sdsa_neuron_config = neuron_config_mapped.copy()
         sdsa_neuron_config['features'] = d_model
         
-        # --- ▼▼▼ 【!!! エラー修正 (ログ [cite: 114]) !!!】 ▼▼▼
-        # 'd_model' -> 'embed_dim'
-        # 'nhead' -> 'num_heads'
-        # SpikeDrivenSelfAttention の __init__ が期待する引数名に修正します。
+        # --- ▼▼▼ 【!!! エラー修正 (v3) !!!】 ▼▼▼
+        # 'attention.py' の SpikeDrivenSelfAttention.__init__ の
+        # シグネチャ (dim, num_heads, time_steps, neuron_config) に
+        # 正確に合わせます。
+        # 'dropout' と 'sdsa_config' は SDSA 自体には渡しません。
         self.self_attn = SpikeDrivenSelfAttention(
-            embed_dim=d_model,
+            dim=d_model,
             num_heads=nhead,
-            dropout=self_attn_dropout, 
-            sdsa_config=sdsa_config,
-            neuron_config=sdsa_neuron_config,
-            time_steps=1 # このレイヤーは T=1 で動作
+            time_steps=1, # このレイヤーは T=1 で動作
+            neuron_config=sdsa_neuron_config
+            # 'add_noise_if_silent' と 'noise_prob' は
+            # sdsa_config から取得するか、デフォルト値を使います。
+            # sdsa_config の内容が不明なため、ここではデフォルトに任せます。
         )
-        # --- ▲▲▲ 【!!! エラー修正 !!!】 ▲▲▲
+        # --- ▲▲▲ 【!!! エラー修正 (v3) !!!】 ▲▲▲
         
         # 2. Feedforward Network (FFN)
         self.linear1 = nn.Linear(d_model, dim_feedforward)
@@ -465,7 +457,7 @@ class SDSAEncoderLayer(nn.Module):
             raise RuntimeError(f"Layer {self.name} has not been built.")
 
         # 1. SDSA (Spike-Driven Self-Attention)
-        x_step, _ = self.self_attn(src) # (B, N, C)
+        x_step = self.self_attn(src) # (B, N, C)
         
         # 2. Add & Norm (残差接続 1)
         src = src + self.dropout1(x_step)

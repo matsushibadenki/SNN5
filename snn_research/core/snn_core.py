@@ -9,9 +9,12 @@
 # - 修正: 削除対象の旧式モデル (v1, simple) への参照を削除。
 #
 # 【エラー修正】
-# - TypeError: SpikingTransformerV2.__init__() got an unexpected keyword argument 'vocab_size'
-# - 'spiking_transformer' (SpikingTransformerV2) は 'vocab_size' ではなく 'num_classes' を
-#   期待していると仮定し、インスタンス化時の引数を修正。 (L138-L147)
+# 1. TypeError: ... got an unexpected keyword argument 'architecture_type'
+#    - 'architecture_type' はモデルのコンストラクタに渡すべきではないため、
+#      params 辞書から削除する。(L87)
+# 2. (潜在的エラー) TypeError: ... got an unexpected keyword argument 'vocab_size'
+#    - 'spiking_transformer' (SpikingTransformerV2) は 'vocab_size' ではなく 'num_classes' を
+#      期待するため、引数の渡し方を変更する。(L137-L151)
 
 import torch
 import torch.nn as nn
@@ -70,6 +73,14 @@ class SNNCore(nn.Module):
         
         params: Dict[str, Any] = cast(Dict[str, Any], OmegaConf.to_container(self.config, resolve=True))
         params.pop('path', None)
+
+        # --- ▼▼▼ 【!!! エラー修正 1 !!!】 ▼▼▼
+        # 'architecture_type' は SNNCore がモデルを選択するためにのみ使用し、
+        # モデル自体のコンストラクタには渡さないため、params から削除する。
+        # [cite: 114, 120, 126]
+        params.pop('architecture_type', None)
+        # --- ▲▲▲ 【!!! エラー修正 1 !!!】 ▲▲▲
+        
         neuron_config: Dict[str, Any] = params.pop('neuron', {})
 
         # (v_hpo_fix_value_error, v_hpo_fix_oom_v3 のロジックを維持)
@@ -139,22 +150,23 @@ class SNNCore(nn.Module):
         # if 'time_steps' not in params and model_type == 'simple':
         #      params['time_steps'] = config.get('time_steps', 16) 
              
-        # --- ▼▼▼ 【!!! エラー修正 !!!】 ▼▼▼
+        # --- ▼▼▼ 【!!! エラー修正 2 !!!】 ▼▼▼
         # 'spiking_transformer' (SpikingTransformerV2) は 'vocab_size' ではなく
         # 'num_classes' を期待すると仮定し、リストに追加する。
+        #  (vocab_size=10 が渡されている)
         if model_type in ["spiking_cnn", "sew_resnet", "spiking_transformer"]:
             num_classes_cfg = OmegaConf.select(config, "num_classes", default=None)
             params['num_classes'] = num_classes_cfg if num_classes_cfg is not None else vocab_size
         
-        # 'spiking_transformer' の場合、'vocab_size' 引数を渡さないように修正
+        # 'spiking_transformer' の場合、'vocab_size' 引数を渡さず、params 経由で 'num_classes' を渡す
         if model_type in ["spiking_transformer"]:
-            # SpikingTransformerV2 は vocab_size を期待していない (TypeError の原因)
+            # SpikingTransformerV2 は vocab_size を期待していない (潜在的な TypeError の原因)
             # 代わりに num_classes を params 経由で渡す (上記で設定済み)
             self.model = model_map[model_type](neuron_config=neuron_config, **params)
         else:
             # 他モデルは vocab_size を期待している
             self.model = model_map[model_type](vocab_size=vocab_size, neuron_config=neuron_config, **params)
-        # --- ▲▲▲ 【!!! エラー修正 !!!】 ▲▲▲
+        # --- ▲▲▲ 【!!! エラー修正 2 !!!】 ▲▲▲
         
     def forward(self, *args: Any, **kwargs: Any) -> Any:
         # (元の forward ロジックは変更なし)

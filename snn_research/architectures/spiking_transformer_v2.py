@@ -4,10 +4,11 @@
 #
 # (中略)
 #
-# 【!!! エラー修正 (log.txt v4) !!!】
-# 1. TypeError: SNNLayerNorm.__init__() got an unexpected keyword argument 'eps'
-#    - (L400-L401) SNNLayerNorm のコンストラクタから `eps` 引数を削除。
-#      (time_steps 引数は前回削除済み)
+# 【!!! エラー修正 (log.txt v5) !!!】
+# 1. AttributeError: 'SNNLayerNorm' object has no attribute 'set_stateful'
+#    - (L444-L449) SDSAEncoderLayer.set_stateful() 内の
+#      self.norm1.set_stateful() と self.norm2.set_stateful() の
+#      呼び出しを削除。SNNLayerNorm は state を持たないと判断。
 
 import torch
 import torch.nn as nn
@@ -376,11 +377,9 @@ class SDSAEncoderLayer(nn.Module):
         self.linear2 = nn.Linear(dim_feedforward, d_model)
         
         # 3. Normalization
-        # --- ▼▼▼ 【!!! エラー修正 (TypeError) !!!】 ▼▼▼
-        # SNNLayerNorm のコンストラクタから `time_steps` と `eps` を削除
+        # (TypeError fix v4) `eps` を削除
         self.norm1 = SNNLayerNorm(d_model)
         self.norm2 = SNNLayerNorm(d_model)
-        # --- ▲▲▲ 【!!! エラー修正 (TypeError) !!!】 ▲▲▲
 
         # 4. Dropout
         self.dropout1 = nn.Dropout(dropout)
@@ -405,7 +404,7 @@ class SDSAEncoderLayer(nn.Module):
         neuron_config_ffn2 = neuron_config_mapped.copy()
         neuron_config_ffn2['features'] = d_model
         self.ffn_neuron2 = get_neuron_by_name(
-            neuron_config_ffn2.get('type', 'lif'), 
+            neuron_config_ffn2.get('type',fs', 'lif'), 
             neuron_config_ffn2
         )
 
@@ -418,11 +417,13 @@ class SDSAEncoderLayer(nn.Module):
         """
         self._is_stateful = stateful
         
-        # (Fix 3): SNNLayerNorm の状態も切り替え
-        if isinstance(self.norm1, SNNLayerNorm):
-            self.norm1.set_stateful(stateful)
-        if isinstance(self.norm2, SNNLayerNorm):
-            self.norm2.set_stateful(stateful)
+        # --- ▼▼▼ 【!!! エラー修正 (AttributeError) !!!】 ▼▼▼
+        # SNNLayerNorm には set_stateful がないため、呼び出しを削除
+        # if isinstance(self.norm1, SNNLayerNorm):
+        #     self.norm1.set_stateful(stateful)
+        # if isinstance(self.norm2, SNNLayerNorm):
+        #     self.norm2.set_stateful(stateful)
+        # --- ▲▲▲ 【!!! エラー修正 (AttributeError) !!!】 ▲▲▲
 
         # ニューロンの状態をリセット
         if not stateful:

@@ -27,6 +27,9 @@ class BaseModel(nn.Module):
     すべてのSNNモデルが継承する基底クラス。snn_core.pyから移動。
     重みの初期化やスパイク統計の共通メソッドを提供する。
     """
+    def __init__(self):
+        super().__init__()
+
     def _init_weights(self):
         for m in self.modules():
             if isinstance(m, nn.Linear):
@@ -49,4 +52,3 @@ class BaseModel(nn.Module):
         for module in self.modules():
             if isinstance(module, (AdaptiveLIFNeuron, IzhikevichNeuron)):
                 module.reset()
-

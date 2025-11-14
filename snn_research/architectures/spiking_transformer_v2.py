@@ -4,12 +4,12 @@
 #
 # (中略)
 #
-# 【!!! エラー修正 (log.txt v7) !!!】
-# 1. ValueError: too many values to unpack (expected 3)
-#    - (L335-L339) SpikingTransformerV2.forward が (logits) の1値しか
-#      返していなかった。
-#    - HPOのトレーナー (trainers.py) が (logits, spikes, mem) の3値を
-#      期待しているため、戻り値を3つに変更する。
+# 【!!! エラー修正 (log.txt v8) !!!】
+# 1. TypeError: unsupported operand type(s) for ** or pow(): 'NoneType' and 'int'
+#    - (L335-L343) SpikingTransformerV2.forward が avg_mem=None を
+#      返していた。
+#    - 損失関数 (losses.py) が None**2 を計算しようとしてクラッシュしたため、
+#      None の代わりに 0.0 のテンソルを返すように修正。
 
 import torch
 import torch.nn as nn
@@ -283,7 +283,7 @@ class SpikingTransformerV2(BaseModel):
             if isinstance(layer, SDSAEncoderLayer):
                 layer.set_stateful(stateful)
 
-    def forward(self, input_images: torch.Tensor, *args, **kwargs) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, None]]:
+    def forward(self, input_images: torch.Tensor, *args, **kwargs) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
         """
         input_images: (B, C, H, W)
         
@@ -329,18 +329,18 @@ class SpikingTransformerV2(BaseModel):
         # (B, D) -> (B, NumClasses)
         output = self.head(x_final)
         
-        # --- ▼▼▼ 【!!! エラー修正 (ValueError) !!!】 ▼▼▼
+        # --- ▼▼▼ 【!!! エラー修正 (TypeError: NoneType ** 2) !!!】 ▼▼▼
         # 6. HPOトレーナー (trainers.py) のために3つの値を返す
         
         # スパイク正則化のため、最後のアテンション層のスパイク
         # (x_spikes) の平均値を計算
         avg_spikes = torch.mean(x_spikes) 
         
-        # 膜電位はトラッキングしていないため None を返す
-        avg_mem = None
+        # 膜電位はトラッキングしていないため、None ではなく 0.0 のテンソルを返す
+        avg_mem = torch.tensor(0.0, device=output.device, dtype=output.dtype)
         
         return output, avg_spikes, avg_mem
-        # --- ▲▲▲ 【!!! エラー修正 (ValueError) !!!】 ▲▲▲
+        # --- ▲▲▲ 【!!! エラー修正 (TypeError: NoneType ** 2) !!!】 ▲▲▲
 
 
 class SDSAEncoderLayer(nn.Module):

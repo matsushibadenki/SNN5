@@ -10,10 +10,12 @@
 #   引数名を 'attention.py' の定義 (dim, num_heads, time_steps, neuron_config) と
 #   完全に一致させる。
 #
-# 【!!! エラー修正 (v_log_2) !!!】
-# - AttributeError: ... object has no attribute 'reset_state'
-# - ニューロンの状態リセットメソッドは 'reset()' です。
-# - L274, L397-L399 の '.reset_state()' を '.reset()' に修正。
+# 【!!! エラー修正 (log.txt) !!!】
+# 1. TypeError: expected Tensor as element 0 in argument 0, but got tuple
+#    - (L186) ニューロンが返す (spike, v_mem) タプルから、spike [0] のみを
+#      リストに追加するよう修正。
+# 2. AttributeError: ... object has no attribute 'reset_state'
+#    - (L298, L426-L428) メソッド呼び出しを 'reset_state()' から 'reset()' に修正。
 
 import torch
 import torch.nn as nn
@@ -181,7 +183,10 @@ class SpikingVisionEmbedding(nn.Module):
         #    (functional.reset_net が外部で呼び出される想定)
         spikes = []
         for t in range(T):
-            spike_t = self.neuron(x[t]) # (B, N, D)
+            # --- ▼▼▼ 【!!! エラー修正 (TypeError) !!!】 ▼▼▼
+            # ニューロンは (spike, v_mem) のタプルを返すため、スパイク[0]のみを取得
+            spike_t, _ = self.neuron(x[t]) # (B, N, D)
+            # --- ▲▲▲ 【!!! エラー修正 (TypeError) !!!】 ▲▲▲
             spikes.append(spike_t)
             
         # 7. スタック: List[(B, N, D)] -> (T, B, N, D)
@@ -300,10 +305,9 @@ class SpikingTransformerV2(BaseModel):
         
         # 状態リセット
         if not self._is_stateful:
-            # --- ▼▼▼ 【!!! エラー修正 (v_log_2) !!!】 ▼▼▼
-            # 'reset_state()' -> 'reset()'
-            self.pool_neuron.reset()
-            # --- ▲▲▲ 【!!! エラー修正 (v_log_2) !!!】 ▲▲▲
+            # --- ▼▼▼ 【!!! エラー修正 (AttributeError) !!!】 ▼▼▼
+            self.pool_neuron.reset() # 修正: reset_state -> reset
+            # --- ▲▲▲ 【!!! エラー修正 (AttributeError) !!!】 ▲▲▲
             
             # (Embedding と EncoderLayer のニューロンは SpikingVisionEmbedding と
             #  SDSAEncoderLayer.set_stateful でリセットされる)
@@ -333,7 +337,11 @@ class SpikingTransformerV2(BaseModel):
         
         # 4. プーリング用ニューロン (オプション)
         # (B, N, D) -> (B, N, D)
-        x_pooled = self.pool_neuron(x_pooled) 
+        
+        # --- ▼▼▼ 【!!! エラー修正 (TypeError) !!!】 ▼▼▼
+        # プーリング用ニューロンもタプル (spike, v_mem) を返すため、[0] を取得
+        x_pooled, _ = self.pool_neuron(x_pooled) 
+        # --- ▲▲▲ 【!!! エラー修正 (TypeError) !!!】 ▲▲▲
         
         # 5. プーリング (Mean over Patches)
         # (B, N, D) -> (B, D) (パッチ軸で平均化)
@@ -447,12 +455,11 @@ class SDSAEncoderLayer(nn.Module):
         self._is_stateful = stateful
         # ニューロンの状態をリセット
         if not stateful:
-            # --- ▼▼▼ 【!!! エラー修正 (v_log_2) !!!】 ▼▼▼
-            # 'reset_state()' -> 'reset()'
-            self.neuron.reset()
-            self.ffn_neuron1.reset()
-            self.ffn_neuron2.reset()
-            # --- ▲▲▲ 【!!! エラー修正 (v_log_2) !!!】 ▲▲▲
+            # --- ▼▼▼ 【!!! エラー修正 (AttributeError) !!!】 ▼▼▼
+            self.neuron.reset() # 修正: reset_state -> reset
+            self.ffn_neuron1.reset() # 修正: reset_state -> reset
+            self.ffn_neuron2.reset() # 修正: reset_state -> reset
+            # --- ▲▲▲ 【!!! エラー修正 (AttributeError) !!!】 ▲▲▲
         
         # SNNLayerNorm の状態も切り替え
         if isinstance(self.norm1, SNNLayerNorm):
@@ -469,23 +476,30 @@ class SDSAEncoderLayer(nn.Module):
             raise RuntimeError(f"Layer {self.name} has not been built.")
 
         # 1. SDSA (Spike-Driven Self-Attention)
-        x_step = self.self_attn(src) # (B, N, C)
+        # --- ▼▼▼ 【!!! エラー修正 (TypeError) !!!】 ▼▼▼
+        # self.self_attn もタプル (spike, v_mem) を返す可能性があるため、[0] を取得
+        x_step, _ = self.self_attn(src) # (B, N, C)
+        # --- ▲▲▲ 【!!! エラー修正 (TypeError) !!!】 ▲▲▲
         
         # 2. Add & Norm (残差接続 1)
         src = src + self.dropout1(x_step)
         
         # 3. 発火 (LIF)
-        src = self.neuron(src) 
+        # --- ▼▼▼ 【!!! エラー修正 (TypeError) !!!】 ▼▼▼
+        src, _ = self.neuron(src) 
+        # --- ▲▲▲ 【!!! エラー修正 (TypeError) !!!】 ▲▲▲
         
         # 4. Norm 1
         src = self.norm1(src)
 
         # 5. Feedforward (FFN)
         x_step = self.linear1(src)
-        x_step = self.ffn_neuron1(x_step) # FFN内ニューロン1
+        # --- ▼▼▼ 【!!! エラー修正 (TypeError) !!!】 ▼▼▼
+        x_step, _ = self.ffn_neuron1(x_step) # FFN内ニューロン1
         x_step = self.dropout2(x_step)
         x_step = self.linear2(x_step)
-        x_step = self.ffn_neuron2(x_step) # FFN内ニューロン2
+        x_step, _ = self.ffn_neuron2(x_step) # FFN内ニューロン2
+        # --- ▲▲▲ 【!!! エラー修正 (TypeError) !!!】 ▲▲▲
         
         # 6. Add & Norm (残差接続 2)
         src = src + self.dropout3(x_step)

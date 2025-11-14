@@ -1,0 +1,9 @@
+# ファイルパス: configs/data/cifar10.yaml
+# (このパスに配置してください)
+
+dataset_name: "cifar10"
+batch_size: 128
+num_workers: 4
+
+# tokenizer_name is None エラーを解消するため
+tokenizer_name: null

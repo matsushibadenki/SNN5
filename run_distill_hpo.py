@@ -31,6 +31,11 @@
 # - ログが信頼できないため、v_init の自動設定を無効化し、
 #   v_init=0.0 かつ bias=0.1 を強制設定する。
 #
+# 修正 (v16 - HPO正常化):
+# - v15 (bias=0.1, v_init=0.0) でも spike_rate=0 だった。
+# - bias=0.1 では V_threshold=0.5 を超えるのに不十分と判断。
+# - キックスタートを確実にするため、強制バイアスを 0.5 に引き上げる。
+#
 
 import argparse
 import asyncio
@@ -222,17 +227,16 @@ async def main() -> None:
     except Exception as e:
         print(f"Warning: Could not force v_init: {e}")
 
-    # 11. 【デバッグ復活】 bias を強制的に 0.1 に設定 (ニューロン層バイアス)
+    # 11. 【デバッグ復活】 bias を強制的に 0.5 に設定 (ニューロン層バイアス)
     try:
         config_provider_bias = container.config.model.neuron.bias
-        DEBUG_BIAS_VALUE = 0.1  # v14から 0.1 を維持
+        # --- ▼▼▼ 修正 (v16): 0.1 -> 0.5 に引き上げ ▼▼▼ ---
+        DEBUG_BIAS_VALUE = 0.5  # 0.1 から 0.5 に変更
+        # --- ▲▲▲ 修正 (v16) ▲▲▲ ---
+        
         # --- ▼▼▼ 修正 (v14/v15): このブロックを *復活* させる ▼▼▼ ---
         config_provider_bias.from_value(DEBUG_BIAS_VALUE)
         print(f"  - 【DEBUG OVERRIDE】 Forced neuron bias to: {DEBUG_BIAS_VALUE}")
-        # --- ▲▲▲ 修正 (v14/v15) ▲▲▲ ---
-    except Exception as e:
-        print(f"Warning: Could not force neuron bias: {e}")
-    # --- ▲▲▲ 【デバッグ強制オーバーライドの復活と再導入】 ▲▲▲ ---
     
         
 

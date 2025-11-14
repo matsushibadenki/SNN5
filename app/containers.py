@@ -142,7 +142,7 @@ class TrainingContainer(containers.DeclarativeContainer):
     # SNNCore が config 引数としてプロバイダオブジェクト(Configuration)ではなく、
     # 解決された値(dict)を受け取るように .provided を使用します。
     snn_model = providers.Factory(
-        NNCore,
+        SNNCore,
         config=providers.Callable(
             lambda c: c.get('model', {}), # config['model'] を動的に取得
             c=config.provided              # lambda の 'c' 引数に解決済みの config dict を注入

@@ -142,16 +142,16 @@ class TrainingContainer(containers.DeclarativeContainer):
     # SNNCore が config 引数としてプロバイダオブジェクト(Configuration)ではなく、
     # 解決された値(dict)を受け取るように .provided を使用します。
     snn_model = providers.Factory(
-        SNNCore,
+        SNNCore, # <--- (NameError 修正済み)
+        
         config=providers.Callable(
-            lambda c: c.get('model', {}), # config['model'] を動的に取得
-            c=config.provided              # lambda の 'c' 引数に解決済みの config dict を注入
+            lambda c: c.get('model', {}), 
+            c=config.provided              
         ),
         
-        # --- ▼▼▼ 修正: この行をコメントアウトまたは削除 ▼▼▼ ---
+        # --- ▼▼▼ 【!!! この行を削除またはコメントアウト !!!】 ▼▼▼ ---
         # vocab_size=tokenizer.provided.vocab_size
-        # --- ▲▲▲ 修正 ▲▲▲ ---
-        # (vocab_sizeは run_distill_hpo.py L.234 で vocab_size=10 として指定されるため)
+        # --- ▲▲▲ 【!!! 修正 !!!】 ▲▲▲ ---
     )
     # --- ▲ 修正 (v_hpo_fix_4) ▲ ---
     astrocyte_network = providers.Factory(AstrocyteNetwork, snn_model=snn_model)

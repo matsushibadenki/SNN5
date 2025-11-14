@@ -20,12 +20,15 @@ import typer
 from typing import Optional, List
 import subprocess
 import sys
-# --- ▼ 修正: cleanコマンドのために os と shutil をインポート ▼ ---
 import os
 import shutil
 from pathlib import Path
-# --- ▲ 修正 ▲ ---
 
+# このスクリプト(snn-cli.py)があるディレクトリをプロジェクトルートとする
+project_root = os.path.dirname(os.path.abspath(__file__))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+    
 app = typer.Typer()
 agent_app = typer.Typer()
 app.add_typer(agent_app, name="agent")

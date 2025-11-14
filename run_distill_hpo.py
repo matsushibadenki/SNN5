@@ -23,6 +23,14 @@
 #   設定するのが正しいキックスタートの方法だと判明。
 # - L224-L227 の「ニューロンバイアス上書き」を 0.1 で復活させる。
 # - L304 の aggressive_init (nn.Linear.bias注入) は再度無効化する。
+#
+# 修正 (v15 - HPO正常化):
+# - v14 (bias=0.1) でも spike_rate=0 だった。
+# - v14の bias=0.1 設定は、v_init=0.4995 を自動設定し、
+#   理論上「爆発」するはずだったが、ログは「沈黙」を示した。
+# - ログが信頼できないため、v_init の自動設定を無効化し、
+#   v_init=0.0 かつ bias=0.1 を強制設定する。
+#
 
 import argparse
 import asyncio
@@ -203,26 +211,25 @@ async def main() -> None:
     # except Exception as e:
     #     print(f"Warning: Could not force v_reset: {e}")
 
-    # 10. 【デバッグ復活】 v_decay を強制的に 0.999 に設定
-    # try:
-    #     config_provider_v_decay = container.config.model.neuron.v_decay
-    #     DEBUG_V_DECAY_VALUE = 0.999 
-    #     config_provider_v_decay.from_value(DEBUG_V_DECAY_VALUE)
-    #     print(f"  - 【DEBUG OVERRIDE】 Forced v_decay to: {DEBUG_V_DECAY_VALUE}")
-    # except Exception as e:
-    #     print(f"Warning: Could not force v_decay: {e}")
+    # 10.5. 【デバッグ復活 (v15)】 v_init を強制的に 0.0 に設定
+    # v14 (bias=0.1) が v_init=0.4995 を自動設定するロジックを
+    # 無効化するため、v_init は 0.0 に明示的に固定する。
+    try:
+        config_provider_v_init = container.config.model.neuron.v_init
+        DEBUG_V_INIT_VALUE = 0.0 
+        config_provider_v_init.from_value(DEBUG_V_INIT_VALUE)
+        print(f"  - 【DEBUG OVERRIDE (v15)】 Forced v_init to: {DEBUG_V_INIT_VALUE}")
+    except Exception as e:
+        print(f"Warning: Could not force v_init: {e}")
 
-    # 11. 【デバッグ復活】 bias を強制的に 2.0 に設定 (ニューロン層バイアス)
+    # 11. 【デバッグ復活】 bias を強制的に 0.1 に設定 (ニューロン層バイアス)
     try:
         config_provider_bias = container.config.model.neuron.bias
-        # --- ▼▼▼ 修正 (v13/v14): 0.1 を使用 ▼▼▼ ---
-        DEBUG_BIAS_VALUE = 0.1  # 2.0 から 0.1 に変更
-        # --- ▲▲▲ 修正 (v13/v14) ▲▲▲ ---
-        
-        # --- ▼▼▼ 修正 (v14): このブロックを *復活* させる ▼▼▼ ---
+        DEBUG_BIAS_VALUE = 0.1  # v14から 0.1 を維持
+        # --- ▼▼▼ 修正 (v14/v15): このブロックを *復活* させる ▼▼▼ ---
         config_provider_bias.from_value(DEBUG_BIAS_VALUE)
         print(f"  - 【DEBUG OVERRIDE】 Forced neuron bias to: {DEBUG_BIAS_VALUE}")
-        # --- ▲▲▲ 修正 (v14) ▲▲▲ ---
+        # --- ▲▲▲ 修正 (v14/v15) ▲▲▲ ---
     except Exception as e:
         print(f"Warning: Could not force neuron bias: {e}")
     # --- ▲▲▲ 【デバッグ強制オーバーライドの復活と再導入】 ▲▲▲ ---
@@ -263,7 +270,7 @@ async def main() -> None:
     # --- ▼▼▼ 【!!! HPO修正 (v14): 0.1 のバイアス注入を *無効化* !!!】 ▼▼▼ ---
     
     def aggressive_init(m: torch.nn.Module):
-        """ (v14: この関数は呼び出されなくなるため、内部を 0.0 に戻す) """
+        """ (v15: この関数は呼び出されない) """
         if isinstance(m, torch.nn.Conv2d) or isinstance(m, torch.nn.Linear):
             torch.nn.init.xavier_uniform_(m.weight)
             if m.bias is not None:
@@ -272,9 +279,9 @@ async def main() -> None:
                 # print(f"  - INJECTED BIAS: {DEBUG_BIAS_VALUE} for {m.__class__.__name__}")
     
     print("INFO: Using standard weight initialization (Forced neuron bias is ENABLED via config).")
-    # --- ▼▼▼ 修正 (v14): コメントアウト (無効化) に戻す ▼▼▼ ---
-    # student_model.apply(aggressive_init) # (v14: 無効化)
-    # --- ▲▲▲ 修正 (v14) ▲▲▲ ---
+    # --- ▼▼▼ 修正 (v15): コメントアウト (無効化) のまま ▼▼▼ ---
+    # student_model.apply(aggressive_init) # (v15: 無効化)
+    # --- ▲▲▲ 修正 (v15) ▲▲▲ ---
     
     # --- V_INITの強制設定 (無効化) ---
     # try:

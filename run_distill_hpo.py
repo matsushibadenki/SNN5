@@ -206,14 +206,20 @@ async def main() -> None:
     #     print(f"Warning: Could not force v_decay: {e}")
 
     # 11. 【デバッグ復活】 bias を強制的に 2.0 に設定 (ニューロン層バイアス)
-    # try:
-    #     config_provider_bias = container.config.model.neuron.bias
-    #     DEBUG_BIAS_VALUE = 2.0  
-    #     config_provider_bias.from_value(DEBUG_BIAS_VALUE)
-    #     print(f"  - 【DEBUG OVERRIDE】 Forced neuron bias to: {DEBUG_BIAS_VALUE}")
-    # except Exception as e:
-    #     print(f"Warning: Could not force neuron bias: {e}")
+    try:
+        config_provider_bias = container.config.model.neuron.bias
+        # --- ▼▼▼ 修正 (v13): 爆発しないよう 0.1 に変更 ▼▼▼ ---
+        DEBUG_BIAS_VALUE = 0.1  # 2.0 から 0.1 に変更
+        # --- ▲▲▲ 修正 (v13) ▲▲▲ ---
+        
+        # (注: L223-L227 の config_provider_bias.from_value() は
+        #  v12 でコメントアウトされたまま（無効）でOKです)
+        # config_provider_bias.from_value(DEBUG_BIAS_VALUE)
+        # print(f"  - 【DEBUG OVERRIDE】 Forced neuron bias to: {DEBUG_BIAS_VALUE}")
+    except Exception as e:
+        print(f"Warning: Could not force neuron bias: {e}")
     # --- ▲▲▲ 【デバッグ強制オーバーライドの復活と再導入】 ▲▲▲ ---
+    
         
 
     # --- ▼ 修正 (v_hpo_fix_tensor_size_mismatch) ▼ ---
@@ -249,23 +255,22 @@ async def main() -> None:
     
     # --- ▼▼▼ 【!!! HPO修正 (v12): 強制バイアス注入とV_INIT強制を *無効化* !!!】 ▼▼▼ ---
     
-    # V_INITの強制設定 (無効化)
-    # DEBUG_V_INIT_VALUE_FORCED = 0.499 # 初期電位のデバッグ値を復活
+    # V_INITの強制設定 (無効化のまま)
+    # DEBUG_V_INIT_VALUE_FORCED = 0.499 
     
     def aggressive_init(m: torch.nn.Module):
-        """ (v12: この関数は呼び出されなくなるが、念のため内部も無効化) """
-        # NOTE: DEBUG_BIAS_VALUE はクロージャで参照されます。
+        """ (v13: DEBUG_BIAS_VALUE=0.1 で実行される) """
         if isinstance(m, torch.nn.Conv2d) or isinstance(m, torch.nn.Linear):
-            # Glorot (Xavier) Uniform initializationを適用
             torch.nn.init.xavier_uniform_(m.weight)
             if m.bias is not None:
-                # 【修正: バイアス項に強制的に大きな値を注入】
-                # torch.nn.init.constant_(m.bias, DEBUG_BIAS_VALUE) # 2.0を直接注入 (無効化)
-                torch.nn.init.constant_(m.bias, 0.0) # 通常のゼロ初期化に戻す
-                # print(f"  - INJECTED BIAS: {DEBUG_BIAS_VALUE} for {m.__class__.__name__}")
-                    
-    print("INFO: Using standard weight initialization (Forced bias injection is DISABLED for HPO).")
-    # student_model.apply(aggressive_init) # (無効化)
+                # 【修正: v13 で 0.1 が注入される】
+                torch.nn.init.constant_(m.bias, DEBUG_BIAS_VALUE) 
+                print(f"  - INJECTED BIAS: {DEBUG_BIAS_VALUE} for {m.__class__.__name__}")
+    
+    print(f"🔥 INFO: Forcing small bias injection (BIAS={DEBUG_BIAS_VALUE}) for HPO.")
+    # --- ▼▼▼ 修正 (v13): コメントアウトを解除 ▼▼▼ ---
+    student_model.apply(aggressive_init) # (有効化)
+    # --- ▲▲▲ 修正 (v13) ▲▲▲ ---
     
     # --- V_INITの強制設定 (無効化) ---
     # try:

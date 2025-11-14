@@ -381,9 +381,11 @@ class SDSAEncoderLayer(nn.Module):
         neuron_config_mapped = _map_bias_to_bias_init(neuron_config)
 
         # 1. Spike-Driven Self-Attention (SDSA)
+        # --- ▼▼▼ 【!!! エラー修正 !!!】 ▼▼▼
         # (SDSA内部のニューロンは d_model を features として必要とする)
         sdsa_neuron_config = neuron_config_mapped.copy()
         sdsa_neuron_config['features'] = d_model
+        # --- ▲▲▲ 【!!! エラー修正 !!!】 ▲▲▲
         
         self.self_attn = SpikeDrivenSelfAttention(
             d_model=d_model,

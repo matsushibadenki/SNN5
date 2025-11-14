@@ -295,8 +295,7 @@ class AgentContainer(containers.DeclarativeContainer):
         rag_system=rag_system, 
         memory=memory, 
         planner_model=loaded_planner_snn, 
-        # 修正前: tokenizer_name=config.data.tokenizer_name,
-        # 修正後:
+        # ▼▼▼ 正しい修正後 ▼▼▼
         tokenizer_name=providers.Callable(
             lambda cfg: cfg.get('data', {}).get('tokenizer_name'),
             cfg=config.provided

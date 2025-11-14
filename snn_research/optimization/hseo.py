@@ -13,6 +13,10 @@
 # - 代わりに、DIコンテナ (TrainingContainer) を使用して、
 #   微分不要な BioRLTrainer を直接実行し、その報酬 (メトリクス) を
 #   返すように修正。
+#
+# 修正 (v3):
+# - sys.path の設定を、app.containers などのプロジェクト内インポートよりも
+#   *前* に移動。
 
 import numpy as np
 import torch
@@ -23,6 +27,15 @@ import re
 import os
 from pathlib import Path
 from typing import List, Tuple, Callable, Dict, Any, Optional
+
+# --- ▼▼▼ 修正 (v3): sys.path の設定をインポートの前に移動 ▼▼▼ ---
+# プロジェクトルートをPythonパスに追加
+project_root: str = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+# --- ▲▲▲ 修正 (v3) ▲▲▲ ---
+
+
 # --- ▼ 修正: DIコンテナとBioRLTrainer関連をインポート ▼ ---
 from omegaconf import OmegaConf, DictConfig
 from app.containers import TrainingContainer
@@ -33,10 +46,8 @@ from app.containers import TrainingContainer
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# プロジェクトルートをPythonパスに追加 (train.py を呼び出すため)
-project_root: str = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
+# (sys.path の設定は上に移動)
+
 
 # --- 1. SNN評価関数 (目的関数) ---
 

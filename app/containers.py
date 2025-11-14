@@ -11,6 +11,13 @@
 # 修正 (v7):
 # - run_brain_simulation.py での TypeError: stat: path should be string... not NoneType を修正。
 # - _load_planner_snn_factory (L83) で model_path が None の場合に os.path.exists を呼び出さないよう修正。
+#
+# --- !!! HPOエラー修正 (v9) !!! ---
+# 1. L112: 重複した tokenizer 定義をコメントアウト
+# 2. L158: snn_model から vocab_size (tokenizer.provided) の依存を削除
+# 3. L166, L168, L171, L204: tokenizer への参照を tokenizer.provided (遅延) に変更
+# 4. L264: hierarchical_planner の tokenizer_name を providers.Callable (遅延) に変更
+# 5. L151: (前回修正) NameError (NNCore -> SNNCore) を修正
 
 import torch
 from dependency_injector import containers, providers
@@ -111,11 +118,13 @@ class TrainingContainer(containers.DeclarativeContainer):
     device = providers.Factory(get_auto_device)
     
     # --- ▼ 修正 (v_health_check_fix_v8): [no-redef] L112の重複定義を削除 ▼ ---
-    # 【!!! この行をコメントアウトします !!!】
+    
+    # --- ▼▼▼ 【!!! HPO修正 1/8: この行をコメントアウト】 ▼▼▼ ---
     # tokenizer = providers.Factory(AutoTokenizer.from_pretrained, pretrained_model_name_or_path=config.data.tokenizer_name) # L112: 削除
+    # --- ▲▲▲ 【!!! HPO修正 1/8】 ▲▲▲ ---
     
     @providers.Factory
-    def tokenizer(config_provider=config):
+    def tokenizer(config_provider=config): # L114: こちらを残す
     # --- ▲ 修正 ▲ ---
         """
         DIコンテナから呼び出される際に、最新の設定を読み込んで
@@ -143,27 +152,45 @@ class TrainingContainer(containers.DeclarativeContainer):
     # SNNCore が config 引数としてプロバイダオブジェクト(Configuration)ではなく、
     # 解決された値(dict)を受け取るように .provided を使用します。
     snn_model = providers.Factory(
-        SNNCore, # <--- (NameError 修正済み)
+        # --- ▼▼▼ 【!!! HPO修正 2/8: NameError (NNCore -> SNNCore)】 ▼▼▼ ---
+        SNNCore,
+        # --- ▲▲▲ 【!!! HPO修正 2/8】 ▲▲▲ ---
         
+        # 修正前 (Stale Config):
+        # config=config.model.provided,
+        
+        # 修正後 (Dynamic Config):
+        # 呼び出し時に config.provided (解決済みの辞書) を lambda に渡し、
+        # その辞書から 'model' キーを取得して SNNCore に渡す
         config=providers.Callable(
-            lambda c: c.get('model', {}), 
-            c=config.provided              
+            lambda c: c.get('model', {}), # config['model'] を動的に取得
+            c=config.provided              # lambda の 'c' 引数に解決済みの config dict を注入
         ),
         
-        # --- ▼▼▼ 【!!! この行を削除またはコメントアウト !!!】 ▼▼▼ ---
+        # --- ▼▼▼ 【!!! HPO修正 3/8: この行をコメントアウト】 ▼▼▼ ---
         # vocab_size=tokenizer.provided.vocab_size
-        # --- ▲▲▲ 【!!! 修正 !!!】 ▲▲▲ ---
+        # --- ▲▲▲ 【!!! HPO修正 3/8】 ▲▲▲ ---
     )
     # --- ▲ 修正 (v_hpo_fix_4) ▲ ---
     astrocyte_network = providers.Factory(AstrocyteNetwork, snn_model=snn_model)
     meta_cognitive_snn: providers.Provider[MetaCognitiveSNN] = providers.Factory(MetaCognitiveSNN, **(config.training.meta_cognition.to_dict() or {}))
     optimizer = providers.Factory(AdamW, lr=config.training.gradient_based.learning_rate)
     scheduler = providers.Factory(_create_scheduler, optimizer=optimizer, epochs=config.training.epochs, warmup_epochs=config.training.gradient_based.warmup_epochs)
+    
+    # --- ▼▼▼ 【!!! HPO修正 4/8: tokenizer -> tokenizer.provided】 ▼▼▼ ---
     standard_trainer = providers.Factory(BreakthroughTrainer, criterion=providers.Factory(CombinedLoss, ce_weight=config.training.gradient_based.loss.ce_weight, spike_reg_weight=config.training.gradient_based.loss.spike_reg_weight, mem_reg_weight=config.training.gradient_based.loss.mem_reg_weight, sparsity_reg_weight=config.training.gradient_based.loss.sparsity_reg_weight, tokenizer=tokenizer.provided, ewc_weight=config.training.gradient_based.loss.ewc_weight), grad_clip_norm=config.training.gradient_based.grad_clip_norm, use_amp=config.training.gradient_based.use_amp, log_dir=config.training.log_dir, meta_cognitive_snn=meta_cognitive_snn)
+    # --- ▲▲▲ 【!!! HPO修正 4/8】 ▲▲▲ ---
+    
+    # --- ▼▼▼ 【!!! HPO修正 5/8: tokenizer -> tokenizer.provided】 ▼▼▼ ---
     distillation_trainer = providers.Factory(DistillationTrainer, criterion=providers.Factory(DistillationLoss, tokenizer=tokenizer.provided, ce_weight=config.training.gradient_based.distillation.loss.ce_weight, distill_weight=config.training.gradient_based.distillation.loss.distill_weight, spike_reg_weight=config.training.gradient_based.distillation.loss.spike_reg_weight, mem_reg_weight=config.training.gradient_based.distillation.loss.mem_reg_weight, sparsity_reg_weight=config.training.gradient_based.distillation.loss.sparsity_reg_weight, temperature=config.training.gradient_based.distillation.loss.temperature), grad_clip_norm=config.training.gradient_based.grad_clip_norm, use_amp=config.training.gradient_based.use_amp, log_dir=config.training.log_dir, meta_cognitive_snn=meta_cognitive_snn)
+    # --- ▲▲▲ 【!!! HPO修正 5/8】 ▲▲▲ ---
+    
     pi_optimizer = providers.Factory(AdamW, lr=config.training.physics_informed.learning_rate)
     pi_scheduler = providers.Factory(_create_scheduler, optimizer=pi_optimizer, epochs=config.training.epochs, warmup_epochs=config.training.physics_informed.warmup_epochs)
+    
+    # --- ▼▼▼ 【!!! HPO修正 6/8: tokenizer -> tokenizer.provided】 ▼▼▼ ---
     physics_informed_trainer = providers.Factory(PhysicsInformedTrainer, criterion=providers.Factory(PhysicsInformedLoss, ce_weight=config.training.physics_informed.loss.ce_weight, spike_reg_weight=config.training.physics_informed.loss.spike_reg_weight, mem_smoothness_weight=config.training.physics_informed.loss.mem_smoothness_weight, tokenizer=tokenizer.provided), grad_clip_norm=config.training.physics_informed.grad_clip_norm, use_amp=config.training.physics_informed.use_amp, log_dir=config.training.log_dir, meta_cognitive_snn=meta_cognitive_snn)
+    # --- ▲▲▲ 【!!! HPO修正 6/8】 ▲▲▲ ---
     
     # --- ▼ 改善 (v6): 生物学的学習ルールの定義 ▼ ---
     
@@ -209,7 +236,11 @@ class TrainingContainer(containers.DeclarativeContainer):
         # --- ▲ 修正 (v_health_check_fix_v9) ▲ ---
         device=device
     )
+    
+    # --- ▼▼▼ 【!!! HPO修正 7/8: tokenizer -> tokenizer.provided】 ▼▼▼ ---
     planner_snn = providers.Factory(PlannerSNN, vocab_size=providers.Callable(len, tokenizer.provided), d_model=config.model.d_model, d_state=config.model.d_state, num_layers=config.model.num_layers, time_steps=config.model.time_steps, n_head=config.model.n_head, num_skills=10, neuron_config=config.model.neuron)
+    # --- ▲▲▲ 【!!! HPO修正 7/8】 ▲▲▲ ---
+    
     planner_optimizer = providers.Factory(AdamW, lr=config.training.planner.learning_rate)
     planner_loss = providers.Factory(PlannerLoss)
     model_registry: providers.Provider[ModelRegistry] = providers.Selector(
@@ -255,6 +286,7 @@ class TrainingContainer(containers.DeclarativeContainer):
         params=config.training.biologically_plausible.provided
     )
 
+
 class AgentContainer(containers.DeclarativeContainer):
     config = providers.Configuration()
     training_container: providers.Provider[TrainingContainer] = providers.Container(TrainingContainer, config=config)
@@ -264,7 +296,24 @@ class AgentContainer(containers.DeclarativeContainer):
     rag_system = providers.Factory(RAGSystem, vector_store_path=providers.Callable(lambda log_dir: os.path.join(log_dir, "vector_store") if log_dir else "runs/vector_store", log_dir=config.training.log_dir))
     memory = providers.Factory(Memory, rag_system=rag_system, memory_path=providers.Callable(lambda log_dir: os.path.join(log_dir, "agent_memory.jsonl") if log_dir else "runs/agent_memory.jsonl", log_dir=config.training.log_dir))
     loaded_planner_snn = providers.Singleton( _load_planner_snn_factory, planner_snn_instance=providers.Callable(lambda tc: tc.planner_snn(), tc=training_container), model_path=config.training.planner.model_path.or_none(), device=device )
-    hierarchical_planner = providers.Factory( HierarchicalPlanner, model_registry=model_registry, rag_system=rag_system, memory=memory, planner_model=loaded_planner_snn, tokenizer_name=config.data.tokenizer_name, device=device )
+    
+    # --- ▼▼▼ 【!!! HPO修正 8/8: config.data.tokenizer_name を遅延読み込みに変更】 ▼▼▼ ---
+    hierarchical_planner = providers.Factory( 
+        HierarchicalPlanner, 
+        model_registry=model_registry, 
+        rag_system=rag_system, 
+        memory=memory, 
+        planner_model=loaded_planner_snn, 
+        # 修正前: tokenizer_name=config.data.tokenizer_name,
+        # 修正後:
+        tokenizer_name=providers.Callable(
+            lambda cfg: cfg.get('data', {}).get('tokenizer_name'),
+            cfg=config.provided
+        ), 
+        device=device 
+    )
+    # --- ▲▲▲ 【!!! HPO修正 8/8】 ▲▲▲ ---
+
     autonomous_agent = providers.Singleton( AutonomousAgent, name="AutonomousAgentBase", planner=hierarchical_planner, model_registry=model_registry, memory=memory, web_crawler=web_crawler )
     self_evolving_agent_master = providers.Singleton( # 名前を変更
         SelfEvolvingAgentMaster, # Master クラスを使用

@@ -4,11 +4,6 @@
 #
 # (中略)
 #
-# 【修正 v_fix_type_error (log11.txt)】:
-# - HPO (dependency_injector) 経由で int 型引数が float (例: 256.0) として
-#   渡されることが原因で TypeError が発生するため、
-#   __init__ の冒頭で全ての整数引数を int() で明示的にキャストする。
-#
 # 【エラー修正 (log.txt)】:
 # - (L226) SpikingTransformerV2 の親クラスである BaseModel の __init__ は
 #   引数を取らないため、super() 呼び出しから引数を削除。
@@ -21,9 +16,10 @@
 #   neuron_config_mapped['features'] = [適切な次元] を追加。
 #
 # 【!!! エラー修正 (log.txt) !!!】
-# - TypeError: SpikeDrivenSelfAttention.__init__() got an unexpected keyword argument 'd_model'
+# - TypeError: SpikeDrivenSelfAttention.__init__() got an unexpected keyword argument 'embed_dim'
 # - (L390付近) SDSAEncoderLayer が SpikeDrivenSelfAttention を呼び出す際、
-#   引数名が 'd_model' -> 'embed_dim'、'nhead' -> 'num_heads' だったため修正。
+#   'embed_dim' ではなく 'd_model'、'num_heads' ではなく 'nhead' を期待していることが判明。
+#   引数名を元に戻す。
 
 import torch
 import torch.nn as nn
@@ -387,12 +383,12 @@ class SDSAEncoderLayer(nn.Module):
         sdsa_neuron_config['features'] = d_model
         
         # --- ▼▼▼ 【!!! エラー修正 !!!】 ▼▼▼
-        # 'd_model' -> 'embed_dim'
-        # 'nhead' -> 'num_heads'
-        # 'self_attn_dropout' -> 'dropout' (snn_research/core/attention.py の定義に合わせる)
+        # 'embed_dim' -> 'd_model' (元に戻す)
+        # 'num_heads' -> 'nhead' (元に戻す)
+        # 'dropout' -> 'self_attn_dropout' (呼び出し側の引数名に合わせる)
         self.self_attn = SpikeDrivenSelfAttention(
-            embed_dim=d_model,
-            num_heads=nhead,
+            d_model=d_model,
+            nhead=nhead,
             dropout=self_attn_dropout, 
             sdsa_config=sdsa_config,
             neuron_config=sdsa_neuron_config,

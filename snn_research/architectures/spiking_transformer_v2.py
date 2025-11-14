@@ -5,17 +5,16 @@
 # (中略)
 #
 # 【!!! エラー修正 (log.txt) !!!】
-# - TypeError: SpikeDrivenSelfAttention.__init__() got an unexpected keyword argument '...'
-# - (L390付近) SDSAEncoderLayer が SpikeDrivenSelfAttention を呼び出す際、
-#   引数名を 'attention.py' の定義 (dim, num_heads, time_steps, neuron_config) と
-#   完全に一致させる。
-#
-# 【!!! エラー修正 (log.txt) !!!】
 # 1. TypeError: expected Tensor as element 0 in argument 0, but got tuple
-#    - (L186) ニューロンが返す (spike, v_mem) タプルから、spike [0] のみを
-#      リストに追加するよう修正。
+#    - (L186, L342, L487, L493, L496) ニューロンが返す (spike, v_mem) タプルから、
+#      spike [0] のみを取得するよう修正。
 # 2. AttributeError: ... object has no attribute 'reset_state'
 #    - (L298, L426-L428) メソッド呼び出しを 'reset_state()' から 'reset()' に修正。
+#
+# 【!!! エラー修正 (log.txt v2) !!!】
+# 1. ValueError: too many values to unpack (expected 2)
+#    - (L481) self.self_attn (SpikeDrivenSelfAttention) はタプルではなく
+#      単一のテンソルを返すと想定されるため、タプル展開を削除。
 
 import torch
 import torch.nn as nn
@@ -476,10 +475,10 @@ class SDSAEncoderLayer(nn.Module):
             raise RuntimeError(f"Layer {self.name} has not been built.")
 
         # 1. SDSA (Spike-Driven Self-Attention)
-        # --- ▼▼▼ 【!!! エラー修正 (TypeError) !!!】 ▼▼▼
-        # self.self_attn もタプル (spike, v_mem) を返す可能性があるため、[0] を取得
-        x_step, _ = self.self_attn(src) # (B, N, C)
-        # --- ▲▲▲ 【!!! エラー修正 (TypeError) !!!】 ▲▲▲
+        # --- ▼▼▼ 【!!! エラー修正 (ValueError) !!!】 ▼▼▼
+        # self.self_attn はタプルではなく単一のテンソルを返すため、タプル展開を削除
+        x_step = self.self_attn(src) # (B, N, C)
+        # --- ▲▲▲ 【!!! エラー修正 (ValueError) !!!】 ▲▲▲
         
         # 2. Add & Norm (残差接続 1)
         src = src + self.dropout1(x_step)

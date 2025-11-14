@@ -74,10 +74,9 @@ class SNNCore(nn.Module):
         params: Dict[str, Any] = cast(Dict[str, Any], OmegaConf.to_container(self.config, resolve=True))
         params.pop('path', None)
 
-        # --- ▼▼▼ 【!!! エラー修正 1 !!!】 ▼▼▼
+        # --- ▼▼▼ 【!!! エラー修正 1 (ログにはないが潜在的な TypeError) !!!】 ▼▼▼
         # 'architecture_type' は SNNCore がモデルを選択するためにのみ使用し、
         # モデル自体のコンストラクタには渡さないため、params から削除する。
-        # [cite: 114, 120, 126]
         params.pop('architecture_type', None)
         # --- ▲▲▲ 【!!! エラー修正 1 !!!】 ▲▲▲
         
@@ -150,7 +149,7 @@ class SNNCore(nn.Module):
         # if 'time_steps' not in params and model_type == 'simple':
         #      params['time_steps'] = config.get('time_steps', 16) 
              
-        # --- ▼▼▼ 【!!! エラー修正 2 !!!】 ▼▼▼
+        # --- ▼▼▼ 【!!! エラー修正 2 (ログ [cite: 113] 関連) !!!】 ▼▼▼
         # 'spiking_transformer' (SpikingTransformerV2) は 'vocab_size' ではなく
         # 'num_classes' を期待すると仮定し、リストに追加する。
         #  (vocab_size=10 が渡されている)

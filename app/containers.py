@@ -135,11 +135,12 @@ class TrainingContainer(containers.DeclarativeContainer):
         tokenizer_name = OmegaConf.select(cfg, "data.tokenizer_name", default=None)
         
         if tokenizer_name is None:
-            logger.error("config.data.tokenizer_name is None in tokenizer factory. Defaulting to 'gpt2'.")
+            # logger.error を logger.warning に変更
+            logger.warning("config.data.tokenizer_name is None in tokenizer factory. Defaulting to 'gpt2'.")
             tokenizer_name = "gpt2"
             
         return AutoTokenizer.from_pretrained(pretrained_model_name_or_path=tokenizer_name)
-    
+            
     # SNNCore が config 引数としてプロバイダオブジェクト(Configuration)ではなく、
     # 解決された値(dict)を受け取るように .provided を使用します。
     snn_model = providers.Factory(

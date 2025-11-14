@@ -4,11 +4,9 @@
 #
 # (中略)
 #
-# 【!!! エラー修正 (log.txt v5) !!!】
-# 1. AttributeError: 'SNNLayerNorm' object has no attribute 'set_stateful'
-#    - (L444-L449) SDSAEncoderLayer.set_stateful() 内の
-#      self.norm1.set_stateful() と self.norm2.set_stateful() の
-#      呼び出しを削除。SNNLayerNorm は state を持たないと判断。
+# 【!!! エラー修正 (log.txt v6) !!!】
+# 1. SyntaxError: unterminated string literal
+#    - (L407) 'type',fs', 'lif' というタイポを 'type', 'lif' に修正。
 
 import torch
 import torch.nn as nn
@@ -403,10 +401,13 @@ class SDSAEncoderLayer(nn.Module):
         
         neuron_config_ffn2 = neuron_config_mapped.copy()
         neuron_config_ffn2['features'] = d_model
+        # --- ▼▼▼ 【!!! エラー修正 (SyntaxError) !!!】 ▼▼▼
+        # 'type',fs', 'lif' というタイポを修正
         self.ffn_neuron2 = get_neuron_by_name(
-            neuron_config_ffn2.get('type',fs', 'lif'), 
+            neuron_config_ffn2.get('type', 'lif'), 
             neuron_config_ffn2
         )
+        # --- ▲▲▲ 【!!! エラー修正 (SyntaxError) !!!】 ▲▲▲
 
         self._is_stateful = False
         self.built = True
@@ -417,13 +418,13 @@ class SDSAEncoderLayer(nn.Module):
         """
         self._is_stateful = stateful
         
-        # --- ▼▼▼ 【!!! エラー修正 (AttributeError) !!!】 ▼▼▼
+        # --- (AttributeError fix v5) ---
         # SNNLayerNorm には set_stateful がないため、呼び出しを削除
         # if isinstance(self.norm1, SNNLayerNorm):
         #     self.norm1.set_stateful(stateful)
         # if isinstance(self.norm2, SNNLayerNorm):
         #     self.norm2.set_stateful(stateful)
-        # --- ▲▲▲ 【!!! エラー修正 (AttributeError) !!!】 ▲▲▲
+        # --- ▲▲▲ ---
 
         # ニューロンの状態をリセット
         if not stateful:

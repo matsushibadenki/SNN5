@@ -4,11 +4,10 @@
 #
 # (中略)
 #
-# 【!!! エラー修正 (log.txt v3) !!!】
-# 1. TypeError: SNNLayerNorm.__init__() got an unexpected keyword argument 'time_steps'
-#    - (L400-L401) SNNLayerNorm のコンストラクタから `time_steps` 引数を削除。
-# 2. (論理修正) SNNLayerNorm の forward 呼び出し方を修正。
-#    - (L499, L510) `unsqueeze/squeeze` を削除し、(B, N, C) テンソルを直接渡す。
+# 【!!! エラー修正 (log.txt v4) !!!】
+# 1. TypeError: SNNLayerNorm.__init__() got an unexpected keyword argument 'eps'
+#    - (L400-L401) SNNLayerNorm のコンストラクタから `eps` 引数を削除。
+#      (time_steps 引数は前回削除済み)
 
 import torch
 import torch.nn as nn
@@ -343,7 +342,7 @@ class SDSAEncoderLayer(nn.Module):
                  activation_dropout: float = 0.1,
                  neuron_config: Dict[str, Any] = {},
                  sdsa_config: Dict[str, Any] = {},
-                 layer_norm_eps: float = 1e-5,
+                 layer_norm_eps: float = 1e-5, # この引数はSNNLayerNormでは使われない
                  name: str = "SDSAEncoderLayer"):
         super(SDSAEncoderLayer, self).__init__()
         
@@ -378,9 +377,9 @@ class SDSAEncoderLayer(nn.Module):
         
         # 3. Normalization
         # --- ▼▼▼ 【!!! エラー修正 (TypeError) !!!】 ▼▼▼
-        # SNNLayerNorm のコンストラクタから `time_steps` を削除
-        self.norm1 = SNNLayerNorm(d_model, eps=layer_norm_eps)
-        self.norm2 = SNNLayerNorm(d_model, eps=layer_norm_eps)
+        # SNNLayerNorm のコンストラクタから `time_steps` と `eps` を削除
+        self.norm1 = SNNLayerNorm(d_model)
+        self.norm2 = SNNLayerNorm(d_model)
         # --- ▲▲▲ 【!!! エラー修正 (TypeError) !!!】 ▲▲▲
 
         # 4. Dropout
@@ -468,10 +467,8 @@ class SDSAEncoderLayer(nn.Module):
             x_t, _ = self.neuron(x_t) 
             
             # 4. Norm 1 (SNNLayerNorm)
-            # --- ▼▼▼ 【!!! 論理修正 (v_log_3) !!!】 ▼▼▼
             # (B, N, C) テンソルを直接渡す
             x_t = self.norm1(x_t)
-            # --- ▲▲▲ 【!!! 論理修正 (v_log_3) !!!】 ▲▲▲
 
             # 5. Feedforward (FFN)
             x_ffn_in = x_t
@@ -486,9 +483,7 @@ class SDSAEncoderLayer(nn.Module):
             x_t = x_t + self.dropout3(x_step)
             
             # 7. Norm 2 (SNNLayerNorm)
-            # --- ▼▼▼ 【!!! 論理修正 (v_log_3) !!!】 ▼▼▼
             x_t = self.norm2(x_t)
-            # --- ▲▲▲ 【!!! 論理修正 (v_log_3) !!!】 ▲▲▲
             
             outputs.append(x_t)
         

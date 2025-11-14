@@ -381,11 +381,10 @@ class SDSAEncoderLayer(nn.Module):
         sdsa_neuron_config = neuron_config_mapped.copy()
         sdsa_neuron_config['features'] = d_model
         
-        # --- ▼▼▼ 【!!! エラー修正 !!!】 ▼▼▼
+        # --- ▼▼▼ 【!!! エラー修正 (ログ [cite: 114]) !!!】 ▼▼▼
         # 'd_model' -> 'embed_dim'
         # 'nhead' -> 'num_heads'
-        # (SpikeDrivenSelfAttention の定義側が 'embed_dim' と 'num_heads' を
-        #  期待していると仮定して再度修正)
+        # SpikeDrivenSelfAttention の __init__ が期待する引数名に修正します。
         self.self_attn = SpikeDrivenSelfAttention(
             embed_dim=d_model,
             num_heads=nhead,

@@ -9,6 +9,11 @@
 # - (L390付近) SDSAEncoderLayer が SpikeDrivenSelfAttention を呼び出す際、
 #   引数名を 'attention.py' の定義 (dim, num_heads, time_steps, neuron_config) と
 #   完全に一致させる。
+#
+# 【!!! エラー修正 (v_log_2) !!!】
+# - AttributeError: ... object has no attribute 'reset_state'
+# - ニューロンの状態リセットメソッドは 'reset()' です。
+# - L274, L397-L399 の '.reset_state()' を '.reset()' に修正。
 
 import torch
 import torch.nn as nn
@@ -295,7 +300,11 @@ class SpikingTransformerV2(BaseModel):
         
         # 状態リセット
         if not self._is_stateful:
-            self.pool_neuron.reset_state()
+            # --- ▼▼▼ 【!!! エラー修正 (v_log_2) !!!】 ▼▼▼
+            # 'reset_state()' -> 'reset()'
+            self.pool_neuron.reset()
+            # --- ▲▲▲ 【!!! エラー修正 (v_log_2) !!!】 ▲▲▲
+            
             # (Embedding と EncoderLayer のニューロンは SpikingVisionEmbedding と
             #  SDSAEncoderLayer.set_stateful でリセットされる)
 
@@ -438,9 +447,12 @@ class SDSAEncoderLayer(nn.Module):
         self._is_stateful = stateful
         # ニューロンの状態をリセット
         if not stateful:
-            self.neuron.reset_state()
-            self.ffn_neuron1.reset_state()
-            self.ffn_neuron2.reset_state()
+            # --- ▼▼▼ 【!!! エラー修正 (v_log_2) !!!】 ▼▼▼
+            # 'reset_state()' -> 'reset()'
+            self.neuron.reset()
+            self.ffn_neuron1.reset()
+            self.ffn_neuron2.reset()
+            # --- ▲▲▲ 【!!! エラー修正 (v_log_2) !!!】 ▲▲▲
         
         # SNNLayerNorm の状態も切り替え
         if isinstance(self.norm1, SNNLayerNorm):

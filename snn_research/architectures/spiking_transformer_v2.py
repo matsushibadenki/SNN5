@@ -4,23 +4,11 @@
 #
 # (中略)
 #
-# 【!!! 大幅な論理修正 (ユーザー指摘) !!!】
-# 1. 時間処理の抜本的修正:
-#    - SpikingTransformerV2.forward で時間ループを削除。
-#    - SDSAEncoderLayer.forward が (T, B, N, C) を受け取り、
-#      内部で時間ループ (for t in range(T)) を実行し、状態を保持するように変更。
-# 2. SDSAの時間ステップ修正:
-#    - SDSAEncoderLayer.__init__ で time_steps=1 だったのを、
-#      self.time_steps を受け取るように修正。
-# 3. 状態リセットの修正:
-#    - SpikingTransformerV2.forward の先頭で、embedding, pool_neuron,
-#      および全EncoderLayerのニューロンを明示的にリセットするよう修正。
-# 4. プーリング戦略の修正:
-#    - 時間平均の前に、各時間ステップの出力を pool_neuron に通すよう修正。
-# 5. 正規化の修正:
-#    - nn.LayerNorm を SNNLayerNorm に置き換え。
-# 6. (前回までの修正) タプル展開 (ValueError, TypeError) の修正。
-# 7. (前回までの修正) reset_state() -> reset() (AttributeError) の修正。
+# 【!!! エラー修正 (log.txt v3) !!!】
+# 1. TypeError: SNNLayerNorm.__init__() got an unexpected keyword argument 'time_steps'
+#    - (L400-L401) SNNLayerNorm のコンストラクタから `time_steps` 引数を削除。
+# 2. (論理修正) SNNLayerNorm の forward 呼び出し方を修正。
+#    - (L499, L510) `unsqueeze/squeeze` を削除し、(B, N, C) テンソルを直接渡す。
 
 import torch
 import torch.nn as nn
@@ -111,12 +99,11 @@ class SpikingVisionEmbedding(nn.Module):
         patch_size = int(patch_size)
         in_channels = int(in_channels)
         d_model = int(d_model)
-        self.time_steps = int(time_steps) # ✅ time_steps を int に
+        self.time_steps = int(time_steps)
         
         self.patch_size = patch_size
         self.img_size = img_size
         self.d_model = d_model
-        # self.time_steps = time_steps # 削除 (上で self. に代入)
 
         # パッチ数 (例: (32/4) * (32/4) = 8*8 = 64)
         num_patches = (img_size // patch_size) * (img_size // patch_size)
@@ -176,11 +163,9 @@ class SpikingVisionEmbedding(nn.Module):
         x = x.transpose(1, 2)
         
         # 4. 時間軸でリピート: (B, N, D) -> (T, B, N, D)
-        #    (各時間ステップで同じ定数電流が入力される)
         x = x.unsqueeze(0).repeat(T, 1, 1, 1)
         
         # 5. 位置埋め込み加算: (T, B, N, D) + (1, 1, N, D)
-        #    (pos_embedを (1, N, D) -> (1, 1, N, D) にリシェイプ)
         pos_embed = self.pos_embed.unsqueeze(0)
         x = x + pos_embed
         
@@ -189,10 +174,8 @@ class SpikingVisionEmbedding(nn.Module):
         # (注: self.neuron.reset() は SpikingTransformerV2.forward で
         #  呼び出される想定)
         for t in range(T):
-            # --- ▼▼▼ 【!!! エラー修正 (TypeError) !!!】 ▼▼▼
             # ニューロンは (spike, v_mem) のタプルを返すため、スパイク[0]のみを取得
             spike_t, _ = self.neuron(x[t]) # (B, N, D)
-            # --- ▲▲▲ 【!!! エラー修正 (TypeError) !!!】 ▲▲▲
             spikes.append(spike_t)
             
         # 7. スタック: List[(B, N, D)] -> (T, B, N, D)
@@ -204,7 +187,6 @@ class SpikingVisionEmbedding(nn.Module):
 class SpikingTransformerV2(BaseModel):
     """
     Spike-Driven Self-Attention (SDSA) を組み込んだ Spiking Transformer (ViTベース)。
-    CIFAR-10 (img_size=32, patch_size=4) を想定。
     """
     def __init__(
         self,
@@ -232,7 +214,7 @@ class SpikingTransformerV2(BaseModel):
     ):
         super(SpikingTransformerV2, self).__init__()
         
-        # --- ✅ 修正 (Fix 7): 型キャストの一元化 ---
+        # --- 型キャストの一元化 ---
         img_size = int(img_size)
         patch_size = int(patch_size)
         in_channels = int(in_channels)
@@ -242,7 +224,7 @@ class SpikingTransformerV2(BaseModel):
         num_encoder_layers = int(num_encoder_layers)
         dim_feedforward = int(dim_feedforward)
         self.time_steps = int(time_steps)
-        # --- ▲▲▲ 修正 ▲▲▲ ---
+        # --- ▲▲▲ ---
 
         # (v_fix_spike_rate_zero) bias と v_init をマッピング
         neuron_config_mapped = _map_bias_to_bias_init(neuron_config)
@@ -265,7 +247,7 @@ class SpikingTransformerV2(BaseModel):
                 d_model=self.d_model,
                 nhead=self.nhead,
                 dim_feedforward=dim_feedforward,
-                time_steps=self.time_steps, # ✅ 修正 (Fix 1): time_steps を渡す
+                time_steps=self.time_steps, # (Fix 1) time_steps を渡す
                 dropout=dropout, 
                 self_attn_dropout=dropout,
                 activation_dropout=dropout,
@@ -293,10 +275,9 @@ class SpikingTransformerV2(BaseModel):
     def set_stateful(self, stateful: bool):
         self._is_stateful = stateful
         
-        # ✅ 修正 (Fix 3): 各レイヤーに状態管理モードを伝播
-        # (実際のリセットは forward で行う)
-        self.embedding.neuron.set_stateful(stateful) # (念のため)
-        self.pool_neuron.set_stateful(stateful) # (念のため)
+        # (Fix 3) 各レイヤーに状態管理モードを伝播
+        self.embedding.neuron.set_stateful(stateful) 
+        self.pool_neuron.set_stateful(stateful)
         for layer in self.layers:
             if isinstance(layer, SDSAEncoderLayer):
                 layer.set_stateful(stateful)
@@ -307,25 +288,25 @@ class SpikingTransformerV2(BaseModel):
         """
         B = input_images.shape[0]
         
-        # --- ✅ 修正 (Fix 3): 状態リセット（全コンポーネント） ---
+        # --- (Fix 3): 状態リセット（全コンポーネント） ---
         if not self._is_stateful:
             self.embedding.neuron.reset()
             self.pool_neuron.reset()
             for layer in self.layers:
                 # set_stateful(False) が内部で reset() を呼ぶ
                 layer.set_stateful(False) 
-        # --- ▲▲▲ 修正 ▲▲▲ ---
+        # --- ▲▲▲ ---
 
         # 1. 埋め込み: (B, C, H, W) -> (T, B, N, D)
         x_spikes = self.embedding(input_images)
         
-        # --- ✅ 修正 (Fix 1): 時間ループを削除 ---
+        # --- (Fix 1): 時間ループを削除 ---
         # 2. エンコーダ: (T, B, N, D) -> (T, B, N, D)
         for layer in self.layers:
             x_spikes = layer(x_spikes) # レイヤーが(T,B,N,D)を処理
-        # --- ▲▲▲ 修正 ▲▲▲ ---
+        # --- ▲▲▲ ---
 
-        # --- ✅ 修正 (Fix 4): プーリング戦略の修正 ---
+        # --- (Fix 4): プーリング戦略の修正 ---
         # 3. 時間ステップごとにプーリングニューロンを適用
         pooled_outputs = []
         for t in range(self.time_steps):
@@ -338,7 +319,7 @@ class SpikingTransformerV2(BaseModel):
         # 4. 時間軸とパッチ軸でプーリング (Mean)
         # (T, B, N, D) -> (B, D)
         x_final = torch.mean(x_pooled, dim=(0, 2)) 
-        # --- ▲▲▲ 修正 ▲▲▲ ---
+        # --- ▲▲▲ ---
         
         # 5. 分類ヘッド
         # (B, D) -> (B, NumClasses)
@@ -350,13 +331,13 @@ class SpikingTransformerV2(BaseModel):
 class SDSAEncoderLayer(nn.Module):
     """
     Spike-Driven Self-Attention (SDSA) を使用する Transformer Encoder レイヤー。
-    ✅ 修正: (T, B, N, C) を受け取り、内部で時間ループを実行する。
+    (Fix 1): (T, B, N, C) を受け取り、内部で時間ループを実行する。
     """
     def __init__(self,
                  d_model: int,
                  nhead: int,
                  dim_feedforward: int = 1024,
-                 time_steps: int = 32,      # ✅ 修正 (Fix 1): time_steps を追加
+                 time_steps: int = 32,      # (Fix 1): time_steps を追加
                  dropout: float = 0.1,
                  self_attn_dropout: float = 0.0,
                  activation_dropout: float = 0.1,
@@ -366,12 +347,12 @@ class SDSAEncoderLayer(nn.Module):
                  name: str = "SDSAEncoderLayer"):
         super(SDSAEncoderLayer, self).__init__()
         
-        # --- ✅ 修正 (Fix 7): 型キャストの一元化 ---
+        # --- 型キャストの一元化 ---
         d_model = int(d_model)
         nhead = int(nhead)
         dim_feedforward = int(dim_feedforward)
         time_steps = int(time_steps)
-        # --- ▲▲▲ 修正 ▲▲▲ ---
+        # --- ▲▲▲ ---
         
         self.name = name
         self.built = False
@@ -387,7 +368,7 @@ class SDSAEncoderLayer(nn.Module):
         self.self_attn = SpikeDrivenSelfAttention(
             dim=d_model,
             num_heads=nhead,
-            time_steps=time_steps, # ✅ 修正 (Fix 1): 1 -> time_steps
+            time_steps=time_steps, # (Fix 1): 1 -> time_steps
             neuron_config=sdsa_neuron_config
         )
         
@@ -396,10 +377,11 @@ class SDSAEncoderLayer(nn.Module):
         self.linear2 = nn.Linear(dim_feedforward, d_model)
         
         # 3. Normalization
-        # --- ✅ 修正 (Fix 6): SNNLayerNorm を使用 ---
-        self.norm1 = SNNLayerNorm(d_model, time_steps=time_steps, eps=layer_norm_eps)
-        self.norm2 = SNNLayerNorm(d_model, time_steps=time_steps, eps=layer_norm_eps)
-        # --- ▲▲▲ 修正 ▲▲▲ ---
+        # --- ▼▼▼ 【!!! エラー修正 (TypeError) !!!】 ▼▼▼
+        # SNNLayerNorm のコンストラクタから `time_steps` を削除
+        self.norm1 = SNNLayerNorm(d_model, eps=layer_norm_eps)
+        self.norm2 = SNNLayerNorm(d_model, eps=layer_norm_eps)
+        # --- ▲▲▲ 【!!! エラー修正 (TypeError) !!!】 ▲▲▲
 
         # 4. Dropout
         self.dropout1 = nn.Dropout(dropout)
@@ -437,20 +419,17 @@ class SDSAEncoderLayer(nn.Module):
         """
         self._is_stateful = stateful
         
-        # --- ✅ 修正 (Fix 3): SNNLayerNorm の状態も切り替え ---
+        # (Fix 3): SNNLayerNorm の状態も切り替え
         if isinstance(self.norm1, SNNLayerNorm):
             self.norm1.set_stateful(stateful)
         if isinstance(self.norm2, SNNLayerNorm):
             self.norm2.set_stateful(stateful)
-        # --- ▲▲▲ 修正 ▲▲▲ ---
 
         # ニューロンの状態をリセット
         if not stateful:
-            # --- ▼▼▼ 【!!! エラー修正 (AttributeError) !!!】 ▼▼▼
-            self.neuron.reset() # 修正: reset_state -> reset
-            self.ffn_neuron1.reset() # 修正: reset_state -> reset
-            self.ffn_neuron2.reset() # 修正: reset_state -> reset
-            # --- ▲▲▲ 【!!! エラー修正 (AttributeError) !!!】 ▲▲▲
+            self.neuron.reset() 
+            self.ffn_neuron1.reset()
+            self.ffn_neuron2.reset()
             
             # (self_attn のリセットも必要か？)
             # 補足: SpikeDrivenSelfAttention も内部にニューロンを持つため、
@@ -459,7 +438,7 @@ class SDSAEncoderLayer(nn.Module):
             # (SDSAの実装 (attention.py) 側での対応が必要な可能性)
 
 
-    # --- ✅ 修正 (Fix 1): forward のロジック全体を修正 ---
+    # (Fix 1): forward のロジック全体を修正
     def forward(self, src: torch.Tensor) -> torch.Tensor:
         """
         LIFニューロンとSDSAを使用したフォワードパス。
@@ -478,40 +457,38 @@ class SDSAEncoderLayer(nn.Module):
             x_t = src[t]
             
             # 1. SDSA (Spike-Driven Self-Attention)
-            # --- ▼▼▼ 【!!! エラー修正 (ValueError) !!!】 ▼▼▼
-            # self.self_attn は単一テンソルを返す
+            # (ValueError fix) self.self_attn は単一テンソルを返す
             x_step = self.self_attn(x_t) # (B, N, C)
-            # --- ▲▲▲ 【!!! エラー修正 (ValueError) !!!】 ▲▲▲
             
             # 2. Add (残差接続 1) & Dropout
-            # (Dropoutの位置は標準的なTransformerに準拠)
             x_t = x_t + self.dropout1(x_step)
             
             # 3. 発火 (LIF)
-            # --- ▼▼▼ 【!!! エラー修正 (TypeError) !!!】 ▼▼▼
+            # (TypeError fix)
             x_t, _ = self.neuron(x_t) 
-            # --- ▲▲▲ 【!!! エラー修正 (TypeError) !!!】 ▲▲▲
             
             # 4. Norm 1 (SNNLayerNorm)
-            # SNNLayerNorm は (T, B, ...) を期待するため、
-            # (B, N, C) -> (1, B, N, C) にして渡す
-            x_t = self.norm1(x_t.unsqueeze(0)).squeeze(0)
+            # --- ▼▼▼ 【!!! 論理修正 (v_log_3) !!!】 ▼▼▼
+            # (B, N, C) テンソルを直接渡す
+            x_t = self.norm1(x_t)
+            # --- ▲▲▲ 【!!! 論理修正 (v_log_3) !!!】 ▲▲▲
 
             # 5. Feedforward (FFN)
             x_ffn_in = x_t
             x_step = self.linear1(x_ffn_in)
-            # --- ▼▼▼ 【!!! エラー修正 (TypeError) !!!】 ▼▼▼
+            # (TypeError fix)
             x_step, _ = self.ffn_neuron1(x_step) # FFN内ニューロン1
             x_step = self.dropout2(x_step)
             x_step = self.linear2(x_step)
             x_step, _ = self.ffn_neuron2(x_step) # FFN内ニューロン2
-            # --- ▲▲▲ 【!!! エラー修正 (TypeError) !!!】 ▲▲▲
             
             # 6. Add (残差接続 2) & Dropout
             x_t = x_t + self.dropout3(x_step)
             
             # 7. Norm 2 (SNNLayerNorm)
-            x_t = self.norm2(x_t.unsqueeze(0)).squeeze(0)
+            # --- ▼▼▼ 【!!! 論理修正 (v_log_3) !!!】 ▼▼▼
+            x_t = self.norm2(x_t)
+            # --- ▲▲▲ 【!!! 論理修正 (v_log_3) !!!】 ▲▲▲
             
             outputs.append(x_t)
         

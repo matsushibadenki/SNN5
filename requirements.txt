@@ -1,14 +1,24 @@
+# ファイルパス: requirements.txt
+# Title: 修正済み 依存パッケージリスト
+# Description: numpy, pillow, markupsafe のバージョンを
+#              過去のログで動作確認が取れたバージョンに固定。
+
 torch
 torchvision
 torchaudio
 gradio==4.20.0
 flask
-numpy
+
+# --- 依存関係の競合を解決 ---
+numpy<2.0                   # numpy 2.0系を避ける (ログでは 1.26.4 が導入された)
+pillow==10.4.0              # gradio 4.20.0 の要求 ( <11.0 ) を満たす (ログで導入)
+MarkupSafe==2.1.5           # gradio 4.20.0 の要求 ( ~=2.0 ) を満たす (ログで導入)
+# ---
+
 pandas
 scikit-learn
 matplotlib
 seaborn
-pillow
 snntorch
 spikingjelly
 langchain

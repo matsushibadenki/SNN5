@@ -2,10 +2,11 @@
 # Title: 依存性注入（DI）コンテナ定義
 # Description:
 #   プロジェクト全体の依存性注入（DI）コンテナを定義します。
-#   TrainingContainer, AgentContainer, AppContainer, BrainContainer が含まれます。
 #   HOPT (HPO) 実行時の設定ファイル読み込みタイミングの問題（tokenizer_name is None）
 #   に対処するため、tokenizer への即時参照をすべて遅延参照 (.provided または providers.Callable)
 #   に変更しています。
+#   【v11】循環インポートの可能性を排除するため、.services, .adapters の
+#   インポートをトップレベルから Factory メソッド内に移動します。
 
 import torch
 from dependency_injector import containers, providers
@@ -28,9 +29,11 @@ from snn_research.training.bio_trainer import BioRLTrainer
 from snn_research.cognitive_architecture.astrocyte_network import AstrocyteNetwork
 from snn_research.cognitive_architecture.meta_cognitive_snn import MetaCognitiveSNN
 from snn_research.cognitive_architecture.planner_snn import PlannerSNN
-from .services.chat_service import ChatService
-from .services.image_classification_service import ImageClassificationService
-from .adapters.snn_langchain_adapter import SNNLangChainAdapter
+# --- ▼▼▼ 【!!! HPO修正 (v11): 循環インポート解消のためインポートを削除】 ▼▼▼ ---
+# from .services.chat_service import ChatService
+# from .services.image_classification_service import ImageClassificationService
+# from .adapters.snn_langchain_adapter import SNNLangChainAdapter
+# --- ▲▲▲ 【!!! HPO修正 (v11)】 ▲▲▲ ---
 from snn_research.distillation.model_registry import SimpleModelRegistry, DistributedModelRegistry, ModelRegistry
 from snn_research.tools.web_crawler import WebCrawler
 # --- ▼ 修正: `get_bio_learning_rule` と `BioLearningRule` をインポート ▼ ---
@@ -277,3 +280,131 @@ class TrainingContainer(containers.DeclarativeContainer):
 
 class AgentContainer(containers.DeclarativeContainer):
     config = providers.Configuration()
+    training_container: providers.Provider[TrainingContainer] = providers.Container(TrainingContainer, config=config)
+    device = providers.Factory(get_auto_device)
+    model_registry = providers.Callable(lambda tc: tc.model_registry(), tc=training_container)
+    web_crawler = providers.Singleton(WebCrawler)
+    rag_system = providers.Factory(RAGSystem, vector_store_path=providers.Callable(lambda log_dir: os.path.join(log_dir, "vector_store") if log_dir else "runs/vector_store", log_dir=config.training.log_dir))
+    memory = providers.Factory(Memory, rag_system=rag_system, memory_path=providers.Callable(lambda log_dir: os.path.join(log_dir, "agent_memory.jsonl") if log_dir else "runs/agent_memory.jsonl", log_dir=config.training.log_dir))
+    loaded_planner_snn = providers.Singleton( _load_planner_snn_factory, planner_snn_instance=providers.Callable(lambda tc: tc.planner_snn(), tc=training_container), model_path=config.training.planner.model_path.or_none(), device=device )
+    
+    # --- ▼▼▼ 【!!! HPO修正 (重要): config.data.tokenizer_name を遅延読み込みに変更】 ▼▼▼ ---
+    hierarchical_planner = providers.Factory( 
+        HierarchicalPlanner, 
+        model_registry=model_registry, 
+        rag_system=rag_system, 
+        memory=memory, 
+        planner_model=loaded_planner_snn, 
+        # 修正前: tokenizer_name=config.data.tokenizer_name,
+        # 修正後:
+        tokenizer_name=providers.Callable(
+            lambda cfg: cfg.get('data', {}).get('tokenizer_name'),
+            cfg=config.provided
+        ), 
+        device=device 
+    )
+    # --- ▲▲▲ 【!!! HPO修正】 ▲▲▲ ---
+
+    autonomous_agent = providers.Singleton( AutonomousAgent, name="AutonomousAgentBase", planner=hierarchical_planner, model_registry=model_registry, memory=memory, web_crawler=web_crawler )
+    self_evolving_agent_master = providers.Singleton( # 名前を変更
+        SelfEvolvingAgentMaster, # Master クラスを使用
+        name="SelfEvolvingAgentMaster", # 名前を更新
+        planner=hierarchical_planner,
+        model_registry=model_registry, # DistributedModelRegistry を期待
+        memory=memory,
+        web_crawler=web_crawler,
+        meta_cognitive_snn=providers.Callable( lambda tc: tc.meta_cognitive_snn(), tc=training_container.provider ),
+        motivation_system=providers.Singleton(IntrinsicMotivationSystem), # ここで Singleton として定義
+        model_config_path=config.model.path.or_none(), # 設定から取得
+        training_config_path=providers.Object("configs/base_config.yaml") # 固定パス or 設定から取得
+    )
+
+
+class AppContainer(containers.DeclarativeContainer):
+    config = providers.Configuration()
+    
+    # --- ▼ 修正: _registry_path_provider を .get() で安全にアクセスするように変更 ▼ ---
+    _registry_path_provider = providers.Callable(
+        # cfg引数にはconfigプロバイダーの「値」(dictまたはDictConfig)が渡される
+        # したがって cfg() ではなく cfg.get() を使う
+        # --- ▼▼▼ 修正: cfgがNoneの場合のフォールバックを追加 ▼▼▼ ---
+        lambda cfg: (
+            cfg.get('model_registry', {}).get('file', {}).get('path', "runs/model_registry.json")
+            if cfg is not None and isinstance(cfg, dict) 
+            else "runs/model_registry.json" # cfgがNoneの場合のフォールバック
+        ),
+        # --- ▲▲▲ 修正 ▲▲▲ ---
+        
+        # --- ▼▼▼ 【!!! HPO修正 (v11): .provided を追加】 ▼▼▼ ---
+        cfg=config.provided
+        # --- ▲▲▲ 【!!! HPO修正 (v11)】 ▲▲▲ ---
+    )
+    
+    model_registry = providers.Singleton(
+        SimpleModelRegistry,
+        registry_path=_registry_path_provider # configに依存
+    )
+    # --- ▲ 修正 ▲ ---
+
+    # --- SNN Inference Engines (動的ロードのためFactoryのまま) ---
+    snn_inference_engine = providers.Factory(SNNInferenceEngine)
+
+    # --- ▼▼▼ 【!!! HPO修正 (v11): 循環インポート解消のため Factory メソッドに変更】 ▼▼▼ ---
+    
+    # --- Services (動的ロードのためFactoryのまま) ---
+    @providers.Factory
+    def chat_service(snn_engine=snn_inference_engine):
+        from .services.chat_service import ChatService # <-- インポートをここ(Factory)に移動
+        return ChatService(snn_engine=snn_engine)
+
+    @providers.Factory
+    def image_classification_service(engine=snn_inference_engine):
+        from .services.image_classification_service import ImageClassificationService # <-- インポートをここ(Factory)に移動
+        return ImageClassificationService(engine=engine)
+    
+    @providers.Factory
+    def langchain_adapter(snn_engine=snn_inference_engine):
+        from .adapters.snn_langchain_adapter import SNNLangChainAdapter # <-- インポートをここ(Factory)に移動
+        return SNNLangChainAdapter(snn_engine=snn_engine)
+    # --- ▲▲▲ 【!!! HPO修正 (v11)】 ▲▲▲ ---
+
+
+class BrainContainer(containers.DeclarativeContainer):
+    config = providers.Configuration()
+    agent_container: providers.Provider[AgentContainer] = providers.Container(AgentContainer, config=config)
+    app_container = providers.Container(AppContainer, config=config)
+    global_workspace = providers.Singleton( GlobalWorkspace, model_registry=providers.Callable(lambda ac: ac.model_registry(), ac=agent_container) )
+    motivation_system = providers.Callable(lambda ac: ac.self_evolving_agent_master().motivation_system, ac=agent_container) # Master Agent から取得
+    num_neurons = providers.Factory(lambda: 256) # Define num_neurons
+    sensory_receptor = providers.Singleton(SensoryReceptor)
+    spike_encoder = providers.Singleton(SpikeEncoder, num_neurons=num_neurons) # Use defined num_neurons
+    actuator = providers.Singleton(Actuator, actuator_name="voice_synthesizer")
+    perception_cortex = providers.Singleton(HybridPerceptionCortex, workspace=global_workspace, num_neurons=num_neurons, feature_dim=64, som_map_size=(8, 8), stdp_params=config.training.biologically_plausible.stdp.to_dict()) # Use defined num_neurons
+    prefrontal_cortex = providers.Singleton(PrefrontalCortex, workspace=global_workspace, motivation_system=motivation_system)
+    hippocampus = providers.Singleton(Hippocampus, workspace=global_workspace, capacity=50)
+    cortex = providers.Singleton(Cortex)
+    amygdala = providers.Singleton(Amygdala, workspace=global_workspace)
+    basal_ganglia = providers.Singleton(BasalGanglia, workspace=global_workspace)
+    cerebellum = providers.Singleton(Cerebellum)
+    motor_cortex = providers.Singleton(MotorCortex, actuators=['voice_synthesizer'])
+    causal_inference_engine = providers.Singleton( CausalInferenceEngine, rag_system=providers.Callable(lambda ac: ac.rag_system(), ac=agent_container), workspace=global_workspace )
+    artificial_brain = providers.Singleton( ArtificialBrain, global_workspace=global_workspace, motivation_system=motivation_system, sensory_receptor=sensory_receptor, spike_encoder=spike_encoder, actuator=actuator, perception_cortex=perception_cortex, prefrontal_cortex=prefrontal_cortex, hippocampus=hippocampus, cortex=cortex, amygdala=amygdala, basal_ganglia=basal_ganglia, cerebellum=cerebellum, motor_cortex=motor_cortex, causal_inference_engine=causal_inference_engine )
+    autonomous_agent = providers.Callable(lambda ac: ac.autonomous_agent(), ac=agent_container)
+    # --- ▼ 改善 (v6): bio_rl_agent の取得先を training_container に変更 ▼ ---
+    rl_agent = providers.Callable(lambda ac: ac.training_container().bio_rl_agent(), ac=agent_container)
+    # --- ▲ 改善 (v6) ▲ ---
+    self_evolving_agent = providers.Callable(lambda ac: ac.self_evolving_agent_master(), ac=agent_container) # Master Agent を参照
+    digital_life_form = providers.Singleton(
+        DigitalLifeForm,
+        planner=providers.Callable(lambda ac: ac.hierarchical_planner(), ac=agent_container),
+        autonomous_agent=autonomous_agent,
+        rl_agent=rl_agent,
+        self_evolving_agent=self_evolving_agent, # Master Agent を注入
+        motivation_system=motivation_system,
+        meta_cognitive_snn=providers.Callable( lambda ac_instance: ac_instance.training_container().meta_cognitive_snn(), ac_instance=agent_container.provider ),
+        memory=providers.Callable(lambda ac: ac.memory(), ac=agent_container),
+        physics_evaluator=providers.Singleton(PhysicsEvaluator),
+        symbol_grounding=providers.Singleton( SymbolGrounding, rag_system=providers.Callable(lambda ac: ac.rag_system(), ac=agent_container) ),
+        langchain_adapter=app_container.langchain_adapter,
+        global_workspace=global_workspace
+    )

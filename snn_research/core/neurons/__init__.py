@@ -8,8 +8,13 @@
 # - これまで修正してきた lif_layer.py ではなく、spiking_transformer_v2.py が
 #   実際にインポートしているこのファイルが、スパイクが発生しない根本原因であったため、
 #   この修正により NEURON_BIAS: 2.0 が機能するようになります。
+#
+# 【!!! エラー修正 (log.txt) !!!】
+# - ImportError: cannot import name 'get_neuron_by_name'
+# - このモジュールを利用する他のファイル (spiking_transformer_v2.py など) が
+#   必要とするファクトリ関数 `get_neuron_by_name` を追加。(L532)
 
-from typing import Optional, Tuple, Any, List, cast
+from typing import Optional, Tuple, Any, List, cast, Dict, Type
 import torch
 from torch import Tensor, nn
 import torch.nn.functional as F
@@ -54,6 +59,7 @@ class AdaptiveLIFNeuron(base.MemoryModule):
         # --- ▼ 【v_fix_bias_logic】 バイアス引数を追加 ▼ ---
         bias_init: float = 0.0,
         # --- ▲ 【v_fix_bias_logic】 ▲ ---
+        **kwargs: Any, # (v_init 互換性) v_init や他の引数を吸収
     ):
         super().__init__()
         self.features = features
@@ -74,6 +80,9 @@ class AdaptiveLIFNeuron(base.MemoryModule):
         # --- ▼ 【v_fix_bias_logic】 バイアスをパラメータとして初期化 ▼ ---
         self.bias = nn.Parameter(torch.full((features,), bias_init))
         # --- ▲ 【v_fix_bias_logic】 ▲ ---
+
+        # (v_init 互換性) kwargs から v_init を取得
+        self.v_init = float(kwargs.get('v_init', 0.0))
 
         # --- (v6: EL 修正済み) ---
         self.evolutionary_leak = evolutionary_leak
@@ -110,8 +119,9 @@ class AdaptiveLIFNeuron(base.MemoryModule):
             self.mem = None
             self.adaptive_threshold = None
 
+        # (v_init 互換性) v_init を使って初期化
         if self.mem is None or self.mem.shape != x.shape:
-            self.mem = torch.zeros_like(x)
+            self.mem = torch.full_like(x, self.v_init)
         if self.adaptive_threshold is None or self.adaptive_threshold.shape != x.shape:
             self.adaptive_threshold = torch.zeros_like(x)
 
@@ -191,6 +201,7 @@ class IzhikevichNeuron(base.MemoryModule):
         c: float = -65.0,
         d: float = 8.0,
         dt: float = 0.5,
+        **kwargs: Any, # (v_init 互換性)
     ):
         super().__init__()
         self.features = features
@@ -202,6 +213,10 @@ class IzhikevichNeuron(base.MemoryModule):
         self.v_peak = 30.0
         self.surrogate_function = surrogate.ATan(alpha=2.0)
         self.stateful = False
+        
+        # (v_init 互換性) v_init を c (v_rest) の代わりに使用
+        self.v_init = float(kwargs.get('v_init', self.c))
+        self.u_init = self.b * self.v_init
 
         self.register_buffer("v", None)
         self.register_buffer("u", None)
@@ -229,10 +244,11 @@ class IzhikevichNeuron(base.MemoryModule):
             self.v = None
             self.u = None
             
+        # (v_init 互換性) v_init と u_init を使用
         if self.v is None or self.v.shape != x.shape:
-            self.v = torch.full_like(x, float(self.c))
+            self.v = torch.full_like(x, float(self.v_init))
         if self.u is None or self.u.shape != x.shape:
-            self.u = torch.full_like(x, float(self.b * self.c))
+            self.u = torch.full_like(x, float(self.u_init))
 
         dv = 0.04 * self.v**2 + 5 * self.v + 140 - self.u + x
         du = self.a * (self.b * self.v - self.u)
@@ -247,7 +263,7 @@ class IzhikevichNeuron(base.MemoryModule):
             self.total_spikes += spike.detach().sum()
         
         reset_mask = (self.v >= self.v_peak).detach()
-        self.v = torch.where(reset_mask, torch.full_like(self.v, float(self.c)), self.v)
+        self.v = torch.where(reset_mask, torch.full_like(self.v, float(self.c)), self.v) # リセットは c (v_rest)
         self.u = torch.where(reset_mask, self.u + self.d, self.u)
         
         self.v = torch.clamp(self.v, min=-100.0, max=50.0)
@@ -269,6 +285,7 @@ class ProbabilisticLIFNeuron(base.MemoryModule):
         threshold: float = 1.0,
         temperature: float = 0.5, # スパイク確率の鋭敏さを制御
         noise_intensity: float = 0.0,
+        **kwargs: Any, # (v_init 互換性)
     ):
         super().__init__()
         self.features = features
@@ -279,6 +296,9 @@ class ProbabilisticLIFNeuron(base.MemoryModule):
         self.threshold = threshold
         self.temperature = temperature # 確率計算の温度パラメータ
         self.noise_intensity = noise_intensity
+        
+        # (v_init 互換性)
+        self.v_init = float(kwargs.get('v_init', 0.0))
 
         self.register_buffer("mem", None)
         self.register_buffer("spikes", torch.zeros(features))
@@ -303,8 +323,9 @@ class ProbabilisticLIFNeuron(base.MemoryModule):
         if not self.stateful:
             self.mem = None
 
+        # (v_init 互換性)
         if self.mem is None or self.mem.shape != x.shape:
-            self.mem = torch.zeros_like(x)
+            self.mem = torch.full_like(x, self.v_init)
 
         current_tau_mem = torch.exp(self.log_tau_mem) + 1.1
         mem_decay = torch.exp(-1.0 / current_tau_mem)
@@ -366,6 +387,9 @@ class GLIFNeuron(base.MemoryModule):
         # (引用[8]のGLIFはリセット機構も学習可能とする)
         self.v_reset = nn.Parameter(torch.full((features,), 0.0)) # 0.0 で初期化
         
+        # (v_init 互換性)
+        self.v_init = float(kwargs.get('v_init', 0.0))
+        
         # 2. 膜時定数(tau)を制御するゲート (P2.2)
         # ゲートの入力次元を gate_input_features に設定
         self.gate_tau_lin = nn.Linear(gate_input_dim, features)
@@ -394,8 +418,9 @@ class GLIFNeuron(base.MemoryModule):
         if not self.stateful:
             self.mem = None
 
+        # (v_init 互換性)
         if self.mem is None or self.mem.shape != x.shape:
-            self.mem = torch.zeros_like(x)
+            self.mem = torch.full_like(x, self.v_init)
         
         # --- 1. ゲートの計算 (P2.2) ---
         # ゲート入力 (x) の次元チェック
@@ -464,11 +489,15 @@ class TC_LIF(base.MemoryModule):
         w_sd_init: float = 0.1,      # 体細胞から樹状突起への結合強度
         base_threshold: float = 1.0,
         v_reset: float = 0.0,
+        **kwargs: Any, # (v_init 互換性)
     ):
         super().__init__()
         self.features = features
         self.base_threshold = nn.Parameter(torch.full((features,), base_threshold))
         self.v_reset = nn.Parameter(torch.full((features,), v_reset))
+        
+        # (v_init 互換性)
+        self.v_init = float(kwargs.get('v_init', 0.0))
         
         # 学習可能な時定数 (PLIFと同様)
         self.log_tau_s = nn.Parameter(torch.full((features,), math.log(max(1.1, tau_s_init - 1.1))))
@@ -504,10 +533,11 @@ class TC_LIF(base.MemoryModule):
             self.v_s = None
             self.v_d = None
 
+        # (v_init 互換性)
         if self.v_s is None or self.v_s.shape != x.shape:
-            self.v_s = torch.zeros_like(x)
+            self.v_s = torch.full_like(x, self.v_init)
         if self.v_d is None or self.v_d.shape != x.shape:
-            self.v_d = torch.zeros_like(x)
+            self.v_d = torch.full_like(x, self.v_init)
 
         # 時定数から減衰率を計算
         current_tau_s = torch.exp(self.log_tau_s) + 1.1
@@ -561,6 +591,7 @@ class DualThresholdNeuron(base.MemoryModule):
         threshold_high_init: float = 1.0, # T_h (クリッピング用)
         threshold_low_init: float = 0.5,  # T_l (量子化エラー削減用)
         v_reset: float = 0.0,
+        **kwargs: Any, # (v_init 互換性)
     ):
         super().__init__()
         self.features = features
@@ -572,6 +603,9 @@ class DualThresholdNeuron(base.MemoryModule):
         
         self.v_reset = nn.Parameter(torch.full((features,), v_reset))
         self.surrogate_function = surrogate.ATan(alpha=2.0)
+        
+        # (v_init 互換性)
+        self.v_init = float(kwargs.get('v_init', 0.0))
 
         self.register_buffer("mem", None)
         self.register_buffer("spikes", torch.zeros(features))
@@ -595,8 +629,10 @@ class DualThresholdNeuron(base.MemoryModule):
             self.mem = None
 
         if self.mem is None or self.mem.shape != x.shape:
-            # 引用[6]に従い、膜電位をT_l/2で初期化 (不均一性エラー削減)
-            self.mem = (self.threshold_low.detach() / 2.0).expand_as(x)
+            # (v_init 互換性)
+            # 引用[6]のT_l/2の代わりにv_initを使用（v_initが設定されていれば）
+            init_val = self.v_init if self.v_init != 0.0 else (self.threshold_low.detach() / 2.0)
+            self.mem = init_val.expand_as(x) # type: ignore[attr-defined]
 
         current_tau_mem = torch.exp(self.log_tau_mem) + 1.1
         mem_decay = torch.exp(-1.0 / current_tau_mem)
@@ -652,6 +688,7 @@ class ScaleAndFireNeuron(base.MemoryModule):
         features: int,
         num_levels: int = 8, # 空間的な量子化レベル数 (しきい値の数)
         base_threshold: float = 1.0,
+        **kwargs: Any, # (v_init 互換性)
     ):
         super().__init__()
         self.features = features
@@ -726,3 +763,88 @@ __all__ = [
     "ScaleAndFireNeuron",
     "BistableIFNeuron"
 ]
+
+# --- ▼▼▼ 【!!! エラー修正 (log.txt) !!!】 ▼▼▼
+# (log.txt の ImportError を解決するため、ファクトリ関数を追加)
+
+# ニューロンのタイプ名 (文字列) とクラスをマッピング
+NEURON_REGISTRY: Dict[str, Type[base.MemoryModule]] = {
+    # (注: このファイル内のクラス定義に合わせて 'features' 引数を必須とする)
+    "lif": AdaptiveLIFNeuron,
+    "bif": BistableIFNeuron,
+    "izhikevich": IzhikevichNeuron,
+    "glif": GLIFNeuron,
+    "tc_lif": TC_LIF,
+    "dual_threshold": DualThresholdNeuron,
+    "scale_and_fire": ScaleAndFireNeuron,
+    "probabilistic_lif": ProbabilisticLIFNeuron,
+}
+
+def get_neuron_by_name(name: str, params: Dict[str, Any]) -> base.MemoryModule:
+    """
+    ニューロンのタイプ名 (文字列) に基づいて、
+    ニューロンクラスのインスタンスを作成して返します。
+    
+    Args:
+        name (str): ニューロンのタイプ名 (例: "lif")。
+        params (Dict[str, Any]): ニューロンのコンストラクタに渡すパラメータ辞書。
+        
+    Returns:
+        base.MemoryModule: インスタンス化されたニューロン。
+        
+    Raises:
+        ValueError: 指定された 'name' がレジストリにない場合。
+    """
+    name_lower = name.lower()
+    if name_lower not in NEURON_REGISTRY:
+        raise ValueError(
+            f"Unknown neuron type: '{name}'. "
+            f"Available types: {list(NEURON_REGISTRY.keys())}"
+        )
+        
+    NeuronClass = NEURON_REGISTRY[name_lower]
+    
+    # (v_fix_type_error / v_fix_import_error 互換性)
+    # spiking_transformer_v2.py は 'd_model' または 'dim_feedforward' を
+    # ニューロンの 'features' 引数として期待している可能性がある。
+    # 'features' が params にない場合、d_model や d_ff から推測する。
+    if 'features' not in params:
+        if 'd_model' in params:
+            params['features'] = int(params['d_model'])
+        elif 'dim_feedforward' in params:
+            params['features'] = int(params['dim_feedforward'])
+        else:
+            # features が見つからず、NeuronClass が features を必要とするかチェック
+            import inspect
+            sig = inspect.signature(NeuronClass.__init__)
+            if 'features' in sig.parameters:
+                 logger.warning(
+                     f"Neuron type '{name_lower}' requires 'features', but it was not found in params. "
+                     f"This might cause an error. Params provided: {list(params.keys())}"
+                 )
+
+    
+    try:
+        # パラメータ辞書を渡してインスタンス化
+        return NeuronClass(**params)
+    except TypeError as e:
+        logger.error(
+            f"Failed to instantiate neuron '{name_lower}' with params: {params}. "
+            f"Error: {e}"
+        )
+        # (デバッグ用) 期待される引数と渡された引数のミスマッチの詳細を出力
+        import inspect
+        sig = inspect.signature(NeuronClass.__init__)
+        expected_params = list(sig.parameters.keys())
+        provided_params = list(params.keys())
+        logger.error(f"'{name_lower}' __init__ expects: {expected_params}")
+        logger.error(f"Params provided: {provided_params}")
+        
+        # 'features' がないのが原因の場合のエラーメッセージ
+        if 'features' in expected_params and 'features' not in provided_params:
+            logger.error(
+                "Critical Error: 'features' (e.g., d_model) was not passed to the neuron constructor."
+            )
+        raise e
+
+# --- ▲▲▲ 【!!! エラー修正 (log.txt) !!!】 ▲▲▲

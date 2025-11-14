@@ -727,7 +727,7 @@ class ScaleAndFireNeuron(base.MemoryModule):
         """
         B, N = x.shape
         if N != self.features:
-            raise ValueError(f"Input dimension ({N}) does not match num_neurons ({self.features})")
+            raise ValueError(f"Input dimension ({N}) does not match num_neurons ({self.features})\")")
 
         # 入力を (B, N, 1) に拡張し、しきい値 (N, K) と比較
         x_expanded = x.unsqueeze(-1) # (B, N, 1)

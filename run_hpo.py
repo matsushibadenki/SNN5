@@ -77,7 +77,8 @@ def objective(trial: optuna.trial.Trial, args: argparse.Namespace) -> float:
     # --- 1. ハイパーパラメータの提案 ---
     # ここで探索したいパラメータとその範囲を定義
     # 例: 知識蒸留 (run_distill_hpo.py) のパラメータ
-    lr = trial.suggest_float("learning_rate", 1e-5, 1e-3, log=True)
+    # 旧: lr = trial.suggest_float("learning_rate", 1e-5, 1e-3, log=True)
+    lr = trial.suggest_float("learning_rate", 1e-4, 3e-2, log=True)
     temperature = trial.suggest_float("temperature", 1.5, 3.5)
     ce_weight = trial.suggest_float("ce_weight", 0.1, 0.5)
     distill_weight = 1.0 - ce_weight # 合わせて1になるように

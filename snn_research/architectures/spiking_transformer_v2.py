@@ -9,10 +9,16 @@
 #   渡されることが原因で TypeError が発生するため、
 #   __init__ の冒頭で全ての整数引数を int() で明示的にキャストする。
 #
-# 【!!! エラー修正 (log.txt) !!!】
+# 【エラー修正 (log.txt)】:
 # - (L226) SpikingTransformerV2 の親クラスである BaseModel の __init__ は
 #   引数を取らないため、super() 呼び出しから引数を削除。
-#   (TypeError: __init__() takes 1 positional argument but 4 were given)
+#
+# 【!!! エラー修正 (log.txt) !!!】
+# - TypeError: AdaptiveLIFNeuron.__init__() missing 1 required positional argument: 'features'
+# - get_neuron_by_name に渡す neuron_config_mapped 辞書に、
+#   'features' (d_model または dim_feedforward) が含まれていなかった。
+# - 各クラスの __init__ で、get_neuron_by_name を呼び出す直前に
+#   neuron_config_mapped['features'] = [適切な次元] を追加。(L133, L275, L323, L330, L336)
 
 import torch
 import torch.nn as nn
@@ -128,6 +134,11 @@ class SpikingVisionEmbedding(nn.Module):
         # (v_fix_spike_rate_zero) bias と v_init をマッピング
         neuron_config_mapped = _map_bias_to_bias_init(neuron_config)
 
+        # --- ▼▼▼ 【!!! エラー修正 !!!】 ▼▼▼
+        # get_neuron_by_name に 'features' (d_model) を渡す
+        neuron_config_mapped['features'] = d_model
+        # --- ▲▲▲ 【!!! エラー修正 !!!】 ▲▲▲
+
         # 時間エンコーディング用ニューロン
         self.neuron = get_neuron_by_name(
             neuron_config_mapped.get('type', 'lif'), 
@@ -215,11 +226,8 @@ class SpikingTransformerV2(BaseModel):
         
         **kwargs # (snn_core.py から渡される 'vocab_size' などを吸収)
     ):
-        # --- ▼▼▼ 【!!! エラー修正 !!!】 ▼▼▼
-        # BaseModel の __init__ は引数を取らないため、引数なしで呼び出す。
-        # (TypeError: __init__() takes 1 positional argument but 4 were given の修正)
+        # (前回の修正: super() 呼び出しを引数なしに変更済み)
         super(SpikingTransformerV2, self).__init__()
-        # --- ▲▲▲ 【!!! エラー修正 !!!】 ▲▲▲
         
         # (v_fix_type_error) HPOからのfloat入力をintにキャスト
         img_size = int(img_size)
@@ -265,10 +273,16 @@ class SpikingTransformerV2(BaseModel):
             ) for _ in range(num_encoder_layers)
         ])
         
+        # --- ▼▼▼ 【!!! エラー修正 !!!】 ▼▼▼
+        # プーリング用ニューロンにも 'features' (d_model) が必要
+        neuron_config_mapped_pool = neuron_config_mapped.copy()
+        neuron_config_mapped_pool['features'] = d_model
+        # --- ▲▲▲ 【!!! エラー修正 !!!】 ▲▲▲
+
         # 3. プーリング用ニューロン (Mean-Spike-Pooling)
         self.pool_neuron = get_neuron_by_name(
-            neuron_config_mapped.get('type', 'lif'), 
-            neuron_config_mapped
+            neuron_config_mapped_pool.get('type', 'lif'), 
+            neuron_config_mapped_pool
         )
         
         # 4. 分類ヘッド (Linear)
@@ -367,12 +381,16 @@ class SDSAEncoderLayer(nn.Module):
         neuron_config_mapped = _map_bias_to_bias_init(neuron_config)
 
         # 1. Spike-Driven Self-Attention (SDSA)
+        # (SDSA内部のニューロンは d_model を features として必要とする)
+        sdsa_neuron_config = neuron_config_mapped.copy()
+        sdsa_neuron_config['features'] = d_model
+        
         self.self_attn = SpikeDrivenSelfAttention(
             d_model=d_model,
             nhead=nhead,
             # (前回の修正: 'dropout'引数を削除済み)
             sdsa_config=sdsa_config,
-            neuron_config=neuron_config_mapped,
+            neuron_config=sdsa_neuron_config,
             time_steps=1 # このレイヤーは T=1 で動作
         )
         
@@ -392,18 +410,32 @@ class SDSAEncoderLayer(nn.Module):
         self.dropout3 = nn.Dropout(dropout) # FFN の最後
 
         # 5. SNN ニューロン
+        
+        # --- ▼▼▼ 【!!! エラー修正 !!!】 ▼▼▼
+        # Add&Norm (残差接続) 後のニューロン
+        neuron_config_addnorm1 = neuron_config_mapped.copy()
+        neuron_config_addnorm1['features'] = d_model
         self.neuron = get_neuron_by_name(
-            neuron_config_mapped.get('type', 'lif'), 
-            neuron_config_mapped
+            neuron_config_addnorm1.get('type', 'lif'), 
+            neuron_config_addnorm1
         )
+        
+        # FFN (linear1) 後のニューロン
+        neuron_config_ffn1 = neuron_config_mapped.copy()
+        neuron_config_ffn1['features'] = dim_feedforward
         self.ffn_neuron1 = get_neuron_by_name(
-            neuron_config_mapped.get('type', 'lif'), 
-            neuron_config_mapped
+            neuron_config_ffn1.get('type', 'lif'), 
+            neuron_config_ffn1
         )
+        
+        # FFN (linear2) 後のニューロン
+        neuron_config_ffn2 = neuron_config_mapped.copy()
+        neuron_config_ffn2['features'] = d_model
         self.ffn_neuron2 = get_neuron_by_name(
-            neuron_config_mapped.get('type', 'lif'), 
-            neuron_config_mapped
+            neuron_config_ffn2.get('type', 'lif'), 
+            neuron_config_ffn2
         )
+        # --- ▲▲▲ 【!!! エラー修正 !!!】 ▲▲▲
 
         self._is_stateful = False
         self.built = True

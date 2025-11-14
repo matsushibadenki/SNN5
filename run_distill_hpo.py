@@ -205,6 +205,7 @@ async def main() -> None:
     # DIコンテナから必要なコンポーネントを正しい順序で取得・構築
     device = container.device()
 
+    # ssn_core.py 側で vocab_size を処理するように修正したため、ここは変更不要
     student_model = container.snn_model(vocab_size=10).to(device)
     
     # --- ▼▼▼ 【重み初期化ロジックの修正】 Biasを強制注入とV_INIT強制を復活 ▼▼▼ ---

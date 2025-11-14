@@ -16,9 +16,9 @@
 #   neuron_config_mapped['features'] = [適切な次元] を追加。
 #
 # 【!!! エラー修正 (log.txt) !!!】
-# - TypeError: SpikeDrivenSelfAttention.__init__() got an unexpected keyword argument 'd_model'
-# - (L390付近) SDSAEncoderLayer が SpikeDrivenSelfAttention を呼び出す際、
-#   引数名が 'd_model' -> 'embed_dim'、'nhead' -> 'num_heads' であると推測し、修正。
+# - ログ (Turn 5) に基づき、'embed_dim' は
+#   予期しない引数 (unexpected keyword argument) と判断。
+# - 呼び出しを 'd_model' と 'nhead' に修正する。
 
 import torch
 import torch.nn as nn
@@ -381,13 +381,13 @@ class SDSAEncoderLayer(nn.Module):
         sdsa_neuron_config = neuron_config_mapped.copy()
         sdsa_neuron_config['features'] = d_model
         
-        # --- ▼▼▼ 【!!! エラー修正 (ログ [cite: 114]) !!!】 ▼▼▼
-        # 'd_model' -> 'embed_dim'
-        # 'nhead' -> 'num_heads'
-        # SpikeDrivenSelfAttention の __init__ が期待する引数名に修正します。
+        # --- ▼▼▼ 【!!! エラー修正 (ログ) !!!】 ▼▼▼
+        # ログ (Turn 5) によると、'embed_dim' は
+        # 予期しない引数 (unexpected keyword argument) です。
+        # したがって、引数名は 'd_model' と 'nhead' である必要があります。
         self.self_attn = SpikeDrivenSelfAttention(
-            embed_dim=d_model,
-            num_heads=nhead,
+            d_model=d_model,
+            nhead=nhead,
             dropout=self_attn_dropout, 
             sdsa_config=sdsa_config,
             neuron_config=sdsa_neuron_config,

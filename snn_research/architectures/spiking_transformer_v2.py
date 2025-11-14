@@ -4,23 +4,15 @@
 #
 # (中略)
 #
-# 【修正 v_fix_spike_rate_zero】:
-# - `run_distill_hpo.py` から渡される `neuron_config` 内の `bias` キーを
-#   `bias_init` にマッピングするロジックを追加。
-# - 【v_init 修正】: `v_init` (初期膜電位) をニューロンに渡すロジックを追加。
-#
-# 【修正 v_fix_import_error】:
-# - 存在しない 'SpikingSelfAttention' のインポートを削除 (log6.txt)
-#
 # 【修正 v_fix_type_error (log11.txt)】:
 # - HPO (dependency_injector) 経由で int 型引数が float (例: 256.0) として
 #   渡されることが原因で TypeError が発生するため、
 #   __init__ の冒頭で全ての整数引数を int() で明示的にキャストする。
 #
 # 【!!! エラー修正 (log.txt) !!!】
-# - (L278付近) SDSAEncoderLayer が SpikeDrivenSelfAttention を呼び出す際、
-#   SpikeDrivenSelfAttention が受け付けない 'dropout' 引数を渡していたため、
-#   TypeError が発生していた。該当の引数を削除。
+# - (L226) SpikingTransformerV2 の親クラスである BaseModel の __init__ は
+#   引数を取らないため、super() 呼び出しから引数を削除。
+#   (TypeError: __init__() takes 1 positional argument but 4 were given)
 
 import torch
 import torch.nn as nn
@@ -223,7 +215,11 @@ class SpikingTransformerV2(BaseModel):
         
         **kwargs # (snn_core.py から渡される 'vocab_size' などを吸収)
     ):
-        super(SpikingTransformerV2, self).__init__(neuron_config, d_model, time_steps)
+        # --- ▼▼▼ 【!!! エラー修正 !!!】 ▼▼▼
+        # BaseModel の __init__ は引数を取らないため、引数なしで呼び出す。
+        # (TypeError: __init__() takes 1 positional argument but 4 were given の修正)
+        super(SpikingTransformerV2, self).__init__()
+        # --- ▲▲▲ 【!!! エラー修正 !!!】 ▲▲▲
         
         # (v_fix_type_error) HPOからのfloat入力をintにキャスト
         img_size = int(img_size)
@@ -374,11 +370,7 @@ class SDSAEncoderLayer(nn.Module):
         self.self_attn = SpikeDrivenSelfAttention(
             d_model=d_model,
             nhead=nhead,
-            # --- ▼▼▼ 【!!! エラー修正 !!!】 ▼▼▼
-            # 'dropout' は SpikeDrivenSelfAttention の __init__ で
-            # サポートされていないため削除 (log.txt の TypeError の原因)
-            # dropout=self_attn_dropout, 
-            # --- ▲▲▲ 【!!! エラー修正 !!!】 ▲▲▲
+            # (前回の修正: 'dropout'引数を削除済み)
             sdsa_config=sdsa_config,
             neuron_config=neuron_config_mapped,
             time_steps=1 # このレイヤーは T=1 で動作

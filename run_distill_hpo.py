@@ -150,24 +150,24 @@ async def main() -> None:
     # --- ▼▼▼ 【デバッグ強制オーバーライドの復活と再導入】 ▼▼▼ ---
 
     # 6. 【デバッグ復活】 spike_reg_weight を強制的に低い値に固定
-    try:
-        config_provider = container.config.training.gradient_based.distillation.loss.spike_reg_weight
-        DEBUG_SPIKE_REG_VALUE = 1e-6 
-        config_provider.from_value(DEBUG_SPIKE_REG_VALUE)
-        print(f"  - 【DEBUG OVERRIDE】 Forced spike_reg_weight to: {DEBUG_SPIKE_REG_VALUE}")
-    except Exception as e:
-        print(f"Warning: Could not force spike_reg_weight. This may cause spike_rate=0: {e}")
+    # try:
+    #     config_provider = container.config.training.gradient_based.distillation.loss.spike_reg_weight
+    #     DEBUG_SPIKE_REG_VALUE = 1e-6 
+    #     config_provider.from_value(DEBUG_SPIKE_REG_VALUE)
+    #     print(f"  - 【DEBUG OVERRIDE】 Forced spike_reg_weight to: {DEBUG_SPIKE_REG_VALUE}")
+    # except Exception as e:
+    #     print(f"Warning: Could not force spike_reg_weight. This may cause spike_rate=0: {e}")
         
     # 7. 【デバッグ復活】 learning_rate を強制的に高く設定
-    try:
-        config_provider_lr = container.config.training.gradient_based.learning_rate
-        DEBUG_LR_VALUE = 1e-2 # 以前の修正を復活 (1e-2)
-        config_provider_lr.from_value(DEBUG_LR_VALUE)
-        print(f"  - 【DEBUG OVERRIDE】 Forced learning_rate to: {DEBUG_LR_VALUE}")
-    except Exception as e:
-        print(f"Warning: Could not force learning_rate: {e}")
+    # try:
+    #     config_provider_lr = container.config.training.gradient_based.learning_rate
+    #     DEBUG_LR_VALUE = 1e-2 # 以前の修正を復活 (1e-2)
+    #     config_provider_lr.from_value(DEBUG_LR_VALUE)
+    #     print(f"  - 【DEBUG OVERRIDE】 Forced learning_rate to: {DEBUG_LR_VALUE}")
+    # except Exception as e:
+    #     print(f"Warning: Could not force learning_rate: {e}")
 
-    # 8. 【デバッグ復活】 V_THRESHOLD を強制的に設定
+    # 8. 【デバッグ復活】 V_THRESHOLD を強制的に設定 (※これはHPO対象外なので残してもOK)
     try:
         config_provider_v_th = container.config.model.neuron.v_threshold
         DEBUG_V_THRESHOLD_VALUE = 0.5 

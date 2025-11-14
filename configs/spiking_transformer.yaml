@@ -1,0 +1,19 @@
+# ファイルパス: configs/models/spiking_transformer.yaml
+# (data: ブロックを削除し、元の状態に戻す)
+
+model:
+  path: "spiking_transformer_model.pth"
+  architecture_type: "spiking_transformer"
+  d_model: 256
+  num_layers: 6
+  n_head: 8
+  time_steps: 32 
+  
+  dropout: 0.1
+  sdsa_config: {}
+
+  neuron:
+    type: "lif"
+    v_threshold: 0.5 
+    threshold_decay: 1.0
+    threshold_step: 0.0

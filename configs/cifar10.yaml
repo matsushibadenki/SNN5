@@ -1,0 +1,13 @@
+# ファイルパス: configs/data/cifar10.yaml
+# (新規作成)
+# Title: CIFAR-10 データセット設定
+# Description: CIFAR-10用のデータセット名、バッチサイズ、
+#              および tokenizer_name=null を指定してエラーを解消します。
+
+dataset_name: "cifar10"
+batch_size: 128   # (デフォルト値。HPOで上書きされる可能性あり)
+num_workers: 4    # (デフォルト値)
+
+# tokenizer_name is None エラーを解消するため、
+# 画像データセットでは不要であることを明示する
+tokenizer_name: null

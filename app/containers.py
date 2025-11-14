@@ -111,10 +111,11 @@ class TrainingContainer(containers.DeclarativeContainer):
     device = providers.Factory(get_auto_device)
     
     # --- ▼ 修正 (v_health_check_fix_v8): [no-redef] L112の重複定義を削除 ▼ ---
+    # 【!!! この行をコメントアウトします !!!】
     # tokenizer = providers.Factory(AutoTokenizer.from_pretrained, pretrained_model_name_or_path=config.data.tokenizer_name) # L112: 削除
     
     @providers.Factory
-    def tokenizer(config_provider=config): # L114: こちらを残す
+    def tokenizer(config_provider=config):
     # --- ▲ 修正 ▲ ---
         """
         DIコンテナから呼び出される際に、最新の設定を読み込んで

@@ -75,16 +75,20 @@ async def main() -> None:
     # 2. 基本設定をロード
     container.config.from_yaml(args.config)
 
-    # --- ▼▼▼ 【!!! エラー修正 (tokenizer_name is None) !!!】 ▼▼▼
+    # --- ▼▼▼ 【!!! エラー修正 (tokenizer_name is None) v2 !!!】 ▼▼▼
     # 2.5. データ設定をロード
     # --task "cifar10" に基づき、"configs/data/cifar10.yaml" をロードする
-    data_config_path = f"configs/data/{args.task}.yaml"
+    
+    # project_root (L.17で定義済み) を基準に絶対パスを構築する
+    data_config_path = os.path.join(project_root, f"configs/data/{args.task}.yaml")
+
     if os.path.exists(data_config_path):
         print(f"INFO: Loading data config: {data_config_path}")
         container.config.from_yaml(data_config_path)
     else:
-        print(f"WARNING: Data config file not found: {data_config_path}. 'data' config might be incomplete.")
-    # --- ▲▲▲ 【!!! エラー修正 !!!】 ▲▲▲
+        # どのパスを探しに行ったか明確にするため、絶対パスをログに出力
+        print(f"WARNING: Data config file not found at: {data_config_path}. 'data' config might be incomplete.")
+    # --- ▲▲▲ 【!!! エラー修正 v2 !!!】 ▲▲▲
 
     # 3. モデル設定をロード 
     try:

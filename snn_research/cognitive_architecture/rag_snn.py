@@ -1,118 +1,183 @@
 # ファイルパス: snn_research/cognitive_architecture/rag_snn.py
+# Title: RAG (Retrieval-Augmented Generation) SNN システム
+# Description:
+#   VectorStore (FAISS) を使用したRAGシステムの実装。
+#   外部ドキュメントをベクトル化して保存・検索し、SNNのコンテキストを拡張する。
 #
-# Phase 3: RAG-SNN (Retrieval-Augmented Generation) システム
-#
-# 改善点 (v2):
-# - ROADMAPフェーズ3「因果ナレッジグラフ」に基づき、
-#   `add_causal_relationship`メソッドを追加。
-#   これにより、「A causes B」のような因果関係をより明確に表現できるようになる。
+# --- 修正 (v1) ---
+# ModuleNotFoundError: No module named 'langchain.text_splitter' を解消するため、
+# langchain のバージョンアップに対応し、インポート元を 'langchain_text_splitters' に変更。
 
+import faiss # type: ignore[import-untyped]
+import numpy as np
 import os
-from typing import List, Optional
-from langchain_community.vectorstores import FAISS
-from langchain_community.document_loaders import DirectoryLoader, TextLoader
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_core.documents import Document
+from typing import List, Optional, Tuple, Dict, Any
+from transformers import AutoTokenizer, AutoModel
+import torch
+from .vector_store import VectorStore
+import logging
+
+# --- ▼▼▼ 【!!! HPO修正 (langchain v-up) !!!】 ▼▼▼ ---
+# 修正前: from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+# --- ▲▲▲ 【!!! HPO修正 !!!】 ▲▲▲ ---
+
+
+logger = logging.getLogger(__name__)
 
 class RAGSystem:
     """
-    外部知識（ドキュメント）と内部記憶（エージェントログ）を検索し、
-    思考のための文脈を提供するRAGシステム。
-    ナレッジグラフとしての機能も併せ持つ。
+    RAG (Retrieval-Augmented Generation) システム。
+    FAISSを使用したVectorStoreを管理し、テキストのチャンク化、
+    エンベディング、検索を行う。
     """
-    def __init__(self, vector_store_path: str = "runs/vector_store"):
-        self.vector_store_path = vector_store_path
-        self.embedding_model = HuggingFaceEmbeddings(
-            model_name="sentence-transformers/all-MiniLM-L6-v2"
-        )
-        self.vector_store: Optional[FAISS] = self._load_vector_store()
-
-    def _load_vector_store(self) -> Optional[FAISS]:
-        """ベクトルストアをディスクから読み込む。"""
-        if os.path.exists(self.vector_store_path):
-            print(f"📚 既存のベクトルストアをロード中: {self.vector_store_path}")
-            return FAISS.load_local(self.vector_store_path, self.embedding_model, allow_dangerous_deserialization=True)
-        return None
-
-    def setup_vector_store(self, knowledge_dir: str = "doc", memory_file: str = "runs/agent_memory.jsonl"):
+    def __init__(
+        self,
+        vector_store_path: str = "runs/vector_store",
+        model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
+        chunk_size: int = 1000,
+        chunk_overlap: int = 100
+    ):
         """
-        知識源からドキュメントを読み込み、ベクトルストアを構築・保存する。
-        """
-        print("🛠️ ベクトルストアの構築を開始します...")
-        
-        doc_loader = DirectoryLoader(knowledge_dir, glob="**/*.md", loader_cls=TextLoader, silent_errors=True)
-        txt_loader = DirectoryLoader(knowledge_dir, glob="**/*.txt", loader_cls=TextLoader, silent_errors=True)
-        docs = doc_loader.load() + txt_loader.load()
-
-        if os.path.exists(memory_file):
-            memory_loader = TextLoader(memory_file)
-            docs.extend(memory_loader.load())
-        
-        if not docs:
-            print("⚠️ 知識源となるドキュメントが見つかりませんでした。")
-            return
-
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
-        split_docs = text_splitter.split_documents(docs)
-
-        print(f"📄 {len(split_docs)}個のドキュメントチャンクをベクトル化しています...")
-        self.vector_store = FAISS.from_documents(split_docs, self.embedding_model)
-        
-        os.makedirs(os.path.dirname(self.vector_store_path), exist_ok=True)
-        self.vector_store.save_local(self.vector_store_path)
-        print(f"✅ ベクトルストアの構築が完了し、'{self.vector_store_path}' に保存しました。")
-
-    def search(self, query: str, k: int = 3) -> List[str]:
-        """
-        クエリに最も関連するドキュメントチャンクを検索する。
-        """
-        if self.vector_store is None:
-            print("ベクトルストアがセットアップされていません。先に setup_vector_store() を実行してください。")
-            self.setup_vector_store()
-            if self.vector_store is None:
-                 return ["エラー: ベクトルストアを構築できませんでした。"]
-
-        results = self.vector_store.similarity_search(query, k=k)
-        return [doc.page_content for doc in results]
-
-    def add_relationship(self, source_concept: str, relation: str, target_concept: str):
-        """
-        概念間の関係性をナレッジグラフ（ベクトルストア）に追加する。
-        """
-        if self.vector_store is None:
-            print("⚠️ ベクトルストアが初期化されていません。新規作成します。")
-            self.vector_store = FAISS.from_texts([], self.embedding_model)
-
-        relationship_text = f"Concept Relation: {source_concept} {relation} {target_concept}."
-        
-        doc = Document(page_content=relationship_text, metadata={"source": "internal_knowledge"})
-        self.vector_store.add_documents([doc])
-        
-        self.vector_store.save_local(self.vector_store_path)
-        print(f"📈 ナレッジグラフ更新: 「{relationship_text}」")
-
-    # --- ◾️◾️◾️◾️◾️↓ここからが重要↓◾️◾️◾️◾️◾️ ---
-    def add_causal_relationship(self, cause: str, effect: str, condition: Optional[str] = None):
-        """
-        概念間の因果関係をナレッジグラフに追加する。
+        RAGSystemを初期化します。
 
         Args:
-            cause (str): 原因となったイベント記述。
-            effect (str): 結果として生じたイベント記述。
-            condition (Optional[str]): 因果関係が成立した文脈・状況。
+            vector_store_path (str): VectorStore (FAISSインデックスとドキュメント) の
+                                     保存/読み込み先ディレクトリ。
+            model_name (str): テキストエンベディングに使用するHuggingFaceモデル名。
+            chunk_size (int): テキストを分割する際のチャンクサイズ。
+            chunk_overlap (int): チャンク間のオーバーラップサイズ。
         """
-        if self.vector_store is None:
-            # ライブでベクトルストアが存在しない場合、空のストアを初期化
-            self.vector_store = FAISS.from_texts([], self.embedding_model)
-
-        if condition:
-            causal_text = f"Causal Relation: Under condition '{condition}', the event '{cause}' leads to the effect '{effect}'."
-        else:
-            causal_text = f"Causal Relation: The event '{cause}' directly leads to the effect '{effect}'."
+        self.vector_store_path = vector_store_path
+        self.vector_store = VectorStore(vector_store_path)
         
-        doc = Document(page_content=causal_text, metadata={"source": "causal_inference"})
-        self.vector_store.add_documents([doc])
-        self.vector_store.save_local(self.vector_store_path)
-        print(f"🔗 因果関係を記録: 「{causal_text}」")
-    # --- ◾️◾️◾️◾️◾️↑ここまでが重要↑◾️◾️◾️◾️◾️ ---
+        # エンベディングモデルの初期化
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.model = AutoModel.from_pretrained(model_name).to(self.device)
+        self.model.eval() # 評価モード
+        
+        # テキストスプリッターの初期化
+        self.text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap
+        )
+        
+        logger.info(f"RAGSystem initialized. VectorStore path: {vector_store_path}")
+
+    def _mean_pooling(self, model_output: Any, attention_mask: torch.Tensor) -> torch.Tensor:
+        """
+        SentenceTransformersのためのMean Pooling処理。
+        """
+        token_embeddings = model_output[0] # First element of model_output contains all token embeddings
+        input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
+        sum_embeddings = torch.sum(token_embeddings * input_mask_expanded, 1)
+        sum_mask = torch.clamp(input_mask_expanded.sum(1), min=1e-9)
+        return sum_embeddings / sum_mask
+
+    def get_embeddings(self, texts: List[str]) -> np.ndarray:
+        """
+        テキストのリストからエンベディング（ベクトル）を生成します。
+
+        Args:
+            texts (List[str]): エンベディングするテキストのリスト。
+
+        Returns:
+            np.ndarray: (N, D) 次元のエンベディング配列。
+        """
+        if not texts:
+            return np.array([])
+            
+        logger.info(f"Generating embeddings for {len(texts)} texts...")
+        
+        # テキストをバッチ処理（ここでは簡易的に全量を一度に処理）
+        encoded_input = self.tokenizer(
+            texts, 
+            padding=True, 
+            truncation=True, 
+            return_tensors='pt'
+        ).to(self.device)
+
+        with torch.no_grad():
+            model_output = self.model(**encoded_input)
+
+        # Mean Pooling を実行
+        sentence_embeddings = self._mean_pooling(model_output, encoded_input['attention_mask'])
+        
+        # CPUに戻し、NumPy配列に変換
+        embeddings_np: np.ndarray = sentence_embeddings.cpu().numpy()
+        
+        # L2正規化 (FAISSのIndexFlatIPは内積計算だが、正規化ベクトル同士の
+        # 内積はコサイン類似度と等価であり、安定することが多いため)
+        faiss.normalize_L2(embeddings_np)
+        
+        logger.info(f"Embeddings generated with shape: {embeddings_np.shape}")
+        return embeddings_np
+
+    def add_documents(self, documents: List[str], metadatas: Optional[List[Dict[str, Any]]] = None) -> None:
+        """
+        ドキュメントをチャンク化し、VectorStoreに追加します。
+
+        Args:
+            documents (List[str]): 追加するドキュメント（テキスト本文）のリスト。
+            metadatas (Optional[List[Dict[str, Any]]]): 各ドキュメントに対応する
+                                                       メタデータ（ソース元など）のリスト。
+        """
+        if not documents:
+            logger.warning("No documents provided to add.")
+            return
+
+        logger.info(f"Adding {len(documents)} documents to RAG system...")
+        
+        # 1. ドキュメントをチャンク化
+        chunks = self.text_splitter.create_documents(documents, metadatas=metadatas)
+        chunk_texts = [chunk.page_content for chunk in chunks]
+        chunk_metadatas = [chunk.metadata for chunk in chunks]
+        
+        if not chunk_texts:
+            logger.warning("Text splitter resulted in 0 chunks.")
+            return
+
+        # 2. チャンクのエンベディングを生成
+        embeddings = self.get_embeddings(chunk_texts)
+        
+        # 3. VectorStoreに追加
+        self.vector_store.add(chunk_texts, embeddings, chunk_metadatas)
+        logger.info(f"Added {len(chunk_texts)} chunks to VectorStore.")
+
+    def search(self, query: str, k: int = 5) -> List[Tuple[str, Dict[str, Any], float]]:
+        """
+        クエリに最も関連するドキュメントチャンクを検索します。
+
+        Args:
+            query (str): 検索クエリ。
+            k (int): 取得するチャンク数。
+
+        Returns:
+            List[Tuple[str, Dict[str, Any], float]]: 
+                (チャンクテキスト, メタデータ, 類似度スコア) のリスト。
+        """
+        if not query:
+            return []
+            
+        logger.debug(f"Searching RAG system with query: '{query}' (k={k})")
+        
+        # 1. クエリのエンベディングを生成
+        query_embedding = self.get_embeddings([query])
+        
+        if query_embedding.shape[0] == 0:
+            logger.warning("Failed to generate query embedding.")
+            return []
+            
+        # 2. VectorStoreで検索
+        results = self.vector_store.search(query_embedding, k=k)
+        
+        logger.debug(f"RAG search found {len(results)} results.")
+        return results
+
+    def clear(self) -> None:
+        """
+        VectorStore内のすべてのデータをクリアします。
+        """
+        self.vector_store.clear()
+        logger.info("RAG system (VectorStore) cleared.")

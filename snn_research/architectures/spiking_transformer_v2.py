@@ -10,6 +10,12 @@
 #      返していた。
 #    - 損失関数 (losses.py) が None**2 を計算しようとしてクラッシュしたため、
 #      None の代わりに 0.0 のテンソルを返すように修正。
+#
+# 【!!! スパイク消滅 (spike_rate=0) 修正 !!!】
+# - (L.156) SpikingVisionEmbedding._initialize_weights の patch_embed (Conv2d) 初期化に
+#   `gain=3.0` を追加。
+# - v_init=0.0, bias=0.01 の設定 でも、入力 (inputs) の初期値が
+#   大きくなるため、閾値 (0.5) を超えてスパイクが発生できるようになる。
 
 import torch
 import torch.nn as nn
@@ -141,7 +147,11 @@ class SpikingVisionEmbedding(nn.Module):
         nn.init.trunc_normal_(self.pos_embed, std=.02)
         # パッチ埋め込みの初期化 (Xavier)
         if isinstance(self.patch_embed, nn.Conv2d):
-            nn.init.xavier_uniform_(self.patch_embed.weight)
+            # --- ▼▼▼ 【!!! spike_rate=0 修正 !!!】 ▼▼▼
+            # スパイクを強制的に発生させるため、gainを大きな値（3.0）に変更
+            # (lif_layer.py の修正履歴 (L.100) に基づく)
+            nn.init.xavier_uniform_(self.patch_embed.weight, gain=3.0)
+            # --- ▲▲▲ 【!!! spike_rate=0 修正 !!!】 ▲▲▲
             if self.patch_embed.bias is not None:
                 nn.init.constant_(self.patch_embed.bias, 0)
 

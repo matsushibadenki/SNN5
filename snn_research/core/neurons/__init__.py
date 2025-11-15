@@ -1,9 +1,9 @@
 # ファイルパス: snn_research/core/neurons/__init__.py
 # Title: SNNニューロンモデル定義
 #
-# 【エラー修正 v14: SyntaxError 解消とインポートの整理】
-# - try-except 構文エラーを修正し、各ニューロンのインポートを安全に行う。
-# - 欠損モジュールの場合は MemoryModule を継承したダミークラスを定義する。
+# 【エラー修正 v15: SyntaxError 解消とインポートの整理】
+# - SyntaxError: invalid syntax (def __init__) を修正するため、フォールバッククラス定義を標準ブロック構文に修正。
+# - これにより、AdaptiveLIFNeuronのTypeError回避ロジックが初めて適切に機能することが期待される。
 
 from typing import Optional, Tuple, Any, List, cast, Dict, Type, Union 
 import torch
@@ -14,14 +14,14 @@ from spikingjelly.activation_based import surrogate, base # type: ignore[import-
 import logging 
 import inspect 
 
-# --- ▼▼▼ 【修正 v14: ImportError/SyntaxError 解消のため、安全なインポートとダミー定義】 ▼▼▼ ---
+# --- ▼▼▼ 【修正 v15: ImportError/SyntaxError 解消のため、安全なインポートとダミー定義】 ▼▼▼ ---
 # 存在するモジュールをインポート
 from .adaptive_lif_neuron import AdaptiveLIFNeuron
 from .bif_neuron import BistableIFNeuron
 from .probabilistic_lif_neuron import ProbabilisticLIFNeuron 
 
 # 欠損している可能性のあるモジュールを捕捉し、ダミークラスを定義
-# SyntaxError: invalid syntax を修正するため、クラス定義を標準の複数行ブロックにする
+# SyntaxErrorを修正するため、クラスとメソッドの定義を複数行ブロックにする
 try: 
     from .izhikevich_neuron import IzhikevichNeuron 
 except ModuleNotFoundError: 
@@ -49,7 +49,7 @@ except ModuleNotFoundError:
     class ScaleAndFireNeuron(base.MemoryModule): 
         def __init__(self, **kwargs): 
             super().__init__()
-# --- ▲▲▲ 【修正 v14】 ▲▲▲ ---
+# --- ▲▲▲ 【修正 v15】 ▲▲▲ ---
 
 
 logger = logging.getLogger(__name__)

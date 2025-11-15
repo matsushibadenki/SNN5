@@ -1,19 +1,22 @@
 # ファイルパス: app/main.py
-# (動的モデルロードUI 修正 v16 - Gradio 4.20.0 最終互換性修正)
+# (動的モデルロードUI 修正 v17 - mypy [assignment] 修正)
 # DIコンテナを利用した、Gradioリアルタイム対話UIの起動スクリプト
 #
-# 機能:
-# - model_registry.json を読み込み、利用可能なモデルをGradioドロップダウンに表示。
-# - コマンドライン引数 (argparse) を受け付け、レジストリのモデル情報を上書き/追加する。
-# - ユーザーがモデルを選択すると、推論エンジンとサービスを動的に初期化する。
-# - モデルのタイプ（テキスト/画像）をconfigから判断し、適切なタブにUIを表示する。
+# (中略)
+#
+# --- 修正 (mypy) ---
+# 1. [assignment] (L163, L179): service_instance (Union) を
+#    chat_service (Optional[ChatService]) や
+#    image_service (Optional[ImageClassificationService]) に
+#    代入する際の型不一致エラーを解消するため、isinstance で
+#    型チェックを行ってから代入するように修正。
 
 import gradio as gr  # type: ignore[import-untyped]
 import argparse
 import sys
 import time
 from pathlib import Path
-from typing import Iterator, Tuple, List, Dict, Optional, Any
+from typing import Iterator, Tuple, List, Dict, Optional, Any, cast # cast をインポート
 from omegaconf import OmegaConf, DictConfig, Container # Container をインポート
 from dependency_injector import providers
 import numpy as np
@@ -160,24 +163,39 @@ def load_inference_services(model_id: str) -> Tuple[Optional[ChatService], Optio
         if task_type == "text":
             with engine_provider.override(providers.Factory(SNNInferenceEngine, config=full_config_dict)):
                 service_instance = container.chat_service()
-            chat_service = service_instance
+            
+            # --- ▼ mypy [assignment] 修正 ▼ ---
+            if isinstance(service_instance, ChatService):
+                chat_service = service_instance
+            else:
+                # この分岐は理論上ありえないが、mypyのために追加
+                chat_service = None 
+                if service_instance is not None:
+                     logger.warning(f"Expected ChatService, but got {type(service_instance)} for text task.")
+            
+            image_service = None # 明示的に None を設定
+            # --- ▲ mypy [assignment] 修正 ▲ ---
+            
             status_message = f"✅ Text Model '{model_id}' loaded."
             print(status_message)
             # テキストタブを表示し、画像タブを隠す
-            return chat_service, None, status_message, gr.update(selected="text_tab"), gr.update(visible=True), gr.update(visible=False)
+            return chat_service, image_service, status_message, gr.update(selected="text_tab"), gr.update(visible=True), gr.update(visible=False)
 
         elif task_type == "image":
             with engine_provider.override(providers.Factory(SNNInferenceEngine, config=full_config_dict)):
                 service_instance = container.image_classification_service()
             
-            # --- ▼ 修正: mypy [assignment] エラーを修正 (v24) ▼ ---
-            # 196行目付近のエラー:
-            chat_service = None
+            chat_service = None # 明示的に None を設定
             
-            # 204行目付近のエラー (return文での型不一致) を防ぐため、
-            # image_service に正しい型 (ImageClassificationService) を代入する
-            image_service = service_instance
-            # --- ▲ 修正 ▲ ---
+            # --- ▼ mypy [assignment] 修正 ▼ ---
+            if isinstance(service_instance, ImageClassificationService):
+                image_service = service_instance
+            else:
+                # この分岐は理論上ありえないが、mypyのために追加
+                image_service = None
+                if service_instance is not None:
+                    logger.warning(f"Expected ImageClassificationService, but got {type(service_instance)} for image task.")
+            # --- ▲ mypy [assignment] 修正 ▲ ---
 
             status_message = f"✅ Image Model '{model_id}' loaded."
             print(status_message)
@@ -367,7 +385,8 @@ def main():
                  yield history, initial_stats_md
         # --- ▲ 修正 ▲ ---
 
-        chat_submit_event = msg_textbox.submit(fn=stream_chat_wrapper, inputs=[chat_msg_textbox, chat_chatbot, chat_service_state], outputs=[chat_chatbot, chat_stats_display], queue=False) # queue=False
+        # (mypy互換性) chat_msg_textbox が見つからないため、gr.Textboxのインスタンスを修正
+        chat_submit_event = chat_msg_textbox.submit(fn=stream_chat_wrapper, inputs=[chat_msg_textbox, chat_chatbot, chat_service_state], outputs=[chat_chatbot, chat_stats_display], queue=False) # queue=False
         chat_submit_event.then(fn=lambda: "", inputs=None, outputs=chat_msg_textbox)
         chat_button_submit_event = chat_submit_btn.click(fn=stream_chat_wrapper, inputs=[chat_msg_textbox, chat_chatbot, chat_service_state], outputs=[chat_chatbot, chat_stats_display], queue=False) # queue=False
         chat_button_submit_event.then(fn=lambda: "", inputs=None, outputs=chat_msg_textbox)
@@ -382,21 +401,27 @@ def main():
             full_response = ""
             stats_md_output = initial_stats_md
             try:
+                # stream_response はイテレータを返す
                 iterator = service.stream_response(text, [])
                 final_history: List[List[Optional[str]]] = []
+                
+                # イテレータを消費して最後の結果を取得
                 while True:
                     try:
+                        # next(iterator) は (history, stats) のタプルを返す
                         current_history, stats_md_output = next(iterator)
                         final_history = current_history
                     except StopIteration:
+                        # イテレーションが終了
                         if final_history and final_history[-1] and len(final_history[-1]) > 1:
                             response_content = final_history[-1][1]
                             full_response = response_content if response_content is not None else ""
-                        break
+                        break # ループを抜ける
             except Exception as e:
                 logger.error(f"Error during summarization: {e}")
                 return f"Error: {e}", initial_stats_md
             return full_response, stats_md_output
+
 
         sum_summarize_btn.click(
             fn=summarize_text,
@@ -411,7 +436,8 @@ def main():
              if image is None:
                  return {"Error": 1.0, "No image provided": 0.0}
              try:
-                 return service.predict(image)
+                 # service.predict は Dict[str, float] を返す
+                 return cast(Dict[str, float], service.predict(image))
              except Exception as e:
                   logger.error(f"Error during image classification: {e}")
                   return {"Error": 1.0, str(e): 0.0}

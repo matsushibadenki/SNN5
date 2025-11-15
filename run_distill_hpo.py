@@ -15,6 +15,10 @@
 #   ロジックを無効化していたことが原因と特定。
 # - L.171-181 のブロックをコメントアウトし、モデル側の
 #   v_init 自動設定ロジックを復活させる。
+#
+# 【!!! MemoryModule.__init__ got unexpected keyword argument 'type' 修正 !!!】
+# - DIコンテナがニューロンをインスタンス化する際、設定に含まれる 'type' キーを削除せずに
+#   コンストラクタに渡してしまう問題を修正するため、モデル構築の直前に設定から 'type' キーを削除する。
 
 import argparse
 import asyncio
@@ -260,6 +264,32 @@ async def main() -> None:
     # DIコンテナから必要なコンポーネントを正しい順序で取得・構築
     device = container.device()
 
+    # --- ▼▼▼ 【エラー修正 (MemoryModule.__init__() got an unexpected keyword argument 'type')】 ▼▼▼ ---
+    # ニューロン設定オブジェクトから 'type' キーを削除する。
+    # DIコンテナのConfigurationProviderからDictConfigとして取得し、それを操作する。
+    try:
+        # container.config.model.neuron は ConfigurationProvider で、Callableとして値を返す
+        neuron_config_provider = container.config.model.neuron 
+        
+        # 現在のニューロン設定（DictConfigまたはDictのはず）を取得
+        current_config = neuron_config_provider()
+        
+        # DictConfigまたはDictであることを確認し、'type' キーを削除
+        if isinstance(current_config, DictConfig) and 'type' in current_config:
+            del current_config['type']
+            print("  - 【DEBUG FIX】 Successfully removed 'type' key from model.neuron DictConfig.")
+        elif isinstance(current_config, dict) and 'type' in current_config:
+            # dictの場合は、それを修正して上書き
+            del current_config['type']
+            neuron_config_provider.from_dict(current_config)
+            print("  - 【DEBUG FIX】 Removed 'type' key from model.neuron dict and updated config.")
+        else:
+             print(f"  - 【DEBUG INFO】 'type' key not found or config is not Dict/DictConfig: {type(current_config)}")
+             
+    except Exception as e:
+        print(f"Warning: Failed to remove 'type' key from neuron config before model instantiation: {e}")
+    # --- ▲▲▲ 【エラー修正】 ▲▲▲ ---
+
     # ssn_core.py 側で vocab_size を処理するように修正したため、ここは変更不要
     student_model = container.snn_model(vocab_size=10).to(device)
     
@@ -405,7 +435,6 @@ async def main() -> None:
         task_description=f"An expert SNN for {args.task}, distilled from {args.teacher_model}.",
         # 修正 (v_hpo_config_fix): コンテナから取得した OmegaConf オブジェクトを使用して、
         # 最終的なモデル設定 (model) を確実にプレーンな Python 辞書として抽出する。
-        # これにより、ConfigurationProvider.to_dict() の問題や、設定の型不整合を防ぐ。
         student_config=cast(Dict[str, Any], OmegaConf.to_container(manager_config_omegaconf.model, resolve=True))
     )
 

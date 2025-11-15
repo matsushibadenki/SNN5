@@ -8,6 +8,16 @@
 #   `AdaptiveNeuronSelector` を `BreakthroughTrainer` に統合。
 # - `_run_step` 実行後に `selector.step()` を呼び出し、学習状況（損失）を
 #   セレクタに伝え、ニューロンの動的切り替えを可能にする。
+#
+# 【修正内容 v_health_check_fix_2: 循環インポート (Circular Import) の修正】
+# - health-check 実行時に 'partially initialized module' (circular import)
+#   エラーが発生する問題に対処します。
+# - (L: 28, 29, 44, 45) `AstrocyteNetwork`, `MetaCognitiveSNN`,
+#   `AdaptiveLIFNeuron`, `SNNCore` のトップレベルインポートを削除。
+# - (L: 61, 62) `__init__` の型ヒントを文字列
+#   (Optional['AstrocyteNetwork']) に変更。
+# - (L: 153, 193, 323) `_run_step`
+#   メソッド内部で、クラスが必要な箇所でローカルインポートするよう変更。
 
 import torch
 import torch.nn as nn
@@ -25,12 +35,18 @@ from spikingjelly.activation_based import functional # type: ignore
 from pathlib import Path
 
 from snn_research.training.losses import CombinedLoss, DistillationLoss, SelfSupervisedLoss, PhysicsInformedLoss, PlannerLoss, ProbabilisticEnsembleLoss
-from snn_research.cognitive_architecture.astrocyte_network import AstrocyteNetwork
-from snn_research.cognitive_architecture.meta_cognitive_snn import MetaCognitiveSNN
+# --- ▼ 修正 v_health_check_fix_2: 循環インポート修正 ▼ ---
+# (循環の原因となるトップレベルインポートを削除)
+# from snn_research.cognitive_architecture.astrocyte_network import AstrocyteNetwork
+# from snn_research.cognitive_architecture.meta_cognitive_snn import MetaCognitiveSNN
+# --- ▲ 修正 v_health_check_fix_2 ▲ ---
 from torch.utils.tensorboard import SummaryWriter
 from snn_research.visualization.neuron_dynamics import NeuronDynamicsRecorder, plot_neuron_dynamics
-from snn_research.core.neurons import AdaptiveLIFNeuron
-from snn_research.core.snn_core import SNNCore
+# --- ▼ 修正 v_health_check_fix_2: 循環インポート修正 ▼ ---
+# (循環の原因となるトップレベルインポートを削除)
+# from snn_research.core.neurons import AdaptiveLIFNeuron
+# from snn_research.core.snn_core import SNNCore
+# --- ▲ 修正 v_health_check_fix_2 ▲ ---
 
 from snn_research.bio_models.simple_network import BioSNN
 import copy
@@ -48,8 +64,10 @@ class BreakthroughTrainer:
     def __init__(self, model: nn.Module, optimizer: torch.optim.Optimizer, criterion: nn.Module,
                  scheduler: Optional[torch.optim.lr_scheduler.LRScheduler], device: str,
                  grad_clip_norm: float, rank: int, use_amp: bool, log_dir: str,
-                 astrocyte_network: Optional[AstrocyteNetwork] = None,
-                 meta_cognitive_snn: Optional[MetaCognitiveSNN] = None,
+                 # --- ▼ 修正 v_health_check_fix_2: 循環インポート修正 (型ヒントを文字列化) ▼ ---
+                 astrocyte_network: Optional['AstrocyteNetwork'] = None,
+                 meta_cognitive_snn: Optional['MetaCognitiveSNN'] = None,
+                 # --- ▲ 修正 v_health_check_fix_2 ▲ ---
                  enable_visualization: bool = True,
                  cutoff_threshold: float = 0.95,
                  cutoff_min_steps_ratio: float = 0.25,
@@ -133,6 +151,10 @@ class BreakthroughTrainer:
         
         hooks: List[torch.utils.hooks.RemovableHandle] = []
         if not is_train and self.enable_visualization and self.rank in [-1, 0] and hasattr(self, 'recorder'):
+            # --- ▼ 修正 v_health_check_fix_2: 循環インポート修正 (ローカルインポート) ▼ ---
+            from snn_research.core.neurons import AdaptiveLIFNeuron
+            # --- ▲ 修正 v_health_check_fix_2 ▲ ---
+        
             self.recorder.clear()
             model_to_run = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
             
@@ -169,6 +191,10 @@ class BreakthroughTrainer:
         num_classes: int = 10
         time_steps_val: Any = None
         # --- ▲ 修正 ▲ ---
+
+        # --- ▼ 修正 v_health_check_fix_2: 循環インポート修正 (ローカルインポート) ▼ ---
+        from snn_research.core.snn_core import SNNCore
+        # --- ▲ 修正 v_health_check_fix_2 ▲ ---
 
         if not is_train and not return_full_hiddens_flag:
             B, S = input_ids.shape
@@ -277,6 +303,9 @@ class BreakthroughTrainer:
                         logger.error(f"Error during AdaptiveNeuronSelector step: {e}", exc_info=True)
 
                 if self.meta_cognitive_snn:
+                    # --- ▼ 修正 v_health_check_fix_2: 循環インポート修正 (ローカルインポート) ▼ ---
+                    from snn_research.cognitive_architecture.meta_cognitive_snn import MetaCognitiveSNN
+                    # --- ▲ 修正 v_health_check_fix_2 ▲ ---
                     end_time = time.time()
                     computation_time = end_time - start_time
                     accuracy_val = 0.0

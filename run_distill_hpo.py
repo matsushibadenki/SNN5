@@ -16,9 +16,10 @@
 # - L.171-181 のブロックをコメントアウトし、モデル側の
 #   v_init 自動設定ロジックを復活させる。
 #
-# 【!!! MemoryModule.__init__ got unexpected keyword argument 'type' 修正 v3 (直接削除と再バインド) !!!】
-# - DIコンテナの不変性やキャッシュの問題を回避するため、ニューロン設定オブジェクトを直接取得し、
-#   'type' キーを pop() で削除した後、ConfigurationProviderに再バインドして設定を上書きする。
+# 【!!! MemoryModule.__init__ got unexpected keyword argument 'type' 修正 v4 (モデル設定全体の上書き) !!!】
+# - DIコンテナの不変性やキャッシュの問題を回避するため、モデル設定全体を取得し、
+#   neuronサブ設定から 'type' キーを pop() で削除した後、
+#   親のConfigurationProviderに from_dict() で再バインドすることで設定を強制的に更新する。
 
 import argparse
 import asyncio
@@ -264,35 +265,32 @@ async def main() -> None:
     # DIコンテナから必要なコンポーネントを正しい順序で取得・構築
     device = container.device()
 
-    # --- ▼▼▼ 【エラー修正 (MemoryModule.__init__() got an unexpected keyword argument 'type') v3】 ▼▼▼ ---
-    # 既存のニューロン設定を取得し、'type' キーを削除した新しい設定をコンテナに再バインドする。
+    # --- ▼▼▼ 【エラー修正 (MemoryModule.__init__() got an unexpected keyword argument 'type') v4】 ▼▼▼ ---
+    # 既存のモデル設定全体を取得し、neuronサブ設定から 'type' キーを削除した新しい設定をコンテナに再バインドする。
     try:
-        neuron_config_provider = container.config.model.neuron 
-        raw_neuron_config = neuron_config_provider() # DictConfigまたはDictの値を取得
-
-        # 1. DictConfigかDictかを問わず、Pythonのdictに変換して操作可能にする
-        # to_containerはOmegaConfのオブジェクトをPythonのプリミティブに変換する
-        clean_neuron_config = cast(Dict[str, Any], OmegaConf.to_container(raw_neuron_config, resolve=True))
+        # 1. モデル設定全体を ConfigurationProvider から取得
+        model_config_provider = container.config.model 
+        raw_model_config = model_config_provider() # DictConfigまたはDictの値を取得
         
-        # 2. 'type' キーを確実に削除し、削除した値を保持
-        if 'type' in clean_neuron_config:
-            neuron_type = clean_neuron_config.pop('type')
+        # DictConfigかdictかを問わず、Pythonのdictに変換して操作可能にする
+        clean_model_config = cast(Dict[str, Any], OmegaConf.to_container(raw_model_config, resolve=True))
+        
+        # 2. 'neuron' サブ設定の 'type' キーを確実に削除
+        if 'neuron' in clean_model_config and 'type' in clean_model_config['neuron']:
+            neuron_type = clean_model_config['neuron'].pop('type')
             
-            # 3. 修正された辞書でコンテナの設定を上書き
-            # ConfigurationProvider.from_value() でクリーンな辞書を再バインドする
-            neuron_config_provider.from_value(clean_neuron_config) 
-            print(f"  - 【DEBUG FIX v3】 Removed neuron type '{neuron_type}' key and forcefully re-bound model.neuron config.")
+            # 3. 修正された辞書でコンテナの設定を上書き (model全体を from_dict で上書き)
+            model_config_provider.from_dict(clean_model_config) 
+            print(f"  - 【DEBUG FIX v4】 Removed neuron type '{neuron_type}' key from sub-config and forcefully re-bound model config.")
             
         else:
-             print(f"  - 【DEBUG INFO v3】 'type' key not found in model.neuron config. Skipping removal.")
+             print(f"  - 【DEBUG INFO v4】 'type' key not found in model.neuron config. Skipping removal.")
              
     except Exception as e:
-        # どの設定を取得しようとしたかログに出す
-        print(f"Warning: Failed to clean 'type' key from neuron config before model instantiation (v3): {e}")
-    # --- ▲▲▲ 【エラー修正 v3】 ▲▲▲ ---
-
+        print(f"Warning: Failed to clean 'type' key from neuron config before model instantiation (v4): {e}")
+    # --- ▲▲▲ 【エラー修正 v4】 ▲▲▲ ---
+    
     # ssn_core.py 側で vocab_size を処理するように修正したため、ここは変更不要
-    # HPO実行時にこの行でエラーが発生する。
     student_model = container.snn_model(vocab_size=10).to(device)
     
     # --- ▼▼▼ 【!!! HPO修正 (v16): aggressive_init は *無効* のまま !!!】 ▼▼▼ ---

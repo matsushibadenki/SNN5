@@ -1,9 +1,14 @@
 # ファイルパス: snn_research/core/neurons/__init__.py
 # Title: SNNニューロンモデル定義
 #
-# 【エラー修正 v16: SyntaxError 解消 (Method Definition Error)】
-# - SyntaxError: invalid syntax (def __init__) を修正するため、フォールバッククラス定義を標準ブロック構文に修正。
-# - これにより、AdaptiveLIFNeuronのTypeError回避ロジックが適切に機能することが期待される。
+# 機能の説明: SNNニューロンモデルクラス（LIF、DualThresholdなど）を定義およびインポートし、
+# ニューロンタイプ名（文字列）とクラスをマッピングするレジストリ(NEURON_REGISTRY)を提供します。
+# オプションのニューロンモデルについては、ModuleNotFoundError発生時にダミークラスを定義することで、
+# プログラム全体の実行を継続できるようにします。
+#
+# 【修正内容 v17: SyntaxErrorと冗長性の解消】
+# - 後半の冗長かつSyntaxErrorを引き起こすコンパクトなダミークラス定義ブロックを削除しました。
+# - 前半の「SyntaxError修正済」のブロックのみを保持し、ニューロンクラスの安全な定義を統一しました。
 
 from typing import Optional, Tuple, Any, List, cast, Dict, Type, Union 
 import torch
@@ -14,13 +19,14 @@ from spikingjelly.activation_based import surrogate, base # type: ignore[import-
 import logging 
 import inspect 
 
-# --- ▼▼▼ 【修正 v16: 安全なインポートとダミー定義 (SyntaxError修正済)】 ▼▼▼ ---
-# 存在するモジュールをインポート
+# --- ▼▼▼ コアニューロンのインポート ▼▼▼ ---
+# 存在するモジュールをインポート (これらのモジュールが存在しない場合は、ModuleNotFoundErrorが発生し、
+# プログラムの動作が停止する可能性があります。ただし、レジストリの目的から、コアニューロンとして扱います。)
 from .adaptive_lif_neuron import AdaptiveLIFNeuron
 from .bif_neuron import BistableIFNeuron
 from .probabilistic_lif_neuron import ProbabilisticLIFNeuron 
 
-# 欠損している可能性のあるモジュールを捕捉し、ダミークラスを定義
+# 欠損している可能性のあるモジュールを捕捉し、安全なブロック構文でダミークラスを定義
 try: 
     from .izhikevich_neuron import IzhikevichNeuron 
 except ModuleNotFoundError: 
@@ -48,7 +54,7 @@ except ModuleNotFoundError:
     class ScaleAndFireNeuron(base.MemoryModule): 
         def __init__(self, **kwargs): 
             super().__init__()
-# --- ▲▲▲ 【修正 v16】 ▲▲▲ ---
+# --- ▲▲▲ コアニューロンのインポート ▲▲▲ ---
 
 
 logger = logging.getLogger(__name__)
@@ -169,35 +175,7 @@ class DualThresholdNeuron(base.MemoryModule):
         return spike, self.mem
 
 
-# NEURON_REGISTRY用のクラス名再定義 (snn_core.pyがAdaptiveLIFNeuron等をインポートできるようにする)
-# 欠損している可能性のあるクラスの定義を明示的に再定義
-try:
-    from .adaptive_lif_neuron import AdaptiveLIFNeuron
-except ModuleNotFoundError:
-    class AdaptiveLIFNeuron(base.MemoryModule): # Fallback
-         def __init__(self, **kwargs): super().__init__()
-try:
-    from .probabilistic_lif_neuron import ProbabilisticLIFNeuron
-except ModuleNotFoundError:
-    class ProbabilisticLIFNeuron(base.MemoryModule): # Fallback
-         def __init__(self, **kwargs): super().__init__()
-
-# --- ダミークラスの定義 (ImportErrorを回避するために必要) ---
-# ModuleNotFoundErrorを回避するため、クラス定義が存在しない場合はダミークラスを使用します。
-# IzhikevichNeuron, GLIFNeuron, TC_LIF, ScaleAndFireNeuron のクラス定義が欠損していると仮定します。
-try: from .izhikevich_neuron import IzhikevichNeuron 
-except ModuleNotFoundError: 
-    class IzhikevichNeuron(base.MemoryModule): def __init__(self, **kwargs): super().__init__()
-try: from .glif_neuron import GLIFNeuron 
-except ModuleNotFoundError: 
-    class GLIFNeuron(base.MemoryModule): def __init__(self, **kwargs): super().__init__()
-try: from .tc_lif import TC_LIF 
-except ModuleNotFoundError: 
-    class TC_LIF(base.MemoryModule): def __init__(self, **kwargs): super().__init__()
-try: from .scale_and_fire_neuron import ScaleAndFireNeuron 
-except ModuleNotFoundError: 
-    class ScaleAndFireNeuron(base.MemoryModule): def __init__(self, **kwargs): super().__init__()
-# ----------------------------------------------------
+# (冗長でSyntaxErrorの原因となる、後半のクラス定義ブロックは削除しました)
 
 
 __all__ = [

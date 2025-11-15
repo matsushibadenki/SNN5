@@ -6,6 +6,12 @@
 # オプションのニューロンモデルについては、ModuleNotFoundError発生時にダミークラスを定義することで、
 # プログラム全体の実行を継続できるようにします。
 #
+# 【修正内容 v20: TypeError (missing 'features') の修正】
+# - get_neuron_by_name関数で 'lif' (AdaptiveLIFNeuron) を処理する際、
+#   必須パラメータである 'features' を keys_to_purge リストから削除しました。
+#   これにより、AdaptiveLIFNeuron の初期化時に 'features' が正しく渡され、
+#   'missing 1 required positional argument: 'features'' エラーが解消されます。
+#
 # 【修正内容 v19: UnboundLocalErrorの解消】
 # - get_neuron_by_name関数のTypeError例外処理ブロック内にある冗長な「import inspect」を削除しました。
 #   これにより、グローバルスコープでインポートされたinspectモジュールが正しく使用され、
@@ -283,7 +289,12 @@ def get_neuron_by_name(name: str, params: Dict[str, Any]) -> base.MemoryModule:
     if name_lower == 'lif':
         # AdaptiveLIFNeuron (MemoryModule) のコンストラクタは引数を取らない
         # ログに登場する残りの引数を確実に削除。
-        keys_to_purge = ['v_init', 'features', 'bias_init', 'v_threshold', 'threshold_decay', 'threshold_step', 'bias'] 
+        
+        # --- ▼▼▼ 【!!! エラー修正 v20 !!!】 ▼▼▼
+        # 'features' は AdaptiveLIFNeuron に必須のため、パージリストから削除
+        keys_to_purge = ['v_init', 'bias_init', 'v_threshold', 'threshold_decay', 'threshold_step', 'bias'] 
+        # --- ▲▲▲ 【!!! エラー修正 v20 !!!】 ▲▲▲
+        
         temp_filtered_params = filtered_params.copy()
         for k in keys_to_purge:
              temp_filtered_params.pop(k, None)

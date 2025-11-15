@@ -44,3 +44,4 @@ optuna
 langchain-huggingface
 faiss-cpu
 tensorboard
+googlesearch-python

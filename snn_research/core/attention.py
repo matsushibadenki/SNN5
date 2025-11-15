@@ -36,6 +36,14 @@
 # 修正 (v_hpo_fix_oom_v2):
 # - OOMエラー (Trial 177) を解消するため、SpikeDrivenSelfAttention.forward (L168)
 #   から内部の time_steps ループを削除し、単一タイムステップの処理に変更。
+#
+# 修正 (v18 - HPO沈黙バグ修正):
+# - HPO (Trial 873等) で spike_rate=0 が続く原因を特定。
+# - L108 の lif_params フィルタが 'bias_init' と 'v_init' を
+#   除外していたため、SDSA内部の Q/K/V ニューロンが
+#   強制バイアスを受け取れず沈黙していた。
+# - フィルタに 'bias_init' と 'v_init' を追加。
+#
 
 import torch
 import torch.nn as nn
@@ -101,9 +109,14 @@ class SpikeDrivenSelfAttention(base.MemoryModule):
         self.to_v = nn.Linear(dim, dim)
 
         # スパイク生成ニューロン
-        lif_params = {k: v for k, v in neuron_config.items() if k in ['tau_mem', 'base_threshold', 'adaptation_strength', 'target_spike_rate', 'noise_intensity', 'threshold_decay', 'threshold_step']}
+        lif_params = {k: v for k, v in neuron_config.items() if k in [
+            'tau_mem', 'base_threshold', 'adaptation_strength', 'target_spike_rate', 
+            'noise_intensity', 'threshold_decay', 'threshold_step', 
+            'bias_init', 'v_init'
+        ]}
+        # --- ▲▲▲ 修正 (v18) ▲▲▲ ---
         lif_params['base_threshold'] = neuron_config.get("sdsa_threshold", lif_params.get('base_threshold', 1.0))
-
+        
         # --- ▼ 修正: 型キャストをエイリアス名 (LIFNeuron) に変更 ▼ ---
         self.lif_q = cast(LIFNeuron, LIFNeuron(features=dim, **lif_params))
         self.lif_k = cast(LIFNeuron, LIFNeuron(features=dim, **lif_params))

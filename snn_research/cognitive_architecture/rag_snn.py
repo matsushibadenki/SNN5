@@ -7,6 +7,12 @@
 # --- 修正 (v1) ---
 # ModuleNotFoundError: No module named 'langchain.text_splitter' を解消するため、
 # langchain のバージョンアップに対応し、インポート元を 'langchain_text_splitters' に変更。
+#
+# --- 修正 (v2 - mypy) ---
+# [attr-defined] エラーを解消するため、
+# symbol_grounding.py, causal_inference_engine.py, memory.py から
+# 呼び出される `add_relationship` と `add_causal_relationship` の
+# スタブメソッドを追加。
 
 import faiss # type: ignore[import-untyped]
 import numpy as np
@@ -145,6 +151,34 @@ class RAGSystem:
         self.vector_store.add(chunk_texts, embeddings, chunk_metadatas)
         logger.info(f"Added {len(chunk_texts)} chunks to VectorStore.")
 
+    # --- ▼ mypy [attr-defined] 修正 ▼ ---
+    
+    def add_relationship(self, source_concept: str, relation: str, target_concept: str) -> None:
+        """
+        (スタブ) 2つの概念間にセマンティックな関係性を追加します。
+        [attr-defined] エラーを解消するために追加。
+        """
+        # 本来はナレッジグラフに (source, relation, target) を追加する
+        logger.info(f"[RAG-STUB] Adding relationship: ({source_concept}) -[{relation}]-> ({target_concept})")
+        
+        # 簡易的にVectorStoreにテキストとして追加
+        relationship_text = f"Relationship: {source_concept} {relation} {target_concept}."
+        metadata: Dict[str, Any] = {"source": source_concept, "relation": relation, "target": target_concept, "type": "relationship"}
+        self.add_documents([relationship_text], [metadata])
+
+    def add_causal_relationship(self, cause: str, effect: str, condition: str) -> None:
+        """
+        (スタブ) 因果関係をナレッジグラフに追加します。
+        [attr-defined] エラーを解消するために追加。
+        """
+        logger.info(f"[RAG-STUB] Adding causal relationship: IF ({condition}), THEN ({cause}) -> ({effect})")
+        
+        causal_text = f"Causal rule: Under condition '{condition}', the event '{cause}' leads to '{effect}'."
+        metadata: Dict[str, Any] = {"type": "causal_rule", "cause": cause, "effect": effect, "condition": condition}
+        self.add_documents([causal_text], [metadata])
+
+    # --- ▲ mypy [attr-defined] 修正 ▲ ---
+
     def search(self, query: str, k: int = 5) -> List[Tuple[str, Dict[str, Any], float]]:
         """
         クエリに最も関連するドキュメントチャンクを検索します。
@@ -181,3 +215,5 @@ class RAGSystem:
         """
         self.vector_store.clear()
         logger.info("RAG system (VectorStore) cleared.")
+
+}

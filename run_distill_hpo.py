@@ -8,6 +8,13 @@
 # - bias=0.1 でも強すぎたと判断し、強制バイアスを 0.01 に引き下げる。
 # - v_init=0.0 の強制は v15 から維持する。
 #
+# 【!!! スパイク消滅 (spike_rate=0) 修正 v2 !!!】
+# - v15 で追加された L.171-181 の「v_init=0.0 の強制」が、
+#   spiking_transformer_v2.py (L.49-57) の
+#   「v_init を v_threshold * 0.999 (0.4995) に設定する」
+#   ロジックを無効化していたことが原因と特定。
+# - L.171-181 のブロックをコメントアウトし、モデル側の
+#   v_init 自動設定ロジックを復活させる。
 
 import argparse
 import asyncio
@@ -195,18 +202,20 @@ async def main() -> None:
     # except Exception as e:
     #     print(f"Warning: Could not force v_decay: {e}")
 
-    # --- ▼▼▼ 修正 (v15): v_init=0.0 を明示的に強制 ▼▼▼ ---
-    # 10.5. 【デバッグ復活 (v15)】 v_init を強制的に 0.0 に設定
+    # --- ▼▼▼ 修正 (spike_rate=0 修正 v2): v_init=0.0 の強制を *無効化* ▼▼▼ ---
+    # 10.5. 【デバッグ無効化 (v15)】 v_init を強制的に 0.0 に設定
     # v14 (bias=0.1) が v_init=0.4995 を自動設定するロジックを
     # 無効化するため、v_init は 0.0 に明示的に固定する。
-    try:
-        config_provider_v_init = container.config.model.neuron.v_init
-        DEBUG_V_INIT_VALUE = 0.0 
-        config_provider_v_init.from_value(DEBUG_V_INIT_VALUE)
-        print(f"  - 【DEBUG OVERRIDE (v15)】 Forced v_init to: {DEBUG_V_INIT_VALUE}")
-    except Exception as e:
-        print(f"Warning: Could not force v_init: {e}")
-    # --- ▲▲▲ 修正 (v15) ▲▲▲ ---
+    # try:
+    #     config_provider_v_init = container.config.model.neuron.v_init
+    #     DEBUG_V_INIT_VALUE = 0.0 
+    #     config_provider_v_init.from_value(DEBUG_V_INIT_VALUE)
+    #     print(f"  - 【DEBUG OVERRIDE (v15)】 Forced v_init to: {DEBUG_V_INIT_VALUE}")
+    # except Exception as e:
+    #     print(f"Warning: Could not force v_init: {e}")
+    print(f"  - 【INFO (spike_rate=0 fix v2)】 'v_init=0.0' override is DISABLED.")
+    print(f"  - 【INFO (spike_rate=0 fix v2)】 Model will use internal logic (bias -> v_init=0.4995).")
+    # --- ▲▲▲ 修正 (spike_rate=0 修正 v2) ▲▲▲ ---
 
     # 11. 【デバッグ復活】 bias を強制的に 0.01 に設定 (ニューロン層バイアス)
     try:

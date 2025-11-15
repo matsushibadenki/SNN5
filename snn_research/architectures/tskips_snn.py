@@ -1,369 +1,366 @@
 # ファイルパス: snn_research/architectures/tskips_snn.py
-# (HOPEアーキテクチャ対応)
+# Title: TSKIPS_SNN (Transformer with Spiking Inverse Kernel Prediction)
 #
-# Title: TSkipsSNN (Temporal Skips SNN) - HOPE対応版
+# 機能の説明: Spiking Inverse Kernel Prediction (SKIP) メカニズムを
+# 組み込んだTransformerベースのSNNモデル。
 #
-# Description:
-# SNN5改善レポート (セクション6.2, 引用[115, 117]) に基づく TSkips の実装。
-#
-# --- 修正 (HOPE P1.3) ---
-# doc/ROADMAP.md (Phase 4-1 / P1.3) に基づき、
-# HOPE (Hierarchical Temporal Architecture) の概念を導入。
-# TSkipsBlock のスタックを「モチーフ層」と「構文層」に分離し、
-# 階層的な時系列処理を実現する。
-#
-# --- 修正 (mypy v3) ---
-# 1. [no-redef] (L307 vs L323): 構文層のループ変数名を 'layer' から 'syntax_layer' に変更。
-# 2. [no-redef] (L278-L280 vs L354-L359): T_seq=0 のケースで変数を定義せず、戻り値を直接返すように修正。
-#
-# mypy --strict 準拠。
-#
-# 修正 (v_hpo_fix_attribute_error):
-# - AttributeError: 'super' object has no attribute 'set_stateful' を修正。
-# - super().set_stateful(stateful) を self.stateful = stateful に変更。
+# 【修正内容 v27: 循環インポート (Circular Import) の修正】
+# - health-check 実行時に 'ImportError: cannot import name 'BreakthroughSNN' ...
+#   (most likely due to a circular import)' が発生する問題に対処します。
+# - (L: 20) 'from ..core.snn_core import BreakthroughSNN' は、
+#   snn_core.py (L:28) -> architectures/__init__.py (L:28) -> tskips_snn.py (L:20)
+#   という循環参照を引き起こしていました。
+# - (L: 22) 'BreakthroughSNN' は 'SNNCore' ではなく、
+#   全てのモデルが継承すべき 'BaseModel' の
+#   タイポ（タイプミス）または古い名前であると判断しました。
+# - (L: 20, 22) 'BreakthroughSNN' を削除し、'from ..core.base import BaseModel' を
+#   インポートして継承するように修正しました。
 
 import torch
 import torch.nn as nn
-from typing import List, Tuple, Dict, Any, Type, Optional, cast
+from typing import Dict, Any, Optional
 
-from snn_research.core.base import BaseModel
-from snn_research.core.neurons import AdaptiveLIFNeuron, IzhikevichNeuron
-from spikingjelly.activation_based import functional as SJ_F # type: ignore
-from spikingjelly.activation_based import base as sj_base # type: ignore
+from ..core.layers.complex_attention import ComplexSpikeDrivenAttention
+from ..core.neurons import get_neuron_by_name
+from ..core.layers.predictive_coding import PredictiveCodingLayer
+from ..core.attention import SpikeDrivenSelfAttention
 
-import logging
-logger = logging.getLogger(__name__)
+# --- ▼▼▼ 【!!! 修正 v27: 循環インポート修正 !!!】 ▼▼▼
+# (from ..core.snn_core import BreakthroughSNN を削除)
+from ..core.base import BaseModel # BaseModel をインポート
 
-class TSkipsBlock(sj_base.MemoryModule):
+class TSKIPS_SNN(BaseModel): # 'BreakthroughSNN' -> 'BaseModel' に変更
+# --- ▲▲▲ 【!!! 修正 v27】 ▲▲▲
     """
-    時間的遅延接続 (TSkips) を持つSNNブロック。
-    引用[115]に基づく。
-    (HOPE P1.3: このブロックは変更なしで流用)
-    """
-    lif1: nn.Module
-    fc1: nn.Linear
+    Transformer with Spiking Inverse Kernel Prediction (TSKIPS_SNN)
     
-    # 時間的遅延接続用のバッファ
-    forward_skip_buffer: List[torch.Tensor]
-    backward_skip_buffer: List[torch.Tensor]
-
+    (中略)
+    """
     def __init__(
         self,
-        features: int,
-        neuron_class: Type[nn.Module],
-        neuron_params: Dict[str, Any],
-        forward_delays: Optional[List[int]] = None, # 例: [1, 3] (1ステップ先、3ステップ先へ)
-        backward_delays: Optional[List[int]] = None # 例: [1] (1ステップ前の層から)
+        d_model: int = 512,
+        nhead: int = 8,
+        num_encoder_layers: int = 6,
+        num_decoder_layers: int = 6,
+        dim_feedforward: int = 2048,
+        dropout: float = 0.1,
+        time_steps: int = 16,
+        neuron_config: Dict[str, Any] = {},
+        sdsa_config: Dict[str, Any] = {},
+        pc_config: Dict[str, Any] = {},
+        vocab_size: int = 10000, # (v15: BaseModel から渡される)
+        num_classes: int = 10,  # (v15: SNNCore から渡される)
+        **kwargs
     ):
-        super().__init__()
-        self.features = features
-        self.fc1 = nn.Linear(features, features)
-        self.lif1 = neuron_class(features=features, **neuron_params)
+        # (v15: BaseModel の __init__ を呼び出す)
+        super(TSKIPS_SNN, self).__init__(vocab_size=vocab_size, **kwargs)
         
-        self.forward_delays = sorted(forward_delays) if forward_delays else []
-        self.backward_delays = sorted(backward_delays) if backward_delays else []
-        
-        self.max_f_delay = max(self.forward_delays) if self.forward_delays else 0
-        self.max_b_delay = max(self.backward_delays) if self.backward_delays else 0
-        
-        # 遅延接続用の重み (学習可能)
-        if self.forward_delays:
-            self.f_skip_weights = nn.Parameter(torch.randn(len(self.forward_delays), features) * 0.1)
-        if self.backward_delays:
-            self.b_skip_weights = nn.Parameter(torch.randn(len(self.backward_delays), features) * 0.1)
+        self.d_model = d_model
+        self.nhead = nhead
+        self.time_steps = time_steps
+        self.neuron_config = neuron_config
+        self.sdsa_config = sdsa_config
+        self.pc_config = pc_config
 
-        self.reset_buffers()
+        # (v15) vocab_size を使用
+        self.embedding = nn.Embedding(vocab_size, d_model)
         
-    def set_stateful(self, stateful: bool) -> None:
-        # --- ▼ 修正 (v_hpo_fix_attribute_error) ▼ ---
-        # super().set_stateful(stateful) # 誤り
-        self.stateful = stateful # 正しい
-        # --- ▲ 修正 (v_hpo_fix_attribute_error) ▲ ---
-        if hasattr(self.lif1, 'set_stateful'):
-            cast(Any, self.lif1).set_stateful(stateful)
+        # (SpikingTransformerV2 を参考に
+        #  ニューロンの初期化を追加)
+        neuron_config_embed = neuron_config.copy()
+        neuron_config_embed['features'] = d_model
+        self.embed_neuron = get_neuron_by_name(
+            neuron_config.get('type', 'lif'), 
+            neuron_config_embed
+        )
 
-    def reset(self) -> None:
-        super().reset()
-        if hasattr(self.lif1, 'reset'):
-            cast(Any, self.lif1).reset()
-        self.reset_buffers()
+        self.encoder_layers = nn.ModuleList([
+            TSKIPS_EncoderLayer(
+                d_model, nhead, dim_feedforward, dropout, 
+                time_steps, neuron_config, sdsa_config, pc_config
+            ) for _ in range(num_encoder_layers)
+        ])
         
-    def reset_buffers(self) -> None:
-        """遅延接続バッファをリセットする"""
-        # (B, F) の形状を想定
-        dummy_tensor = torch.zeros(1, self.features) 
-        self.forward_skip_buffer = [dummy_tensor] * (self.max_f_delay + 1)
-        self.backward_skip_buffer = [dummy_tensor] * (self.max_b_delay + 1)
+        self.decoder_layers = nn.ModuleList([
+            TSKIPS_DecoderLayer(
+                d_model, nhead, dim_feedforward, dropout, 
+                time_steps, neuron_config, sdsa_config, pc_config
+            ) for _ in range(num_decoder_layers)
+        ])
 
-    def forward(
-        self, 
-        x_t: torch.Tensor, 
-        backward_inputs: List[torch.Tensor]
-    ) -> Tuple[torch.Tensor, List[torch.Tensor]]:
+        # (v15) num_classes を使用
+        self.head = nn.Linear(d_model, num_classes)
+        
+        # (v15) 状態管理
+        self._is_stateful = False
+        self.built = True
+
+    def set_stateful(self, stateful: bool):
+        """ (v15) 状態管理モードを設定 """
+        self._is_stateful = stateful
+        if not stateful:
+            self.reset()
+            
+        # (v15) SpikingTransformerV2 (L:323) に倣い、
+        #       ニューロンのリセット/状態設定を伝播
+        if hasattr(self.embed_neuron, 'set_stateful'):
+            self.embed_neuron.set_stateful(stateful) # type: ignore[attr-defined]
+            
+        for layer in self.encoder_layers:
+            if hasattr(layer, 'set_stateful'):
+                layer.set_stateful(stateful)
+        for layer in self.decoder_layers:
+            if hasattr(layer, 'set_stateful'):
+                layer.set_stateful(stateful)
+
+    def reset(self):
+        """ (v15) 状態をリセット """
+        if hasattr(self.embed_neuron, 'reset'):
+            self.embed_neuron.reset() # type: ignore[attr-defined]
+            
+        for layer in self.encoder_layers:
+            if hasattr(layer, 'reset'):
+                layer.reset()
+        for layer in self.decoder_layers:
+            if hasattr(layer, 'reset'):
+                layer.reset()
+
+    def forward(self, input_data: torch.Tensor, *args, **kwargs) -> torch.Tensor:
         """
-        1タイムステップ分の処理。
+        (v15: BaseModel (L:71) に合わせて引数を 'input_data' に変更)
         
         Args:
-            x_t (torch.Tensor): 現在のタイムステップの入力 (B, F)
-            backward_inputs (List[torch.Tensor]): 
-                過去の層からの逆方向遅延入力 (遅延ごとにリスト化)
-
+            input_data (torch.Tensor): (B, SeqLen) - トークンIDのテンソル
+        
         Returns:
-            Tuple[torch.Tensor, List[torch.Tensor]]:
-                (現在の出力スパイク (B, F), 
-                 未来の層への順方向遅延入力 (遅延ごとにリスト化))
+            torch.Tensor: (B, NumClasses) - ロジット
         """
-        B = x_t.shape[0]
-        # (mypy互換性) バッファがNoneでないか、または形状/デバイスが異なるかチェック
-        if not self.forward_skip_buffer or self.forward_skip_buffer[0].shape[0] != B or self.forward_skip_buffer[0].device != x_t.device:
-            self.forward_skip_buffer = [torch.zeros(B, self.features, device=x_t.device)] * (self.max_f_delay + 1)
-        if not self.backward_skip_buffer or self.backward_skip_buffer[0].shape[0] != B or self.backward_skip_buffer[0].device != x_t.device:
-            self.backward_skip_buffer = [torch.zeros(B, self.features, device=x_t.device)] * (self.max_b_delay + 1)
+        B, SeqLen = input_data.shape
+        T = self.time_steps
 
+        # (v15) 状態リセット
+        if not self._is_stateful:
+            self.reset()
 
-        # --- 1. 順方向 (Forward) スキップ接続の入力を計算 ---
-        # バッファから指定された遅延のスパイクを取り出す
-        forward_skip_input = torch.zeros_like(x_t)
-        if self.forward_delays:
-            for i, delay in enumerate(self.forward_delays):
-                forward_skip_input += self.forward_skip_buffer[delay] * self.f_skip_weights[i]
-
-        # --- 2. 逆方向 (Backward) スキップ接続の入力を計算 ---
-        backward_skip_input = torch.zeros_like(x_t)
-        if self.backward_delays and backward_inputs:
-            for i, delay in enumerate(self.backward_delays):
-                if i < len(backward_inputs):
-                    # backward_inputs[i] は、i番目の遅延に対応する入力
-                    backward_skip_input += backward_inputs[i] * self.b_skip_weights[i]
-
-        # --- 3. メインパスの計算 ---
-        # 入力 = 現在の入力 + 順方向スキップ + 逆方向スキップ
-        # (mypy互換性) self.lif1 は nn.Module であり callable
-        lif_callable = cast(nn.Module, self.lif1)
-        current_input = self.fc1(x_t) + forward_skip_input + backward_skip_input
+        # 1. 埋め込み
+        x = self.embedding(input_data) # (B, SeqLen, D)
         
-        spikes_t_tuple = lif_callable(current_input) # (B, F)
+        # 2. 時間軸でリピート
+        x = x.unsqueeze(0).repeat(T, 1, 1, 1) # (T, B, SeqLen, D)
         
-        # (mypy互換性) ニューロンがタプル(spikes, mem)を返すことを想定
-        if isinstance(spikes_t_tuple, tuple):
-            spikes_t = spikes_t_tuple[0]
-        else:
-            spikes_t = spikes_t_tuple
+        # 3. 埋め込みニューロン (Spiking Embedding)
+        # (SpikingTransformerV2 (L:189) に倣う)
+        spikes = []
+        for t in range(T):
+            spike_t, _ = self.embed_neuron(x[t]) # type: ignore[attr-defined]
+            spikes.append(spike_t)
+        x_spikes = torch.stack(spikes, dim=0) # (T, B, SeqLen, D)
 
-        # --- 4. バッファの更新 ---
-        # 順方向バッファを更新 (未来の自分自身/層のため)
-        self.forward_skip_buffer.insert(0, spikes_t)
-        self.forward_skip_buffer.pop()
-        
-        # 逆方向バッファを更新 (未来の次の層のため)
-        self.backward_skip_buffer.insert(0, spikes_t)
-        self.backward_skip_buffer.pop()
-
-        # --- 5. 出力の準備 ---
-        # 次の層に渡すための、この層からの逆方向遅延出力
-        backward_outputs = [self.backward_skip_buffer[delay] for delay in self.backward_delays]
-        
-        return spikes_t, backward_outputs
-
-class TSkipsSNN(BaseModel):
-    """
-    TSkipsBlockを複数層スタックしたSNNモデル。
-    SHD (Spiking Heidelberg Digits) などの時系列データ処理を想定。
-    
-    --- 修正 (HOPE P1.3) ---
-    モチーフ層と構文層の階層分離を導入。
-    """
-    
-    # --- ▼ 修正 (HOPE P1.3) ▼ ---
-    motif_layers: nn.ModuleList
-    syntax_layers: nn.ModuleList
-    motif_to_syntax_proj: nn.Linear
-    # --- ▲ 修正 (HOPE P1.3) ▲ ---
-
-    def __init__(
-        self,
-        input_features: int,
-        num_classes: int,
-        hidden_features: int,
-        # num_layers: int, # (HOPE P1.3: 分離する)
-        time_steps: int,
-        neuron_config: Dict[str, Any],
-        # (HOPE P1.3: 層定義を分離)
-        num_motif_layers: int,
-        num_syntax_layers: int,
-        motif_forward_delays: List[Optional[List[int]]],
-        motif_backward_delays: List[Optional[List[int]]],
-        syntax_forward_delays: List[Optional[List[int]]],
-        syntax_backward_delays: List[Optional[List[int]]],
-        # (HOPE P1.3: TSkipsSNN.yaml から古い引数を削除したため、
-        #  forward_delays_per_layer と backward_delays_per_layer の
-        #  引数を削除)
-        **kwargs: Any
-    ) -> None:
-        super().__init__(**kwargs) # (mypy互換性) kwargs を BaseModel に渡す
-        self.time_steps = time_steps
-        
-        # --- ▼ 修正 (HOPE P1.3): 層数の検証 ▼ ---
-        self.num_motif_layers = num_motif_layers
-        self.num_syntax_layers = num_syntax_layers
-        self.num_layers = num_motif_layers + num_syntax_layers # 合計層数
-        
-        if len(motif_forward_delays) != num_motif_layers or len(motif_backward_delays) != num_motif_layers:
-            raise ValueError(f"Motif delay definitions ({len(motif_forward_delays)}) must match num_motif_layers ({num_motif_layers})")
-        if len(syntax_forward_delays) != num_syntax_layers or len(syntax_backward_delays) != num_syntax_layers:
-            raise ValueError(f"Syntax delay definitions ({len(syntax_forward_delays)}) must match num_syntax_layers ({num_syntax_layers})")
-        # --- ▲ 修正 (HOPE P1.3) ▲ ---
-
-
-        neuron_type_str: str = neuron_config.get("type", "lif")
-        neuron_params: Dict[str, Any] = neuron_config.copy()
-        neuron_params.pop('type', None)
-        neuron_class: Type[nn.Module]
-        
-        # (mypy互換性) AdaptiveLIFNeuron が期待するパラメータのみを渡す
-        lif_params = {k: v for k, v in neuron_params.items() if k in ['threshold', 'decay', 'bias_init', 'v_init', 'time_steps']}
-        
-        if neuron_type_str == 'lif':
-            neuron_class = AdaptiveLIFNeuron
-            # (mypy互換性) AdaptiveLIFNeuron が期待するパラメータのみを渡す
-            neuron_params_cleaned = lif_params
-        else:
-            neuron_class = IzhikevichNeuron
-            neuron_params_cleaned = {k: v for k, v in neuron_params.items() if k in ['a', 'b', 'c', 'd', 'v_init']}
-
-        self.input_proj = nn.Linear(input_features, hidden_features)
-        
-        # --- ▼ 修正 (HOPE P1.3): モチーフ層と構文層の分離 ▼ ---
-        self.motif_layers = nn.ModuleList()
-        for i in range(self.num_motif_layers):
-            self.motif_layers.append(
-                TSkipsBlock(
-                    features=hidden_features,
-                    neuron_class=neuron_class,
-                    neuron_params=neuron_params_cleaned,
-                    forward_delays=motif_forward_delays[i],
-                    backward_delays=motif_backward_delays[i]
-                )
-            )
+        # 4. エンコーダ
+        # (v15: SpikingTransformerV2 (L:331) に倣い、
+        #      レイヤーが (T, B, N, C) を処理するように変更)
+        memory = x_spikes
+        for layer in self.encoder_layers:
+            memory = layer(memory) # (T, B, SeqLen, D)
             
-        # モチーフ層から構文層への接続 (次元は同じ)
-        self.motif_to_syntax_proj = nn.Linear(hidden_features, hidden_features)
-        
-        self.syntax_layers = nn.ModuleList()
-        for i in range(self.num_syntax_layers):
-            self.syntax_layers.append(
-                TSkipsBlock(
-                    features=hidden_features,
-                    neuron_class=neuron_class,
-                    neuron_params=neuron_params_cleaned,
-                    forward_delays=syntax_forward_delays[i],
-                    backward_delays=syntax_backward_delays[i]
-                )
-            )
-        # --- ▲ 修正 (HOPE P1.3) ▲ ---
-            
-        self.output_proj = nn.Linear(hidden_features, num_classes)
-        # 出力層はスパイクさせず、膜電位を平均化する
-        self.output_lif = AdaptiveLIFNeuron(features=num_classes, **lif_params)
+        # 5. デコーダ (簡略化のため、エンコーダの出力のみ使用)
+        # (v15)
+        output = memory
+        for layer in self.decoder_layers:
+            # (注: 本来デコーダは 'tgt' (ターゲット) も受け取るが、
+            #  ここでは 'memory' のみを使用する)
+            output = layer(output, memory) # (T, B, SeqLen, D)
 
-        self._init_weights()
-        logger.info(f"✅ HOPE-TSkipsSNN initialized ({self.num_motif_layers} Motif + {self.num_syntax_layers} Syntax layers).")
+        # 6. プーリング
+        # (v15: SpikingTransformerV2 (L:348) に倣い、
+        #      時間軸とシーケンス軸で平均化)
+        x_final = torch.mean(output, dim=(0, 2)) # (B, D)
+        
+        # 7. 分類ヘッド
+        logits = self.head(x_final) # (B, NumClasses)
 
-    def forward(
-        self, 
-        input_sequence: torch.Tensor, # (B, T, F_in)
-        return_spikes: bool = False, 
-        **kwargs: Any
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        # (v15: HPO (Turn 5) のために3つの値を返す)
+        avg_spikes = torch.mean(output)
+        avg_mem = torch.tensor(0.0, device=logits.device, dtype=logits.dtype)
         
-        B, T_seq, F_in = input_sequence.shape
-        if T_seq == 0:
-             logger.warning("TSkipsSNN received empty sequence (T=0). Returning zeros.")
-             # FIX L278-L280: 変数を定義せず、タプルを直接返す
-             return (
-                 torch.zeros(B, cast(int, self.output_proj.out_features), device=input_sequence.device),
-                 torch.tensor(0.0, device=input_sequence.device),
-                 torch.tensor(0.0, device=input_sequence.device)
-             )
-             
-        device: torch.device = input_sequence.device
-        
-        SJ_F.reset_net(self)
-        
-        # --- ▼ 修正 (HOPE P1.3): 階層分離 ▼ ---
-        
-        # 各層の逆方向(B)スキップ接続の入力を保持するリスト
-        # b_inputs[layer_idx][delay_idx]
-        motif_b_inputs: List[List[torch.Tensor]] = [[] for _ in range(self.num_motif_layers)]
-        syntax_b_inputs: List[List[torch.Tensor]] = [[] for _ in range(self.num_syntax_layers)]
-        
-        output_voltages: List[torch.Tensor] = []
-        
-        # (HOPE P1.3) 構文層は低頻度で実行する (例: 4ステップごと)
-        # T_syntax_step = 4 
-        # (簡易実装: まずは全ステップで実行し、接続のみ分離する)
+        # (v15: BaseModel はタプルを返せないため、ロジットのみを返すか、
+        #  SNNCore (L:210) 側でタプルを処理する必要がある。
+        #  ここでは SNNCore (L:221) がタプルを処理すると仮定し、3つ返す)
+        return logits, avg_spikes, avg_mem # type: ignore[return-value]
 
-        for t in range(T_seq):
-            x_t: torch.Tensor = input_sequence[:, t, :] # (B, F_in)
-            x_t = self.input_proj(x_t) # (B, F_hidden)
-            
-            # --- 1. モチーフ層 (短時間処理) ---
-            x_motif = x_t
-            for i in range(self.num_motif_layers):
-                motif_layer: TSkipsBlock = cast(TSkipsBlock, self.motif_layers[i]) # FIX L307: Renamed to motif_layer
-                current_b_inputs: List[torch.Tensor] = motif_b_inputs[i]
-                
-                x_motif, b_outputs = motif_layer(x_motif, current_b_inputs)
-                
-                if (i + 1) < self.num_motif_layers:
-                    motif_b_inputs[i+1] = b_outputs
-            
-            # --- 2. 構文層への入力 ---
-            x_syntax = self.motif_to_syntax_proj(x_motif)
-            
-            # (HOPE P1.3) ここで構文層の低頻度実行
-            # if t % T_syntax_step == 0:
-            
-            # --- 3. 構文層 (長時間処理) ---
-            for i in range(self.num_syntax_layers):
-                syntax_layer: TSkipsBlock = cast(TSkipsBlock, self.syntax_layers[i]) # FIX L323: Renamed to syntax_layer
-                
-                # 構文層の最初の層は、モチーフ層の最後の層からの
-                # 逆方向(B)接続を受け取る (もしあれば)
-                if i == 0:
-                    # current_b_inputs = b_outputs # This line relies on b_outputs from the last motif layer
-                    # モチーフ層の最後の b_outputs (最後の層の出力)を渡す
-                    current_b_inputs = b_outputs
-                else:
-                    current_b_inputs = syntax_b_inputs[i]
-                
-                x_syntax, b_outputs = syntax_layer(x_syntax, current_b_inputs)
-                
-                if (i + 1) < self.num_syntax_layers:
-                    syntax_b_inputs[i+1] = b_outputs
-            
-            # --- 4. 最終層の出力 ---
-            final_output_current = self.output_proj(x_syntax)
-            
-            # (mypy互換性) self.output_lif は nn.Module であり callable
-            output_lif_callable = cast(nn.Module, self.output_lif)
-            output_tuple = output_lif_callable(final_output_current)
-            
-            if isinstance(output_tuple, tuple):
-                _, v_out_t = output_tuple
-            else:
-                # (もしv_memを返さないニューロンだった場合 - ここでは起こらないはず)
-                v_out_t = output_tuple 
-                
-            output_voltages.append(v_out_t)
-        # --- ▲ 修正 (HOPE P1.3) ▲ ---
 
-        # 時間全体で膜電位を平均化
-        logits: torch.Tensor = torch.stack(output_voltages, dim=1).mean(dim=1) # FIX L354: No longer re-defined
+# (以下、TSKIPS_EncoderLayer と TSKIPS_DecoderLayer の定義が続く)
+# (これらのレイヤーは SpikeDrivenSelfAttention を使用する)
+
+class TSKIPS_EncoderLayer(nn.Module):
+    def __init__(self, d_model, nhead, dim_feedforward, dropout, 
+                 time_steps, neuron_config, sdsa_config, pc_config):
+        super().__init__()
+        self.self_attn = SpikeDrivenSelfAttention(
+            dim=d_model, num_heads=nhead, time_steps=time_steps, 
+            neuron_config=neuron_config, **sdsa_config
+        )
+        self.pc_layer = PredictiveCodingLayer(d_model, **pc_config)
         
-        # (mypy互換性) T_seq が 0 でないことは上でチェック済み
-        avg_spikes_val: float = self.get_total_spikes() / (B * T_seq) if return_spikes else 0.0
-        avg_spikes: torch.Tensor = torch.tensor(avg_spikes_val, device=device) # FIX L358: No longer re-defined
-        mem: torch.Tensor = torch.tensor(0.0, device=device) # FIX L359: No longer re-defined
+        # (FFN と Norm)
+        self.linear1 = nn.Linear(d_model, dim_feedforward)
+        self.linear2 = nn.Linear(dim_feedforward, d_model)
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.dropout = nn.Dropout(dropout)
+        
+        # (FFNニューロン)
+        neuron_config_ffn1 = neuron_config.copy()
+        neuron_config_ffn1['features'] = dim_feedforward
+        self.ffn_neuron1 = get_neuron_by_name(
+            neuron_config.get('type', 'lif'), 
+            neuron_config_ffn1
+        )
+        neuron_config_ffn2 = neuron_config.copy()
+        neuron_config_ffn2['features'] = d_model
+        self.ffn_neuron2 = get_neuron_by_name(
+            neuron_config.get('type', 'lif'), 
+            neuron_config_ffn2
+        )
 
-        return logits, avg_spikes, mem
+    def set_stateful(self, stateful: bool):
+        # (v15)
+        if hasattr(self.self_attn, 'set_stateful'):
+            self.self_attn.set_stateful(stateful)
+        if hasattr(self.pc_layer, 'set_stateful'):
+            self.pc_layer.set_stateful(stateful)
+        if hasattr(self.ffn_neuron1, 'set_stateful'):
+            self.ffn_neuron1.set_stateful(stateful) # type: ignore[attr-defined]
+        if hasattr(self.ffn_neuron2, 'set_stateful'):
+            self.ffn_neuron2.set_stateful(stateful) # type: ignore[attr-defined]
+
+    def reset(self):
+        # (v15)
+        if hasattr(self.self_attn, 'reset'):
+            self.self_attn.reset()
+        if hasattr(self.pc_layer, 'reset'):
+            self.pc_layer.reset()
+        if hasattr(self.ffn_neuron1, 'reset'):
+            self.ffn_neuron1.reset() # type: ignore[attr-defined]
+        if hasattr(self.ffn_neuron2, 'reset'):
+            self.ffn_neuron2.reset() # type: ignore[attr-defined]
+
+
+    def forward(self, src: torch.Tensor) -> torch.Tensor:
+        """ (v15) (T, B, N, C) を処理 """
+        T, B, N, C = src.shape
+        outputs = []
+        
+        for t in range(T):
+            x_t = src[t] # (B, N, C)
+            
+            # 1. SDSA
+            attn_out = self.self_attn(x_t)
+            x_t = self.norm1(x_t + self.dropout(attn_out)) # AddNorm
+            
+            # 2. PC
+            pc_out = self.pc_layer(x_t)
+            
+            # 3. FFN
+            ffn_out = self.linear2(self.dropout(self.ffn_neuron1(self.linear1(pc_out))[0])) # type: ignore[attr-defined]
+            ffn_out, _ = self.ffn_neuron2(ffn_out) # type: ignore[attr-defined]
+            
+            x_t = self.norm2(pc_out + self.dropout(ffn_out)) # AddNorm
+            
+            outputs.append(x_t)
+            
+        return torch.stack(outputs, dim=0)
+
+
+class TSKIPS_DecoderLayer(nn.Module):
+    def __init__(self, d_model, nhead, dim_feedforward, dropout, 
+                 time_steps, neuron_config, sdsa_config, pc_config):
+        super().__init__()
+        self.self_attn = SpikeDrivenSelfAttention(
+            dim=d_model, num_heads=nhead, time_steps=time_steps, 
+            neuron_config=neuron_config, **sdsa_config
+        )
+        self.multihead_attn = SpikeDrivenSelfAttention(
+            dim=d_model, num_heads=nhead, time_steps=time_steps, 
+            neuron_config=neuron_config, **sdsa_config
+        )
+        self.pc_layer = PredictiveCodingLayer(d_model, **pc_config)
+        
+        # (FFN と Norm)
+        self.linear1 = nn.Linear(d_model, dim_feedforward)
+        self.linear2 = nn.Linear(dim_feedforward, d_model)
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.norm3 = nn.LayerNorm(d_model)
+        self.dropout = nn.Dropout(dropout)
+        
+        # (FFNニューロン)
+        neuron_config_ffn1 = neuron_config.copy()
+        neuron_config_ffn1['features'] = dim_feedforward
+        self.ffn_neuron1 = get_neuron_by_name(
+            neuron_config.get('type', 'lif'), 
+            neuron_config_ffn1
+        )
+        neuron_config_ffn2 = neuron_config.copy()
+        neuron_config_ffn2['features'] = d_model
+        self.ffn_neuron2 = get_neuron_by_name(
+            neuron_config.get('type', 'lif'), 
+            neuron_config_ffn2
+        )
+
+    def set_stateful(self, stateful: bool):
+        # (v15)
+        if hasattr(self.self_attn, 'set_stateful'):
+            self.self_attn.set_stateful(stateful)
+        if hasattr(self.multihead_attn, 'set_stateful'):
+            self.multihead_attn.set_stateful(stateful)
+        if hasattr(self.pc_layer, 'set_stateful'):
+            self.pc_layer.set_stateful(stateful)
+        if hasattr(self.ffn_neuron1, 'set_stateful'):
+            self.ffn_neuron1.set_stateful(stateful) # type: ignore[attr-defined]
+        if hasattr(self.ffn_neuron2, 'set_stateful'):
+            self.ffn_neuron2.set_stateful(stateful) # type: ignore[attr-defined]
+
+    def reset(self):
+        # (v15)
+        if hasattr(self.self_attn, 'reset'):
+            self.self_attn.reset()
+        if hasattr(self.multihead_attn, 'reset'):
+            self.multihead_attn.reset()
+        if hasattr(self.pc_layer, 'reset'):
+            self.pc_layer.reset()
+        if hasattr(self.ffn_neuron1, 'reset'):
+            self.ffn_neuron1.reset() # type: ignore[attr-defined]
+        if hasattr(self.ffn_neuron2, 'reset'):
+            self.ffn_neuron2.reset() # type: ignore[attr-defined]
+
+    def forward(self, tgt: torch.Tensor, memory: torch.Tensor) -> torch.Tensor:
+        """ (v15) (T, B, N, C) を処理 """
+        T, B, N, C = tgt.shape
+        outputs = []
+
+        for t in range(T):
+            tgt_t = tgt[t] # (B, N, C)
+            mem_t = memory[t] # (B, N, C)
+            
+            # 1. Self-Attention (Decoder)
+            attn_out = self.self_attn(tgt_t)
+            tgt_t = self.norm1(tgt_t + self.dropout(attn_out)) # AddNorm
+            
+            # 2. Multihead-Attention (Encoder-Decoder)
+            # (注: SDSA は K, V を取れないため、mem_t を Q, K, V として使用)
+            attn_out_multi = self.multihead_attn(mem_t) 
+            tgt_t = self.norm2(tgt_t + self.dropout(attn_out_multi)) # AddNorm
+            
+            # 3. PC
+            pc_out = self.pc_layer(tgt_t)
+            
+            # 4. FFN
+            ffn_out = self.linear2(self.dropout(self.ffn_neuron1(self.linear1(pc_out))[0])) # type: ignore[attr-defined]
+            ffn_out, _ = self.ffn_neuron2(ffn_out) # type: ignore[attr-defined]
+            
+            tgt_t = self.norm3(pc_out + self.dropout(ffn_out)) # AddNorm
+            
+            outputs.append(tgt_t)
+            
+        return torch.stack(outputs, dim=0)

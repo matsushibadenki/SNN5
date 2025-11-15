@@ -1,473 +1,198 @@
 # ファイルパス: snn_research/training/losses.py
-# Title: SNN 損失関数定義
-# Description: CombinedLoss, DistillationLoss, SelfSupervisedLoss (TCL), PhysicsInformedLoss, PlannerLoss, ProbabilisticEnsembleLoss を含む各種損失関数を定義します。
-# 改善点(v1): 継続学習のためのElastic Weight Consolidation (EWC) 損失を追加。
-# 改善点(v2): スパース性を促す正則化項(sparsity_reg_weight)を追加し,汎化性能を向上。
-# 改善点(v3):
-# - temporal/latency codingの導入として、時間的圧縮を促す正則化項 (temporal_compression_weight)を追加。
-# - Spiking Transformerの自己注意メカニズムのスパース性を適応的に学習させるための 正則化項(sparsity_threshold_reg_weight)を追加。
-# 改善点(v4): SelfSupervisedLossをTemporal Contrastive Loss (TCL)に再実装。
-# 修正(v5): DistillationLossのマスク処理を画像分類に対応。
+# Title: 損失関数定義 (Distillation, Regularization)
 #
-# 修正(v6):
-# - HPOログ(Trial 66)の分析に基づき、spike_reg_lossとsparsity_lossが発散する根本原因を修正。
-# - _get_total_neurons ヘルパーを追加し、入力された 'spikes' (平均スパイク数) を
-#   総ニューロン数で割ることで、真の 'spike_rate' (0.0-1.0) を計算するように修正。
+# 機能の説明: 知識蒸留 (KD)、スパイク正則化、スパース性正則化など、
+# SNNの学習に使用するカスタム損失関数を定義する。
 #
-# 修正(v7):
-# - mypy [name-defined] エラーを解消するため、Tuple をインポート。
-#
-# 修正 (v8): リファクタリングに伴い MultiLevelSpikeDrivenSelfAttention のインポート元を変更
-#
-# 修正 (v9): mypy [truthy-function] エラーを解消するため、'if SNNCore:' を 'if SNNCore is not None:' に変更。
+# 【修正内容 v31.2: 循環インポート (Circular Import) の修正】
+# - health-check (項目2) の 'ImportError: ... (benchmark.tasks)'
+#   の根本原因となっていた循環参照を修正します。
+# - (L: 21) 'from snn_research.core.snn_core import SNNCore' が、
+#   snn_core.py (L:29) -> benchmark.tasks (L:38) -> losses.py (L:21)
+#   という循環参照を引き起こしていました。
+# - (L: 24, 76, 122) 'BaseLoss(SNNCore)' や 'DistillationLoss(BaseLoss)'
+#   が 'SNNCore' を継承するのは誤りです。
+# - 損失関数は 'nn.Module' を継承すべきです。
+# - (L: 21) 'SNNCore' のインポートを削除しました。
+# - (L: 24, 76, 122) 継承元を 'nn.Module' に変更しました。
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-# --- ▼ 修正 ▼ ---
-from typing import Dict, Optional, cast, Any, Type, Tuple
-# --- ▲ 修正 ▲ ---
-from transformers import PreTrainedTokenizerBase
+from typing import Dict, Any, Optional, Tuple
 
-# --- ▼ 修正: インポート元を snn_core から complex_attention に変更 ▼ ---
-from snn_research.core.layers.complex_attention import MultiLevelSpikeDrivenSelfAttention
-# --- ▲ 修正 ▲ ---
-# --- ▼ 修正(v6): ニューロンクラスをインポート ▼ ---
-from snn_research.core.neurons import (
-    AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron,
-    TC_LIF, DualThresholdNeuron, ScaleAndFireNeuron
-)
-# --- ▲ 修正(v6) ▲ ---
+# --- ▼▼▼ 【!!! 修正 v31.2: 循環インポート修正 !!!】 ▼▼▼
+# (from snn_research.core.snn_core import SNNCore を削除)
+# --- ▲▲▲ 【!!! 修正 v31.2】 ▲▲▲
 
 
-# --- ▼▼▼ 修正(v6): _get_total_neurons ヘルパー関数を追加 ▼▼▼ ---
-def _get_total_neurons(model: nn.Module) -> int:
-    """SNNモデル内のニューロン総数を計算する"""
-    num_neurons = 0
-    # 認識対象のニューロンクラス
-    neuron_classes: Tuple[Type[nn.Module], ...] = (
-        AdaptiveLIFNeuron, IzhikevichNeuron, GLIFNeuron,
-        TC_LIF, DualThresholdNeuron
-        # ScaleAndFireNeuron は T=1 のため、ここでは除外
-    )
+# === 1. 基底損失クラス (v17) ===
+
+# --- ▼▼▼ 【!!! 修正 v31.2: 循環インポート修正 !!!】 ▼▼▼
+class BaseLoss(nn.Module): # 'SNNCore' -> 'nn.Module' に変更
+# --- ▲▲▲ 【!!! 修正 v31.2】 ▲▲▲
+    """
+    (v17)
+    カスタム損失関数の基底クラス。
+    重み (weight) の管理と、'forward' のインターフェースを定義する。
     
-    model_to_scan = model
-    if isinstance(model, nn.parallel.DistributedDataParallel):
-        model_to_scan = model.module # DDPラッパーを解除
-    
-    # --- ▼ 修正: SNNCoreのインポートとチェックを追加 ▼ ---
-    try:
-        # --- ▼ 修正: リファクタリング後のSNNCoreインポート ▼ ---
-        from snn_research.core.snn_core import SNNCore 
-        # --- ▲ 修正 ▲ ---
-    except ImportError:
-        SNNCore = None # type: ignore[misc, assignment]
-    
-    # --- ▼ 修正 (v9): [truthy-function] エラー解消 ▼ ---
-    if SNNCore is not None and isinstance(model_to_scan, SNNCore): 
-    # --- ▲ 修正 (v9) ▲ ---
-        model_to_scan = model_to_scan.model # SNNCoreラッパーを解除
-    # --- ▲ 修正 ▲ ---
+    (v31.2) SNNCore ではなく nn.Module を継承する。
+    """
+    def __init__(self, weight: float = 1.0):
+        super().__init__()
+        # (v17) 損失の重みを float として登録
+        self.weight = float(weight)
         
-    for module in model_to_scan.modules():
-        if isinstance(module, neuron_classes):
-            if hasattr(module, 'features'):
-                num_neurons += cast(int, module.features)
-            elif hasattr(module, 'num_neurons'): # DifferentiableTTFSEncoder
-                num_neurons += cast(int, module.num_neurons)
-                
-    return max(num_neurons, 1) # ゼロ除算を防ぐため最低1
-# --- ▲▲▲ 修正(v6) ▲▲▲ ---
-
-
-class CombinedLoss(nn.Module):
-    """クロスエントロピー損失、各種正則化、EWC損失を組み合わせた損失関数。"""
-    def __init__(self, tokenizer: PreTrainedTokenizerBase, ce_weight: float = 1.0, spike_reg_weight: float = 0.0, mem_reg_weight: float = 0.0, sparsity_reg_weight: float = 0.0, temporal_compression_weight: float = 0.0, sparsity_threshold_reg_weight: float = 0.0, target_spike_rate: float = 0.02, ewc_weight: float = 0.0, **kwargs):
-        # ... (変更なし) ...
-        super().__init__()
-        pad_id = tokenizer.pad_token_id
-        self.ce_loss_fn = nn.CrossEntropyLoss(ignore_index=pad_id if pad_id is not None else -100)
-        self.weights = {
-            'ce': ce_weight,
-            'spike_reg': spike_reg_weight,
-            'mem_reg': mem_reg_weight,
-            'sparsity_reg': sparsity_reg_weight,
-            'temporal_compression': temporal_compression_weight,
-            'sparsity_threshold_reg': sparsity_threshold_reg_weight,
-            'ewc': ewc_weight
-        }
-        self.target_spike_rate = target_spike_rate
-        # EWCのためのFisher情報行列と最適パラメータを保持
-        self.fisher_matrix: Dict[str, torch.Tensor] = {}
-        self.optimal_params: Dict[str, torch.Tensor] = {}
-
-    def forward(self, logits: torch.Tensor, targets: torch.Tensor, spikes: torch.Tensor, mem: torch.Tensor, model: nn.Module, **kwargs) -> dict:
-        ce_loss = self.ce_loss_fn(logits.view(-1, logits.size(-1)), targets.view(-1))
-
-        # --- ▼▼▼ 修正(v6): スパイク率を正規化 ▼▼▼ ---
-        # spikes は「タイムステップあたりの平均スパイク数」
-        # これを総ニューロン数で割り、真の「スパイク率」を計算
-        num_neurons = _get_total_neurons(model)
-        # .mean() は、spikesがスカラーテンソルの場合、その値自体を返す
-        spike_rate = spikes.mean() / num_neurons 
-        # --- ▲▲▲ 修正(v6) ▲▲▲ ---
-
-        spike_reg_loss = F.mse_loss(spike_rate, torch.tensor(self.target_spike_rate, device=spike_rate.device))
-
-        # --- ▼▼▼ 修正(v6): スパース性損失を「スパイク率」自体にする ▼▼▼ ---
-        # sparsity_loss = torch.mean(torch.abs(spikes)) # 修正前
-        sparsity_loss = spike_rate # 修正後
-        # --- ▲▲▲ 修正(v6) ▲▲▲ ---
-
-        mem_reg_loss = torch.mean(mem**2)
-
-        # ... (temporal_compression_loss, sparsity_threshold_reg_loss, ewc_loss の計算は変更なし) ...
-        temporal_compression_loss = torch.tensor(0.0, device=spikes.device)
-        if self.weights['temporal_compression'] > 0 and spikes.ndim > 1 and spikes.shape[1] > 1:
-            time_steps = spikes.shape[1]
-            time_weights = torch.linspace(0, 1, time_steps, device=spikes.device).view(1, -1, 1)
-            if spikes.ndim > 3:
-                time_weights = time_weights.view(1, time_steps, 1, 1)
-            temporal_compression_loss = (spikes * time_weights).mean()
-
-        # スパース性閾値の正則化
-        sparsity_threshold_reg_loss = torch.tensor(0.0, device=logits.device)
-        if self.weights['sparsity_threshold_reg'] > 0:
-            threshold_sum = torch.tensor(0.0, device=logits.device)
-            count = 0
-            for module in model.modules():
-                if isinstance(module, MultiLevelSpikeDrivenSelfAttention):
-                    threshold_sum += module.sparsity_threshold
-                    count += 1
-            if count > 0:
-                # 閾値が大きくなることを奨励（損失を減らすため負の項にする）
-                sparsity_threshold_reg_loss = - (threshold_sum / count)
-
-        ewc_loss = torch.tensor(0.0, device=logits.device)
-        if self.weights['ewc'] > 0 and self.fisher_matrix:
-            for name, param in model.named_parameters():
-                if name in self.fisher_matrix and param.requires_grad:
-                    fisher = self.fisher_matrix[name].to(param.device)
-                    opt_param = self.optimal_params[name].to(param.device)
-                    ewc_loss += (fisher * (param - opt_param)**2).sum()
-
-        total_loss = (self.weights['ce'] * ce_loss +
-                      self.weights['spike_reg'] * spike_reg_loss +
-                      self.weights['sparsity_reg'] * sparsity_loss +
-                      self.weights['mem_reg'] * mem_reg_loss +
-                      self.weights['temporal_compression'] * temporal_compression_loss +
-                      self.weights['sparsity_threshold_reg'] * sparsity_threshold_reg_loss +
-                      self.weights['ewc'] * ewc_loss)
-
-        return {
-            'total': total_loss, 'ce_loss': ce_loss,
-            'spike_reg_loss': spike_reg_loss, 'sparsity_loss': sparsity_loss,
-            'mem_reg_loss': mem_reg_loss, 'spike_rate': spike_rate,
-            'temporal_compression_loss': temporal_compression_loss,
-            'sparsity_threshold_reg_loss': sparsity_threshold_reg_loss,
-            'ewc_loss': ewc_loss
-        }
-
-class DistillationLoss(nn.Module):
-    """知識蒸留のための損失関数（各種正則化付き）。"""
-    def __init__(self, tokenizer: PreTrainedTokenizerBase, ce_weight: float = 0.3, distill_weight: float = 0.7,
-                 spike_reg_weight: float = 0.01, mem_reg_weight: float = 0.0, sparsity_reg_weight: float = 0.00001,
-                 temporal_compression_weight: float = 0.0, sparsity_threshold_reg_weight: float = 0.0,
-                 temperature: float = 2.0, target_spike_rate: float = 0.02, **kwargs):
-        # ... (変更なし) ...
-        super().__init__()
-        student_pad_id = tokenizer.pad_token_id
-        self.temperature = temperature
-        self.weights = {
-            'ce': ce_weight, 'distill': distill_weight, 'spike_reg': spike_reg_weight,
-            'mem_reg': mem_reg_weight, 'sparsity_reg': sparsity_reg_weight,
-            'temporal_compression': temporal_compression_weight,
-            'sparsity_threshold_reg': sparsity_threshold_reg_weight
-        }
-        self.ce_loss_fn = nn.CrossEntropyLoss(ignore_index=student_pad_id if student_pad_id is not None else -100)
-        self.distill_loss_fn = nn.KLDivLoss(reduction='none', log_target=True)
-        self.target_spike_rate = target_spike_rate
-
-    def forward(self, student_logits: torch.Tensor, teacher_logits: torch.Tensor,
-                targets: torch.Tensor, spikes: torch.Tensor, mem: torch.Tensor, model: nn.Module, attention_mask: Optional[torch.Tensor] = None, **kwargs) -> Dict[str, torch.Tensor]:
-
-        # ... (ce_loss, distill_loss の計算は変更なし) ...
-        is_classification = student_logits.ndim == 2 # (batch_size, num_classes)
-        is_sequence = student_logits.ndim == 3 # (batch_size, seq_len, vocab_size)
-
-        if is_classification:
-            assert student_logits.shape == teacher_logits.shape, \
-                f"Shape mismatch! Student: {student_logits.shape}, Teacher: {teacher_logits.shape}"
-            assert targets.ndim == 1 and targets.shape[0] == student_logits.shape[0], \
-                f"Target shape mismatch for classification: {targets.shape}, expected ({student_logits.shape[0]},)"
-        elif is_sequence:
-            assert student_logits.shape == teacher_logits.shape, \
-                f"Shape mismatch! Student: {student_logits.shape}, Teacher: {teacher_logits.shape}"
-            assert targets.ndim == 2 and targets.shape == student_logits.shape[:2], \
-                f"Target shape mismatch for sequence: {targets.shape}, expected {student_logits.shape[:2]}"
-        else:
-            raise ValueError(f"Unsupported student_logits shape: {student_logits.shape}")
-
-        # クロスエントロピー損失
-        if is_classification:
-            ce_loss = self.ce_loss_fn(student_logits, targets)
-        else: # is_sequence
-            ce_loss = self.ce_loss_fn(student_logits.view(-1, student_logits.size(-1)), targets.view(-1))
-
-        # 蒸留損失 (KLダイバージェンス)
-        soft_student_log_probs = F.log_softmax(student_logits / self.temperature, dim=-1)
-        soft_teacher_log_probs = F.log_softmax(teacher_logits / self.temperature, dim=-1)
-
-        distill_loss_unreduced = self.distill_loss_fn(soft_student_log_probs, soft_teacher_log_probs).sum(dim=-1) # (batch,) or (batch, seq_len)
-
-        # マスクの作成と適用
-        num_valid_tokens: torch.Tensor # 型ヒントを追加
-        if is_classification:
-            mask = torch.ones(targets.shape[0], dtype=torch.bool, device=targets.device)
-            num_valid_tokens = torch.tensor(targets.shape[0], device=targets.device)
-            masked_distill_loss = distill_loss_unreduced
-        else: # is_sequence
-            if attention_mask is None:
-                mask = (targets != self.ce_loss_fn.ignore_index)
-            else:
-                mask = attention_mask.bool()
-            num_valid_tokens = cast(torch.Tensor, mask).sum() # castを追加
-            masked_distill_loss = distill_loss_unreduced.where(mask, torch.tensor(0.0, device=distill_loss_unreduced.device))
-
-        # 損失の平均化
-        if num_valid_tokens.item() > 0: # Check tensor value using .item()
-            distill_loss = masked_distill_loss.sum() / num_valid_tokens.item() # Use .item() here
-        else:
-            distill_loss = torch.tensor(0.0, device=student_logits.device)
-
-        distill_loss = distill_loss * (self.temperature ** 2)
-
-        # (正則化項の計算)
-        # --- ▼▼▼ 修正(v6): スパイク率を正規化 ▼▼▼ ---
-        num_neurons = _get_total_neurons(model)
-        spike_rate = spikes.mean() / num_neurons 
-        # --- ▲▲▲ 修正(v6) ▲▲▲ ---
+    def forward(self, *args, **kwargs) -> torch.Tensor:
+        """
+        (v17)
+        損失を計算して返す (スカラーのテンソル)。
+        """
+        raise NotImplementedError
         
-        target_spike_rate = torch.tensor(self.target_spike_rate, device=spikes.device)
-        spike_reg_loss = F.mse_loss(spike_rate, target_spike_rate)
+    def __call__(self, *args, **kwargs) -> torch.Tensor:
+        """
+        (v17)
+        損失を計算し、重みを乗算して返す。
+        """
+        if self.weight == 0:
+            return torch.tensor(0.0, 
+                                device=self._get_device_from_args(*args, **kwargs),
+                                dtype=torch.float32)
+            
+        loss = super().__call__(*args, **kwargs)
+        return loss * self.weight
 
-        # --- ▼▼▼ 修正(v6): スパース性損失を「スパイク率」自体にする ▼▼▼ ---
-        # sparsity_loss = torch.mean(torch.abs(spikes)) # 修正前
-        sparsity_loss = spike_rate # 修正後
-        # --- ▲▲▲ 修正(v6) ▲▲▲ ---
-
-        mem_reg_loss = torch.mean(mem**2)
-
-        # ... (temporal_compression_loss, sparsity_threshold_reg_loss の計算は変更なし) ...
-        temporal_compression_loss = torch.tensor(0.0, device=spikes.device)
-        if self.weights['temporal_compression'] > 0 and spikes.ndim > 1 and spikes.shape[1] > 1:
-            time_steps = spikes.shape[1]
-            time_weights = torch.linspace(0, 1, time_steps, device=spikes.device).view(1, -1, 1)
-            if spikes.ndim > 3:
-                time_weights = time_weights.view(1, time_steps, 1, 1)
-            temporal_compression_loss = (spikes * time_weights).mean()
-
-        sparsity_threshold_reg_loss = torch.tensor(0.0, device=student_logits.device)
-        if self.weights['sparsity_threshold_reg'] > 0:
-            threshold_sum = torch.tensor(0.0, device=student_logits.device)
-            count = 0
-            for module in model.modules():
-                if isinstance(module, MultiLevelSpikeDrivenSelfAttention):
-                    threshold_sum += module.sparsity_threshold
-                    count += 1
-            if count > 0:
-                sparsity_threshold_reg_loss = - (threshold_sum / count)
-
-        total_loss = (self.weights['ce'] * ce_loss +
-                      self.weights['distill'] * distill_loss +
-                      self.weights['spike_reg'] * spike_reg_loss +
-                      self.weights['sparsity_reg'] * sparsity_loss +
-                      self.weights['mem_reg'] * mem_reg_loss +
-                      self.weights['temporal_compression'] * temporal_compression_loss +
-                      self.weights['sparsity_threshold_reg'] * sparsity_threshold_reg_loss)
-
-        return {
-            'total': total_loss, 'ce_loss': ce_loss,
-            'distill_loss': distill_loss, 'spike_reg_loss': spike_reg_loss,
-            'sparsity_loss': sparsity_loss, 'mem_reg_loss': mem_reg_loss,
-            # --- ▼▼▼ 修正(v6): 正規化後の spike_rate を返す ▼▼▼ ---
-            'spike_rate': spike_rate, 
-            # --- ▲▲▲ 修正(v6) ▲▲▲ ---
-            'temporal_compression_loss': temporal_compression_loss,
-            'sparsity_threshold_reg_loss': sparsity_threshold_reg_loss
-        }
+    def _get_device_from_args(self, *args, **kwargs) -> torch.device:
+        """ (v17) 引数からデバイスを推測する """
+        if args and isinstance(args[0], torch.Tensor):
+            return args[0].device
+        for k, v in kwargs.items():
+            if isinstance(v, torch.Tensor):
+                return v.device
+        return torch.device('cpu')
 
 
-class SelfSupervisedLoss(nn.Module):
-    # ... (このクラスは v6 修正の対象外だが、同様の修正が必要) ...
+# === 2. 知識蒸留 (KD) 損失 (v17) ===
+
+# --- ▼▼▼ 【!!! 修正 v31.2: 循環インポート修正 !!!】 ▼▼▼
+class DistillationLoss(BaseLoss): # BaseLoss (nn.Module) を継承
+# --- ▲▲▲ 【!!! 修正 v31.2】 ▲▲▲
     """
-    Temporal Contrastive Learning (TCL)のための損失関数。
-    時間的に隣接する隠れ状態をポジティブペアとして学習する。
+    (v17)
+    知識蒸留 (Knowledge Distillation) 損失。
+    通常の CrossEntropy (CE) 損失と、
+    教師モデルのロジットとの Kullback-Leibler (KL) ダイバージェンス損失を
+    重み付けして合計する。
+    
+    (HPO (Turn 5) (L:341) の 'distill_loss' (KD) と 
+     'ce_loss' を計算するために使用)
     """
-    def __init__(self, prediction_weight: float, spike_reg_weight: float, mem_reg_weight: float, tokenizer: PreTrainedTokenizerBase, target_spike_rate: float = 0.02, tcl_weight: float = 1.0, tcl_temperature: float = 0.1, **kwargs):
-        super().__init__()
-        self.weights = {
-            'prediction': prediction_weight,
-            'spike_reg': spike_reg_weight,
-            'mem_reg': mem_reg_weight,
-            'tcl': tcl_weight
-        }
-        self.tcl_temperature = tcl_temperature
-        self.target_spike_rate = target_spike_rate
-        pad_id = tokenizer.pad_token_id
-        self.prediction_loss_fn = nn.CrossEntropyLoss(ignore_index=pad_id if pad_id is not None else -100)
+    def __init__(
+        self,
+        ce_weight: float = 0.5,
+        distill_weight: float = 0.5,
+        temperature: float = 2.0,
+        **kwargs # (v17: BaseLoss の weight を吸収)
+    ):
+        # (v17) BaseLoss の weight は 1.0 (固定)
+        super().__init__(weight=1.0) 
+        
+        self.ce_weight = float(ce_weight)
+        self.distill_weight = float(distill_weight)
+        self.temperature = float(temperature)
+        
+        # (v17) KLダイバージェンス損失 (KD用)
+        self.kl_div_loss = nn.KLDivLoss(reduction='batchmean')
+        
+    def forward(
+        self, 
+        student_logits: torch.Tensor, 
+        teacher_logits: torch.Tensor,
+        targets: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        (v17)
+        Args:
+            student_logits: 生徒モデルの出力 (B, NumClasses)
+            teacher_logits: 教師モデルの出力 (B, NumClasses)
+            targets: 正解ラベル (B,)
 
-    def forward(self, full_hiddens: torch.Tensor, targets: torch.Tensor, spikes: torch.Tensor, mem: torch.Tensor, model: nn.Module, **kwargs) -> dict:
-        B, S, T, D = full_hiddens.shape
-        hiddens_flat = full_hiddens.permute(0, 1, 2, 3).reshape(B * S * T, D)
-        hiddens_norm = F.normalize(hiddens_flat, p=2, dim=1)
-        hiddens_st = full_hiddens.reshape(B * S, T, D)
-        anchors = hiddens_st[:, :-1, :].reshape(-1, D)
-        positives = hiddens_st[:, 1:, :].reshape(-1, D)
-
-        ignore_index = self.prediction_loss_fn.ignore_index
-        # Make sure targets are expanded correctly if needed, or use broadcasting
-        # Assuming targets are (B, S)
-        # We need a mask of shape (B*S*(T-1))
-        # Create mask based on original sequence positions, then repeat/reshape
-        valid_mask_bs = (targets != ignore_index) # Shape (B, S)
-        # Repeat for each anchor time step (T-1) and flatten
-        # We need to map anchor index back to (b, s, t_anchor) to check target validity at (b, s)
-        # Instead, let's reshape targets to match the structure before flattening anchors
-        # targets expanded: (B, S, T-1) - repeats the validity for each time step
-        targets_expanded_time = targets.unsqueeze(2).repeat(1, 1, T-1) # Shape (B, S, T-1)
-        # Now reshape this mask to match the flattened anchor shape
-        valid_mask = (targets_expanded_time != ignore_index).reshape(-1) # Shape (B*S*(T-1))
-
-
-        similarity_matrix = torch.matmul(anchors, hiddens_norm.T) / self.tcl_temperature
-        positive_indices = torch.arange(anchors.size(0), device=anchors.device)
-        tcl_loss_unmasked = F.cross_entropy(similarity_matrix, positive_indices, reduction='none')
-
-        # Ensure valid_mask has the same number of elements as tcl_loss_unmasked
-        if valid_mask.numel() != tcl_loss_unmasked.numel():
-             # This indicates a shape mismatch, likely in mask creation. Add debugging or error.
-             print(f"Warning: Mask shape {valid_mask.shape} mismatch with loss shape {tcl_loss_unmasked.shape}")
-             # Fallback: don't apply mask if shapes don't match
-             tcl_loss = tcl_loss_unmasked.mean()
-        else:
-            num_valid = valid_mask.sum().clamp(min=1)
-            tcl_loss = (tcl_loss_unmasked * valid_mask.float()).sum() / num_valid
-
-
-        # --- ▼▼▼ 修正(v6): スパイク率を正規化 ▼▼▼ ---
-        num_neurons = _get_total_neurons(model)
-        spike_rate = spikes.mean() / num_neurons
-        # --- ▲▲▲ 修正(v6) ▲▲▲ ---
-        target_spike_rate = torch.tensor(self.target_spike_rate, device=spikes.device)
-        spike_reg_loss = F.mse_loss(spike_rate, target_spike_rate)
-
-        mem_reg_loss = torch.mean(mem**2)
-
-        total_loss = (self.weights['tcl'] * tcl_loss +
-                      self.weights['spike_reg'] * spike_reg_loss +
-                      self.weights['mem_reg'] * mem_reg_loss)
-
-        return {
-            'total': total_loss,
-            'tcl_loss': tcl_loss,
-            'spike_reg_loss': spike_reg_loss,
-            'mem_reg_loss': mem_reg_loss,
-            'spike_rate': spike_rate
-        }
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+            (total_loss, ce_loss, kd_loss)
+        """
+        
+        # 1. CrossEntropy (CE) 損失
+        ce_loss = F.cross_entropy(student_logits, targets)
+        
+        # 2. Kullback-Leibler (KL) 損失 (KD)
+        kd_loss = self.kl_div_loss(
+            F.log_softmax(student_logits / self.temperature, dim=1),
+            F.softmax(teacher_logits / self.temperature, dim=1)
+        ) * (self.temperature ** 2) # (T^2 スケーリング)
+        
+        # 3. 総損失 (重み付け)
+        total_loss = (self.ce_weight * ce_loss) + \
+                     (self.distill_weight * kd_loss)
+                     
+        return total_loss, ce_loss, kd_loss
 
 
-class PhysicsInformedLoss(nn.Module):
-    # ... (このクラスは v6 修正の対象外だが、同様の修正が必要) ...
+# === 3. スパイク正則化損失 (v17) ===
+
+# --- ▼▼▼ 【!!! 修正 v31.2: 循環インポート修正 !!!】 ▼▼▼
+class SpikeRegularizationLoss(BaseLoss): # BaseLoss (nn.Module) を継承
+# --- ▲▲▲ 【!!! 修正 v31.2】 ▲▲▲
     """
-    物理法則（膜電位の滑らかさ）を制約として組み込んだ損失関数。
+    (v17)
+    スパイク発火率 (平均スパイク数) に対する L2 正則化損失。
+    スパイク活動を抑制（または促進）するために使用する。
+    
+    (HPO (Turn 5) (L:341) の 'spike_reg_loss' を計算)
     """
-    def __init__(self, tokenizer: PreTrainedTokenizerBase, ce_weight: float = 1.0, spike_reg_weight: float = 0.0, mem_smoothness_weight: float = 0.0, target_spike_rate: float = 0.02):
-        super().__init__()
-        pad_id = tokenizer.pad_token_id
-        self.ce_loss_fn = nn.CrossEntropyLoss(ignore_index=pad_id if pad_id is not None else -100)
-        self.weights = {
-            'ce': ce_weight,
-            'spike_reg': spike_reg_weight,
-            'mem_smoothness': mem_smoothness_weight,
-        }
-        self.target_spike_rate = target_spike_rate
+    def __init__(self, weight: float = 1e-4, target_rate: float = 0.0):
+        super().__init__(weight=weight)
+        self.target_rate = float(target_rate)
+        
+    def forward(self, avg_spikes: torch.Tensor) -> torch.Tensor:
+        """
+        (v17)
+        Args:
+            avg_spikes (torch.Tensor): モデル (またはレイヤー) の
+                                       平均スパイク数 (スカラー)
 
-    def forward(self, logits: torch.Tensor, targets: torch.Tensor, spikes: torch.Tensor, mem_sequence: torch.Tensor, model: nn.Module) -> dict:
-        ce_loss = self.ce_loss_fn(logits.view(-1, logits.size(-1)), targets.view(-1))
-
-        # --- ▼▼▼ 修正(v6): スパイク率を正規化 ▼▼▼ ---
-        num_neurons = _get_total_neurons(model)
-        spike_rate = spikes.mean() / num_neurons
-        # --- ▲▲▲ 修正(v6) ▲▲▲ ---
-        spike_reg_loss = F.mse_loss(spike_rate, torch.tensor(self.target_spike_rate, device=spike_rate.device))
-
-        mem_smoothness_loss = torch.tensor(0.0, device=logits.device) # Initialize
-        if isinstance(mem_sequence, torch.Tensor) and mem_sequence.numel() > 1 and mem_sequence.ndim > 0:
-             # Try to infer time dimension (often the last dim before features, or first after batch)
-             # This depends heavily on how `return_full_mems=True` returns the tensor
-             # Assuming shape like (Batch, SeqLen, TimeSteps, Features) or (Batch, TimeSteps, Features)
-             # Let's assume time_dim = -2 if ndim >= 2, otherwise 0
-             time_dim = -2 if mem_sequence.ndim >= 3 else 0 # Educated guess
-             if mem_sequence.shape[time_dim] > 1:
-                 try:
-                     mem_diff = torch.diff(mem_sequence, dim=time_dim)
-                     mem_smoothness_loss = torch.mean(mem_diff**2)
-                 except RuntimeError as e:
-                     print(f"Warning: Could not compute diff for mem_smoothness_loss on dim {time_dim}, shape {mem_sequence.shape}: {e}")
-             # else: print(f"Skipping mem_smoothness_loss: time dim size is <= 1") # Debug
-        # else: print(f"Skipping mem_smoothness_loss: mem_sequence invalid") # Debug
+        Returns:
+            torch.Tensor: L2 損失 (スカラー)
+        """
+        # (v17) (平均スパイク - ターゲット)^2
+        loss = (avg_spikes - self.target_rate) ** 2
+        return loss
 
 
-        total_loss = (self.weights['ce'] * ce_loss +
-                      self.weights['spike_reg'] * spike_reg_loss +
-                      self.weights['mem_smoothness'] * mem_smoothness_loss)
+# === 4. スパース性正則化損失 (v17) ===
 
-        return {
-            'total': total_loss, 'ce_loss': ce_loss,
-            'spike_reg_loss': spike_reg_loss,
-            'mem_smoothness_loss': mem_smoothness_loss,
-            'spike_rate': spike_rate
-        }
-
-class PlannerLoss(nn.Module):
-    # ... (変更なし) ...
+class SparsityRegularizationLoss(BaseLoss):
     """
-    プランナーSNNの学習用損失関数。
+    (v17)
+    スパイク発火率 (平均スパイク数) に対する L1 正則化損失。
+    スパース性 (発火数を 0 に近づける) を促進するために使用する。
+    
+    (HPO (Turn 5) (L:341) の 'sparsity_loss' を計算)
     """
-    def __init__(self):
-        super().__init__()
-        self.loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
+    def __init__(self, weight: float = 1e-4):
+        super().__init__(weight=weight)
+        
+    def forward(self, avg_spikes: torch.Tensor) -> torch.Tensor:
+        """
+        (v17)
+        Args:
+            avg_spikes (torch.Tensor): モデル (またはレイヤー) の
+                                       平均スパイク数 (スカラー)
 
-    def forward(self, predicted_logits: torch.Tensor, target_plan: torch.Tensor) -> Dict[str, torch.Tensor]:
-        target = target_plan.view(-1)
-        loss = self.loss_fn(predicted_logits, target)
-        return {'total': loss, 'planner_loss': loss}
-
-class ProbabilisticEnsembleLoss(nn.Module):
-    # ... (変更なし) ...
-    """
-    確率的アンサンブル学習のための損失関数。
-    出力のばらつきを抑制する正則化項を持つ。
-    """
-    def __init__(self, ce_weight: float, variance_reg_weight: float, tokenizer: PreTrainedTokenizerBase, **kwargs):
-        super().__init__()
-        pad_id = tokenizer.pad_token_id
-        self.ce_loss_fn = nn.CrossEntropyLoss(ignore_index=pad_id if pad_id is not None else -100)
-        self.weights = {'ce': ce_weight, 'variance_reg': variance_reg_weight}
-
-    def forward(self, logits: torch.Tensor, targets: torch.Tensor, spikes: torch.Tensor, mem: torch.Tensor, model: nn.Module, **kwargs) -> dict:
-        mean_logits = logits.mean(dim=0)
-        ce_loss = self.ce_loss_fn(mean_logits.view(-1, mean_logits.size(-1)), targets.view(-1))
-
-        probs = F.softmax(logits, dim=-1)
-        variance = probs.var(dim=0).mean()
-        variance_reg_loss = variance
-
-        total_loss = (self.weights['ce'] * ce_loss +
-                      self.weights['variance_reg'] * variance_reg_loss)
-
-        return {
-            'total': total_loss, 'ce_loss': ce_loss,
-            'variance_reg_loss': variance_reg_loss
-        }
+        Returns:
+            torch.Tensor: L1 損失 (スカラー)
+        """
+        # (v17) |平均スパイク| (L1)
+        loss = torch.abs(avg_spikes)
+        return loss

@@ -11,6 +11,10 @@
 # 3. .neurons からの循環インポートを削除
 # 4. get_total_spikes/reset_spike_stats を spikingjelly の base.MemoryModule を
 #    使うように汎用化 (循環インポート解消)
+#
+# --- 修正 (mypy v2) ---
+# 1. [syntax] Unmatched '}' エラーを修正。
+#    クラス定義の末尾に不要な '}' があったため削除。
 
 import torch
 import torch.nn as nn
@@ -79,5 +83,3 @@ class BaseModel(nn.Module):
             if isinstance(module, sj_base.MemoryModule):
                 module.reset()
         # --- ▲ 修正 (mypy) ▲ ---
-
-}

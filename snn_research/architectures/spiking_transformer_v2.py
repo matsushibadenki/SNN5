@@ -4,17 +4,9 @@
 #
 # (中略)
 #
-# 【!!! スパイク消滅 (spike_rate=0) 修正 v2 !!!】
-# - (L.156) run_distill_hpo.py (L.171) 側で v_init=0.0 が強制されていた
-#   ことが原因と特定。
-# - HPO側の修正により、このファイルの _extract_v_init (L.41) が
-#   v_init=0.4995 を自動設定するロジックが復活する。
-# - そのため、前回適用した gain=3.0 の修正は元に戻し（revert）、
-#   スパイク爆発を防ぐ。
-#
-# 【!!! mypy 修正 (v3) !!!】
-# 1. [syntax] / [operator] エラーを解消するため、
-#    ファイル末尾 (L510) の不要な '}' を削除。
+# 【!!! mypy 修正 (v4) !!!】
+# 1. [name-defined] (L292-L461): 'base' が未定義だったため、
+#    spikingjelly.activation_based から base をインポート。
 
 import torch
 import torch.nn as nn
@@ -27,6 +19,10 @@ from snn_research.core.base import BaseModel, SNNLayerNorm # SNNLayerNorm をイ
 # from snn_research.core.neurons.lif_neuron import LIFNeuron # 古いインポート (使用されていない)
 from snn_research.core.neurons import get_neuron_by_name # ニューロンの動的取得
 from snn_research.core.attention import SpikeDrivenSelfAttention # SDSAをインポート
+
+# --- ▼ mypy [name-defined] 修正 (v4) ▼ ---
+from spikingjelly.activation_based import base # type: ignore[import-untyped]
+# --- ▲ mypy [name-defined] 修正 (v4) ▲ ---
 
 # (logging)
 logger = logging.getLogger(__name__)
@@ -289,8 +285,10 @@ class SpikingTransformerV2(BaseModel):
         
         # (Fix 3) 各レイヤーに状態管理モードを伝播
         # (mypy互換性) self.embedding.neuron は MemoryModule を継承
+        # --- ▼ mypy [name-defined] 修正 (v4) ▼ ---
         cast(base.MemoryModule, self.embedding.neuron).set_stateful(stateful) 
         cast(base.MemoryModule, self.pool_neuron).set_stateful(stateful)
+        # --- ▲ mypy [name-defined] 修正 (v4) ▲ ---
         for layer in self.layers:
             if isinstance(layer, SDSAEncoderLayer):
                 layer.set_stateful(stateful)
@@ -307,8 +305,10 @@ class SpikingTransformerV2(BaseModel):
         # --- (Fix 3): 状態リセット（全コンポーネント） ---
         if not self._is_stateful:
             # (mypy互換性) self.embedding.neuron は MemoryModule を継承
+            # --- ▼ mypy [name-defined] 修正 (v4) ▼ ---
             cast(base.MemoryModule, self.embedding.neuron).reset()
             cast(base.MemoryModule, self.pool_neuron).reset()
+            # --- ▲ mypy [name-defined] 修正 (v4) ▲ ---
             for layer in self.layers:
                 # set_stateful(False) が内部で reset() を呼ぶ
                 if isinstance(layer, SDSAEncoderLayer):
@@ -456,9 +456,11 @@ class SDSAEncoderLayer(nn.Module):
         # ニューロンの状態をリセット
         if not stateful:
             # (mypy互換性) get_neuron_by_name は MemoryModule を返す
+            # --- ▼ mypy [name-defined] 修正 (v4) ▼ ---
             cast(base.MemoryModule, self.neuron).reset() 
             cast(base.MemoryModule, self.ffn_neuron1).reset()
             cast(base.MemoryModule, self.ffn_neuron2).reset()
+            # --- ▲ mypy [name-defined] 修正 (v4) ▲ ---
             
             # (self_attn のリセットも必要か？)
             # 補足: SpikeDrivenSelfAttention も内部にニューロンを持つため、
@@ -522,7 +524,3 @@ class SDSAEncoderLayer(nn.Module):
             outputs.append(x_t)
         
         return torch.stack(outputs, dim=0) # (T, B, N, C)
-
-# --- ▼ mypy [syntax] 修正 (v3) ▼ ---
-# (ファイル末尾の不要な '}' を削除)
-# --- ▲ mypy [syntax] 修正 (v3) ▲ ---

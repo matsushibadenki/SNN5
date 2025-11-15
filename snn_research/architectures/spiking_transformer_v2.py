@@ -11,11 +11,13 @@
 #    - 損失関数 (losses.py) が None**2 を計算しようとしてクラッシュしたため、
 #      None の代わりに 0.0 のテンソルを返すように修正。
 #
-# 【!!! スパイク消滅 (spike_rate=0) 修正 !!!】
-# - (L.156) SpikingVisionEmbedding._initialize_weights の patch_embed (Conv2d) 初期化に
-#   `gain=3.0` を追加。
-# - v_init=0.0, bias=0.01 の設定 でも、入力 (inputs) の初期値が
-#   大きくなるため、閾値 (0.5) を超えてスパイクが発生できるようになる。
+# 【!!! スパイク消滅 (spike_rate=0) 修正 v2 !!!】
+# - (L.156) run_distill_hpo.py (L.171) 側で v_init=0.0 が強制されていた
+#   ことが原因と特定。
+# - HPO側の修正により、このファイルの _extract_v_init (L.41) が
+#   v_init=0.4995 を自動設定するロジックが復活する。
+# - そのため、前回適用した gain=3.0 の修正は元に戻し（revert）、
+#   スパイク爆発を防ぐ。
 
 import torch
 import torch.nn as nn
@@ -147,11 +149,10 @@ class SpikingVisionEmbedding(nn.Module):
         nn.init.trunc_normal_(self.pos_embed, std=.02)
         # パッチ埋め込みの初期化 (Xavier)
         if isinstance(self.patch_embed, nn.Conv2d):
-            # --- ▼▼▼ 【!!! spike_rate=0 修正 !!!】 ▼▼▼
-            # スパイクを強制的に発生させるため、gainを大きな値（3.0）に変更
-            # (lif_layer.py の修正履歴 (L.100) に基づく)
-            nn.init.xavier_uniform_(self.patch_embed.weight, gain=3.0)
-            # --- ▲▲▲ 【!!! spike_rate=0 修正 !!!】 ▲▲▲
+            # --- ▼▼▼ 【!!! spike_rate=0 修正 v2 (REVERT) !!!】 ▼▼▼
+            # HPO側の v_init 修正により gain=3.0 は不要になったため元に戻す
+            nn.init.xavier_uniform_(self.patch_embed.weight)
+            # --- ▲▲▲ 【!!! spike_rate=0 修正 v2 (REVERT) !!!】 ▲▲▲
             if self.patch_embed.bias is not None:
                 nn.init.constant_(self.patch_embed.bias, 0)
 

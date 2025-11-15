@@ -265,56 +265,29 @@ async def main() -> None:
     # DIコンテナから必要なコンポーネントを正しい順序で取得・構築
     device = container.device()
 
-    # --- ▼▼▼ 【エラー修正 (MemoryModule.__init__ got unexpected keyword argument 'v_init') v11 (残存引数の包括的削除) 】 ▼▼▼ ---
-    # MemoryModule.__init__ が 'self' 以外の引数を取らないため、ニューロン設定から全ての動的引数を削除する。
-    try:
-        model_config_provider = container.config.model 
-        raw_model_config = model_config_provider()
-
-        # 1. 設定オブジェクトを安全に Python の dict に変換
-        if OmegaConf.is_config(raw_model_config):
-            clean_model_config = cast(Dict[str, Any], OmegaConf.to_container(raw_model_config, resolve=True))
-        elif isinstance(raw_model_config, dict):
-            clean_model_config = raw_model_config.copy()
-            print("  - 【DEBUG INFO v7】 Model config is already a raw dict (Likely from previous HPO run). Using copy for cleanup.")
-        else:
-             raise TypeError(f"Model config has unexpected type: {type(raw_model_config)}")
-        
-        # 2. 'neuron' サブ設定から、MemoryModuleが予期しない全ての引数を削除する
-        if 'neuron' in clean_model_config:
-            neuron_config = clean_model_config['neuron']
-            deleted_keys: List[str] = []
-            
-            # ニューロンクラスが受け付けない引数リスト (features と v_init が最後に残っているため、すべて削除対象とする)
-            keys_to_remove = [
-                'type', 
-                'v_threshold', 
-                'threshold_decay', 
-                'threshold_step', 
-                'bias', 
-                'v_init', # <-- 今回エラーの原因
-                'bias_init',
-                'features', # <-- v_initとセットで渡されている引数
-            ]
-
-            for key in keys_to_remove:
-                if key in neuron_config:
-                    neuron_config.pop(key)
-                    deleted_keys.append(key)
-            
-            if deleted_keys:
-                # 3. 修正された辞書でコンテナの設定を上書き (model全体を from_dict で上書き)
-                model_config_provider.from_dict(clean_model_config) 
-                print(f"  - 【DEBUG FIX v11】 Cleaned neuron config. Removed keys: {', '.join(deleted_keys)} and forcefully re-bound model config.")
-            else:
-                 print(f"  - 【DEBUG INFO v11】 No problematic keys found in model.neuron config. Proceeding.")
-                 
-        else:
-             print("  - 【DEBUG INFO v11】 'neuron' key not found in model config. Skipping neuron cleanup.")
-             
-    except Exception as e:
-        print(f"Warning: Failed to clean neuron config before model instantiation (v11): {e}")
-    # --- ▲▲▲ 【エラー修正 v11】 ▲▲▲ ---
+    # --- ▼▼▼ 【エラー修正 v12: 古い修正を削除し、クリーンな状態に戻す】 ▼▼▼ ---
+    # 以前のDIコンテナ設定クリーンアップロジックは、snn_research/core/neurons/__init__.py
+    # にてパラメータフィルタリングを行うことで置き換えられたため、このブロック全体を削除する。
+    # 削除されたブロックは以下の範囲:
+    # try:
+    #     model_config_provider = container.config.model 
+    #     raw_model_config = model_config_provider()
+    #     if OmegaConf.is_config(raw_model_config):
+    #         clean_model_config = cast(Dict[str, Any], OmegaConf.to_container(raw_model_config, resolve=True))
+    #     elif isinstance(raw_model_config, dict):
+    #         clean_model_config = raw_model_config.copy()
+    #         print("  - 【DEBUG INFO v7】 Model config is already a raw dict (Likely from previous HPO run). Using copy for cleanup.")
+    #     else:
+    #          raise TypeError(f"Model config has unexpected type: {type(raw_model_config)}")
+    #     if 'neuron' in clean_model_config:
+    #         # ... (keys_to_removeを含む削除ロジック) ...
+    #         model_config_provider.from_dict(clean_model_config) 
+    #         print(f"  - 【DEBUG FIX v11】 Cleaned neuron config. Removed keys: {', '.join(deleted_keys)} and forcefully re-bound model config.")
+    #     else:
+    #          print("  - 【DEBUG INFO v11】 'neuron' key not found in model config. Skipping neuron cleanup.")
+    # except Exception as e:
+    #     print(f"Warning: Failed to clean neuron config before model instantiation (v11): {e}")
+    # --- ▲▲▲ 【エラー修正 v12: 古い修正を削除】 ▲▲▲ ---
 
 
     # ssn_core.py 側で vocab_size を処理するように修正したため、ここは変更不要

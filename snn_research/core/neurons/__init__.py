@@ -6,9 +6,10 @@
 # オプションのニューロンモデルについては、ModuleNotFoundError発生時にダミークラスを定義することで、
 # プログラム全体の実行を継続できるようにします。
 #
-# 【修正内容 v18: ModuleNotFoundErrorの包括的解消】
-# - AdaptiveLIFNeuronとBistableIFNeuronのインポートもtry/exceptブロック内に移動し、
-#   すべての外部ニューロンのインポートをModuleNotFoundErrorに対して安全にしました。
+# 【修正内容 v19: UnboundLocalErrorの解消】
+# - get_neuron_by_name関数のTypeError例外処理ブロック内にある冗長な「import inspect」を削除しました。
+#   これにより、グローバルスコープでインポートされたinspectモジュールが正しく使用され、
+#   UnboundLocalErrorが解消されます。
 
 from typing import Optional, Tuple, Any, List, cast, Dict, Type, Union 
 import torch
@@ -17,7 +18,7 @@ import torch.nn.functional as F
 import math
 from spikingjelly.activation_based import surrogate, base # type: ignore[import-untyped]
 import logging 
-import inspect 
+import inspect # グローバルにインポートされる
 
 # --- ▼▼▼ 【修正 v18: すべての外部ニューロンのインポートをtry/exceptで保護】 ▼▼▼ ---
 
@@ -206,7 +207,6 @@ __all__ = [
 ]
 
 # ニューロンのタイプ名 (文字列) とクラスをマッピング
-# すべてのクラスが定義されている (実クラスまたはダミークラス) ため安全
 NEURON_REGISTRY: Dict[str, Type[base.MemoryModule]] = {
     "lif": AdaptiveLIFNeuron,
     "bif": BistableIFNeuron,
@@ -300,7 +300,7 @@ def get_neuron_by_name(name: str, params: Dict[str, Any]) -> base.MemoryModule:
             f"Failed to instantiate neuron '{name_lower}' with params: {filtered_params}. "
             f"Error: {e}"
         )
-        import inspect
+        # import inspect # <--- 削除: グローバルにインポートされているため不要
         sig = inspect.signature(NeuronClass.__init__)
         expected_params = list(sig.parameters.keys())
         provided_params = list(filtered_params.keys())

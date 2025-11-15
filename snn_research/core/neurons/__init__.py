@@ -6,9 +6,9 @@
 # オプションのニューロンモデルについては、ModuleNotFoundError発生時にダミークラスを定義することで、
 # プログラム全体の実行を継続できるようにします。
 #
-# 【修正内容 v17: SyntaxErrorと冗長性の解消】
-# - 後半の冗長かつSyntaxErrorを引き起こすコンパクトなダミークラス定義ブロックを削除しました。
-# - 前半の「SyntaxError修正済」のブロックのみを保持し、ニューロンクラスの安全な定義を統一しました。
+# 【修正内容 v17: ModuleNotFoundErrorの解消】
+# - ProbabilisticLIFNeuronのインポートをtry/exceptブロック内に移動し、モジュールが欠損していても
+#   プログラムがクラッシュしないように修正しました。
 
 from typing import Optional, Tuple, Any, List, cast, Dict, Type, Union 
 import torch
@@ -19,14 +19,21 @@ from spikingjelly.activation_based import surrogate, base # type: ignore[import-
 import logging 
 import inspect 
 
-# --- ▼▼▼ コアニューロンのインポート ▼▼▼ ---
-# 存在するモジュールをインポート (これらのモジュールが存在しない場合は、ModuleNotFoundErrorが発生し、
-# プログラムの動作が停止する可能性があります。ただし、レジストリの目的から、コアニューロンとして扱います。)
+# --- ▼▼▼ 【修正 v17: 安全なインポートとダミー定義】 ▼▼▼ ---
+
+# コアニューロンのインポート (これらは通常存在を期待する)
 from .adaptive_lif_neuron import AdaptiveLIFNeuron
 from .bif_neuron import BistableIFNeuron
-from .probabilistic_lif_neuron import ProbabilisticLIFNeuron 
 
-# 欠損している可能性のあるモジュールを捕捉し、安全なブロック構文でダミークラスを定義
+# 欠損している可能性のあるモジュールを捕捉し、ダミークラスを定義
+
+try: 
+    from .probabilistic_lif_neuron import ProbabilisticLIFNeuron 
+except ModuleNotFoundError: 
+    class ProbabilisticLIFNeuron(base.MemoryModule): 
+        def __init__(self, **kwargs): 
+            super().__init__()
+
 try: 
     from .izhikevich_neuron import IzhikevichNeuron 
 except ModuleNotFoundError: 
@@ -54,7 +61,7 @@ except ModuleNotFoundError:
     class ScaleAndFireNeuron(base.MemoryModule): 
         def __init__(self, **kwargs): 
             super().__init__()
-# --- ▲▲▲ コアニューロンのインポート ▲▲▲ ---
+# --- ▲▲▲ 【修正 v17】 ▲▲▲ ---
 
 
 logger = logging.getLogger(__name__)
@@ -175,9 +182,6 @@ class DualThresholdNeuron(base.MemoryModule):
         return spike, self.mem
 
 
-# (冗長でSyntaxErrorの原因となる、後半のクラス定義ブロックは削除しました)
-
-
 __all__ = [
     "AdaptiveLIFNeuron",
     "IzhikevichNeuron",
@@ -190,6 +194,7 @@ __all__ = [
 ]
 
 # ニューロンのタイプ名 (文字列) とクラスをマッピング
+# ModuleNotFoundErrorが発生した場合でも、ダミークラスが使用されるため安全
 NEURON_REGISTRY: Dict[str, Type[base.MemoryModule]] = {
     "lif": AdaptiveLIFNeuron,
     "bif": BistableIFNeuron,

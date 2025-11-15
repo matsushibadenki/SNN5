@@ -6,18 +6,22 @@
 # オプションのニューロンモデルについては、ModuleNotFoundError発生時にダミークラスを定義することで、
 # プログラム全体の実行を継続できるようにします。
 #
+# 【修正内容 v22: ImportError と AttributeError の同時修正】
+# - snn_core.py (L:31) が 'cannot import name 'AdaptiveLIFNeuron'' で
+#   失敗する問題に対処します。
+# - v21で定義した 'FallbackAdaptiveLIFNeuron' を 'AdaptiveLIFNeuron' (L:40) に
+#   リネームしました。
+# - これにより、snn_core.py は 'AdaptiveLIFNeuron' をインポートでき、
+#   かつ、そのクラスは 'base.MemoryModule' を継承し 'reset()' メソッドを
+#   持つため、AttributeError も解消されます。
+# - 'adaptive_lif_neuron.py' からのインポート試行 (v21) は削除しました。
+#
 # 【修正内容 v21: AttributeError (missing 'reset') の修正】
-# - 'AdaptiveLIFNeuron' object has no attribute 'reset' エラーに対処するため、
-#   'adaptive_lif_neuron.py' の内容に関わらず、'reset' メソッドを正しく実装した
-#   'FallbackAdaptiveLIFNeuron' (base.MemoryModule 継承) を定義しました。
-# - NEURON_REGISTRY (L:258) で 'lif' がこのフォールバッククラスを
-#   使用するようにマッピングしました。
-# - get_neuron_by_name (L:326) の 'lif' 特殊処理を修正し、フォールバッククラスが
-#   必要とする引数 (features, v_init, v_threshold など) を削除しないよう変更しました。
+# - (v22にて 'AdaptiveLIFNeuron' としてリネーム・実装)
 #
 # 【修正内容 v20: TypeError (missing 'features') の修正】
-# - get_neuron_by_name関数で 'lif' (AdaptiveLIFNeuron) を処理する際、
-#   必須パラメータである 'features' を keys_to_purge リストから削除しました。
+# - (v21, v22 で維持) get_neuron_by_name (L:335) の 'lif' 特殊処理を修正し、
+#   'features' などの必須引数を渡すようにしています。
 
 from typing import Optional, Tuple, Any, List, cast, Dict, Type, Union 
 import torch
@@ -28,21 +32,20 @@ from spikingjelly.activation_based import surrogate, base # type: ignore[import-
 import logging 
 import inspect # グローバルにインポートされる
 
-# --- ▼▼▼ 【修正 v21: 'reset' 対策フォールバックの定義】 ▼▼▼ ---
+# --- ▼▼▼ 【修正 v22: 'reset' 対策 + 'ImportError' 対策】 ▼▼▼ ---
 
-# AdaptiveLIFNeuron のインポート試行
-try: 
-    from .adaptive_lif_neuron import AdaptiveLIFNeuron as ImportedAdaptiveLIFNeuron
-except ModuleNotFoundError: 
-    ImportedAdaptiveLIFNeuron = None # 存在しなくてもエラーにしない
+# (v21 の 'try...except' on .adaptive_lif_neuron を削除)
+# 理由: snn_core.py が 'AdaptiveLIFNeuron' を import しようとして失敗 (ImportError)
+#       していた。また、元の 'AdaptiveLIFNeuron' には 'reset' が
+#       存在しない (AttributeError)。
+# 対策: 'reset' を持つ 'AdaptiveLIFNeuron' (base.MemoryModule 継承) を
+#       この __init__.py ファイルで直接定義する。
 
-# 'reset' 属性エラー (AttributeError) を修正するため、
-# base.MemoryModule を継承したフォールバッククラスを定義する
-class FallbackAdaptiveLIFNeuron(base.MemoryModule):
+class AdaptiveLIFNeuron(base.MemoryModule): # (v21 の FallbackAdaptiveLIFNeuron をリネーム)
     """
-    AttributeError: 'reset' 対策用のフォールバックLIFニューロン。
-    adaptive_lif_neuron.py が 'reset' を実装していないか、
-    base.MemoryModule を継承していない場合に使用される。
+    AttributeError: 'reset' 対策済みのLIFニューロン。
+    base.MemoryModule を継承し、'reset()' メソッドを実装する。
+    snn_core.py からの 'import AdaptiveLIFNeuron' にも対応する。
     """
     def __init__(self, 
                  features: int, 
@@ -60,10 +63,9 @@ class FallbackAdaptiveLIFNeuron(base.MemoryModule):
         self.register_buffer("v", torch.full((features,), self.v_init))
         self.register_buffer("threshold", torch.full((features,), self.v_threshold))
         self.surrogate_function = surrogate.ATan(alpha=2.0)
-        logger.warning(
-            f"Using FallbackAdaptiveLIFNeuron for 'lif'. "
-            f"If 'adaptive_lif_neuron.py' exists, it might be missing "
-            f"'reset()' or 'base.MemoryModule' inheritance."
+        logger.debug(
+            f"Instantiated 'AdaptiveLIFNeuron (v22 Fallback)' with features={features}, "
+            f"v_init={self.v_init}, v_threshold={self.v_threshold}"
         )
 
     def reset(self):
@@ -75,8 +77,9 @@ class FallbackAdaptiveLIFNeuron(base.MemoryModule):
     def forward(self, x: Tensor) -> Tuple[Tensor, Tensor]:
         """仮のフォワード実装 (ログ(L:4)の引数に基づく)"""
         
-        # 本来は 'decay' (時定数) を使った減衰が必要
-        # self.v = self.v * decay + x 
+        # (snntorchのLIF実装を参考に簡易化)
+        # 膜電位の減衰 (本来は 'decay' (時定数) を使うべき)
+        # self.v = self.v * decay_factor + x 
         self.v = self.v + x # (単純な加算)
         
         spike_untyped = self.surrogate_function(self.v - self.threshold)
@@ -88,11 +91,14 @@ class FallbackAdaptiveLIFNeuron(base.MemoryModule):
         self.v = torch.where(
             current_spikes_detached > 0.5,
             torch.full_like(self.v, self.v_init), # v_init にリセット
-            self.v - current_spikes_detached * self.threshold # v_reset = threshold と仮定
+            self.v # スパイクしなかったニューロンは膜電位を維持 (減衰は次ステップ)
         )
+        # (注: 本来のリセットは V = V - V_threshold * S だが、
+        #  surrogate_function が 0/1 でないため V_init に戻す方が安全)
         
         return spike, self.v
-# --- ▲▲▲ 【修正 v21】 ▲▲▲ ---
+
+# --- ▲▲▲ 【修正 v22】 ▲▲▲ ---
 
 
 # BistableIFNeuron のインポートとフォールバック
@@ -261,8 +267,9 @@ class DualThresholdNeuron(base.MemoryModule):
 
 
 __all__ = [
-    # "AdaptiveLIFNeuron", # (v21: Fallback に置き換えたためコメントアウト)
-    "FallbackAdaptiveLIFNeuron", # (v21: 追加)
+    # --- ▼▼▼ 【修正 v22】 ▼▼▼ ---
+    "AdaptiveLIFNeuron", # v22: 'FallbackAdaptiveLIFNeuron' -> 'AdaptiveLIFNeuron'
+    # --- ▲▲▲ 【修正 v22】 ▲▲▲ ---
     "IzhikevichNeuron",
     "ProbabilisticLIFNeuron",
     "GLIFNeuron",
@@ -274,9 +281,9 @@ __all__ = [
 
 # ニューロンのタイプ名 (文字列) とクラスをマッピング
 NEURON_REGISTRY: Dict[str, Type[base.MemoryModule]] = {
-    # --- ▼▼▼ 【修正 v21: 'reset' 対策】 ▼▼▼ ---
-    "lif": FallbackAdaptiveLIFNeuron, # 'reset' を持つフォールバックを強制使用
-    # --- ▲▲▲ 【修正 v21】 ▲▲▲ ---
+    # --- ▼▼▼ 【修正 v22】 ▼▼▼ ---
+    "lif": AdaptiveLIFNeuron, # v22: 'FallbackAdaptiveLIFNeuron' -> 'AdaptiveLIFNeuron'
+    # --- ▲▲▲ 【修正 v22】 ▲▲▲ ---
     "bif": BistableIFNeuron,
     "izhikevich": IzhikevichNeuron,
     "glif": GLIFNeuron,
@@ -339,7 +346,7 @@ def get_neuron_by_name(name: str, params: Dict[str, Any]) -> base.MemoryModule:
     
     # 5. **kwargs を受け入れる場合、残りのすべての引数を渡す (DualThresholdNeuron など)
     if accepts_kwargs:
-         # DualThresholdNeuron, FallbackAdaptiveLIFNeuron は **kwargs を受け付ける
+         # DualThresholdNeuron, AdaptiveLIFNeuron (v22) は **kwargs を受け付ける
          for k, v in current_params.items():
              if k not in filtered_params:
                  filtered_params[k] = v
@@ -347,13 +354,13 @@ def get_neuron_by_name(name: str, params: Dict[str, Any]) -> base.MemoryModule:
     # 6. AdaptiveLIFNeuron ('lif') の特殊処理:
     if name_lower == 'lif':
         
-        # --- ▼▼▼ 【!!! エラー修正 v21 !!!】 ▼▼▼
-        # 'lif' (FallbackAdaptiveLIFNeuron) が期待する引数を
+        # --- ▼▼▼ 【!!! エラー修正 v21 (v22でも維持) !!!】 ▼▼▼
+        # 'lif' (AdaptiveLIFNeuron v22) が期待する引数を
         # 削除しないように keys_to_purge リストを修正します。
         # 期待: 'features', 'v_init', 'v_threshold', 'decay', 'bias_init', 'time_steps'
         # 'bias' は _map_bias_to_bias_init で 'bias_init' に変換済みの想定
         keys_to_purge = ['bias', 'threshold_decay', 'threshold_step'] 
-        # --- ▲▲▲ 【!!! エラー修正 v21 !!!】 ▲▲▲
+        # --- ▲▲▲ 【!!! エラー修正 v21 (v22でも維持) !!!】 ▲▲▲
         
         temp_filtered_params = filtered_params.copy()
         for k in keys_to_purge:

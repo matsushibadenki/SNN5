@@ -16,10 +16,9 @@
 # - L.171-181 のブロックをコメントアウトし、モデル側の
 #   v_init 自動設定ロジックを復活させる。
 #
-# 【!!! TypeError: MemoryModule.__init__() got an unexpected keyword argument 'v_init' 修正 v11 (残存引数の包括的削除) !!!】
-# - 以前の修正後も 'v_init' と 'features' がコンストラクタに渡されていることがログから判明。
-# - MemoryModule.__init__ が 'self' 以外の引数を取らないため、ニューロン設定から
-#   'v_init', 'bias_init', 'features' を含め、すべての不要な動的パラメータを強制的に削除し、設定を再バインドする。
+# 【!!! MemoryModule.__init__ got unexpected keyword argument 'v_init' 修正 v12 (クリーンアップロジックの削除) !!!】
+# - ニューロンの引数エラー回避ロジックを snn_research/core/neurons/__init__.py に移動したため、
+#   run_distill_hpo.py 内の冗長な設定クリーニングブロックを削除し、クリーンな状態に戻す。
 
 import argparse
 import asyncio
@@ -266,25 +265,9 @@ async def main() -> None:
     device = container.device()
 
     # --- ▼▼▼ 【エラー修正 v12: 古い修正を削除し、クリーンな状態に戻す】 ▼▼▼ ---
-    # 以前のDIコンテナ設定クリーンアップロジックは、snn_research/core/neurons/__init__.py
-    # にてパラメータフィルタリングを行うことで置き換えられたため、このブロック全体を削除する。
-    # 削除されたブロックは以下の範囲:
+    # 冗長な設定クリーニングロジックは、snn_research/core/neurons/__init__.py に移されたため、このブロックは削除。
     # try:
-    #     model_config_provider = container.config.model 
-    #     raw_model_config = model_config_provider()
-    #     if OmegaConf.is_config(raw_model_config):
-    #         clean_model_config = cast(Dict[str, Any], OmegaConf.to_container(raw_model_config, resolve=True))
-    #     elif isinstance(raw_model_config, dict):
-    #         clean_model_config = raw_model_config.copy()
-    #         print("  - 【DEBUG INFO v7】 Model config is already a raw dict (Likely from previous HPO run). Using copy for cleanup.")
-    #     else:
-    #          raise TypeError(f"Model config has unexpected type: {type(raw_model_config)}")
-    #     if 'neuron' in clean_model_config:
-    #         # ... (keys_to_removeを含む削除ロジック) ...
-    #         model_config_provider.from_dict(clean_model_config) 
-    #         print(f"  - 【DEBUG FIX v11】 Cleaned neuron config. Removed keys: {', '.join(deleted_keys)} and forcefully re-bound model config.")
-    #     else:
-    #          print("  - 【DEBUG INFO v11】 'neuron' key not found in model config. Skipping neuron cleanup.")
+    #     ... (以前のクリーンアップロジック) ...
     # except Exception as e:
     #     print(f"Warning: Failed to clean neuron config before model instantiation (v11): {e}")
     # --- ▲▲▲ 【エラー修正 v12: 古い修正を削除】 ▲▲▲ ---

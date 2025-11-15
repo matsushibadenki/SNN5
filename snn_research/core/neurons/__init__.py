@@ -6,22 +6,19 @@
 # オプションのニューロンモデルについては、ModuleNotFoundError発生時にダミークラスを定義することで、
 # プログラム全体の実行を継続できるようにします。
 #
-# 【修正内容 v22: ImportError と AttributeError の同時修正】
-# - snn_core.py (L:31) が 'cannot import name 'AdaptiveLIFNeuron'' で
-#   失敗する問題に対処します。
-# - v21で定義した 'FallbackAdaptiveLIFNeuron' を 'AdaptiveLIFNeuron' (L:40) に
-#   リネームしました。
-# - これにより、snn_core.py は 'AdaptiveLIFNeuron' をインポートでき、
-#   かつ、そのクラスは 'base.MemoryModule' を継承し 'reset()' メソッドを
-#   持つため、AttributeError も解消されます。
-# - 'adaptive_lif_neuron.py' からのインポート試行 (v21) は削除しました。
+# 【修正内容 v23: AttributeError (missing 'set_stateful') の修正】
+# - v22で定義した 'AdaptiveLIFNeuron' (L:40) に、'set_stateful' メソッド (L:71) を
+#   明示的に実装しました。
+# - 'DualThresholdNeuron' (L:143-L:157) のステートフル管理パターンに倣い、
+#   'AdaptiveLIFNeuron' の 'reset' (L:80) と 'forward' (L:85) も
+#   'self.v = None' を使うように修正しました。
 #
-# 【修正内容 v21: AttributeError (missing 'reset') の修正】
-# - (v22にて 'AdaptiveLIFNeuron' としてリネーム・実装)
+# 【修正内容 v22: ImportError と AttributeError の同時修正】
+# - (v23でも維持) 'AdaptiveLIFNeuron' をこのファイルで定義し、
+#   'reset()' と (v23で) 'set_stateful()' を実装。
 #
 # 【修正内容 v20: TypeError (missing 'features') の修正】
-# - (v21, v22 で維持) get_neuron_by_name (L:335) の 'lif' 特殊処理を修正し、
-#   'features' などの必須引数を渡すようにしています。
+# - (v23でも維持) get_neuron_by_name (L:351) の 'lif' 特殊処理を修正。
 
 from typing import Optional, Tuple, Any, List, cast, Dict, Type, Union 
 import torch
@@ -32,19 +29,12 @@ from spikingjelly.activation_based import surrogate, base # type: ignore[import-
 import logging 
 import inspect # グローバルにインポートされる
 
-# --- ▼▼▼ 【修正 v22: 'reset' 対策 + 'ImportError' 対策】 ▼▼▼ ---
+# --- ▼▼▼ 【修正 v23: 'set_stateful' の実装】 ▼▼▼ ---
 
-# (v21 の 'try...except' on .adaptive_lif_neuron を削除)
-# 理由: snn_core.py が 'AdaptiveLIFNeuron' を import しようとして失敗 (ImportError)
-#       していた。また、元の 'AdaptiveLIFNeuron' には 'reset' が
-#       存在しない (AttributeError)。
-# 対策: 'reset' を持つ 'AdaptiveLIFNeuron' (base.MemoryModule 継承) を
-#       この __init__.py ファイルで直接定義する。
-
-class AdaptiveLIFNeuron(base.MemoryModule): # (v21 の FallbackAdaptiveLIFNeuron をリネーム)
+class AdaptiveLIFNeuron(base.MemoryModule): # (v22 で定義)
     """
-    AttributeError: 'reset' 対策済みのLIFニューロン。
-    base.MemoryModule を継承し、'reset()' メソッドを実装する。
+    AttributeError: 'reset'/'set_stateful' 対策済みのLIFニューロン。
+    base.MemoryModule を継承し、'reset()' と 'set_stateful()' を実装する。
     snn_core.py からの 'import AdaptiveLIFNeuron' にも対応する。
     """
     def __init__(self, 
@@ -60,45 +50,68 @@ class AdaptiveLIFNeuron(base.MemoryModule): # (v21 の FallbackAdaptiveLIFNeuron
         self.v_init = float(v_init)
         self.v_threshold = float(v_threshold)
         
-        self.register_buffer("v", torch.full((features,), self.v_init))
+        # (v23) DualThresholdNeuron (L:119) に倣い、None で初期化
+        self.register_buffer("v", None) 
         self.register_buffer("threshold", torch.full((features,), self.v_threshold))
         self.surrogate_function = surrogate.ATan(alpha=2.0)
+        
+        self.stateful = False # (v23) DualThresholdNeuron (L:121) に倣う
+        
         logger.debug(
-            f"Instantiated 'AdaptiveLIFNeuron (v22 Fallback)' with features={features}, "
+            f"Instantiated 'AdaptiveLIFNeuron (v23 Fallback)' with features={features}, "
             f"v_init={self.v_init}, v_threshold={self.v_threshold}"
         )
 
+    def set_stateful(self, stateful: bool):
+        """
+        Sets the stateful mode. If set to False, resets the neuron.
+        (v23: Added to fix AttributeError: 'set_stateful')
+        (DualThresholdNeuron (L:128) の実装に倣う)
+        """
+        self.stateful = stateful
+        if not stateful:
+            self.reset()
+
     def reset(self):
-        """ニューロンの状態 (膜電位) をリセットします。"""
-        super().reset() # base.MemoryModule.reset() を呼ぶ
-        # v_init を使ってリセット
-        self.v = torch.full_like(self.v, self.v_init)
+        """
+        ニューロンの状態 (膜電位) をリセットします。
+        (v23: DualThresholdNeuron (L:134) の実装に倣い、None に設定)
+        """
+        super().reset() 
+        self.v = None
 
     def forward(self, x: Tensor) -> Tuple[Tensor, Tensor]:
-        """仮のフォワード実装 (ログ(L:4)の引数に基づく)"""
+        """
+        フォワード実装 (v23: DualThresholdNeuron (L:143) のパターンに倣う)
+        """
         
-        # (snntorchのLIF実装を参考に簡易化)
-        # 膜電位の減衰 (本来は 'decay' (時定数) を使うべき)
-        # self.v = self.v * decay_factor + x 
-        self.v = self.v + x # (単純な加算)
+        # (v23) Stateful check (SpikingJelly/DualThresholdNeuron パターン)
+        if not self.stateful:
+            self.v = None
+        
+        # (v23) Initialization check (DualThresholdNeuron パターン)
+        if self.v is None or self.v.shape != x.shape:
+            # v_init (float) を使って初期化 (x は (B, N, D) などのため)
+            self.v = torch.full_like(x, self.v_init)
+        
+        # 簡易的なLIFロジック (減衰は省略)
+        self.v = self.v + x 
         
         spike_untyped = self.surrogate_function(self.v - self.threshold)
         spike: Tensor = cast(Tensor, spike_untyped)
         
         current_spikes_detached: Tensor = spike.detach()
 
-        # リセット (v_reset = 0.0 と仮定し、v_init に戻す)
+        # リセット (v_reset = v_init と仮定)
         self.v = torch.where(
             current_spikes_detached > 0.5,
             torch.full_like(self.v, self.v_init), # v_init にリセット
-            self.v # スパイクしなかったニューロンは膜電位を維持 (減衰は次ステップ)
+            self.v # スパイクしなかったニューロンは膜電位を維持
         )
-        # (注: 本来のリセットは V = V - V_threshold * S だが、
-        #  surrogate_function が 0/1 でないため V_init に戻す方が安全)
         
         return spike, self.v
 
-# --- ▲▲▲ 【修正 v22】 ▲▲▲ ---
+# --- ▲▲▲ 【修正 v23】 ▲▲▲ ---
 
 
 # BistableIFNeuron のインポートとフォールバック
@@ -267,9 +280,7 @@ class DualThresholdNeuron(base.MemoryModule):
 
 
 __all__ = [
-    # --- ▼▼▼ 【修正 v22】 ▼▼▼ ---
-    "AdaptiveLIFNeuron", # v22: 'FallbackAdaptiveLIFNeuron' -> 'AdaptiveLIFNeuron'
-    # --- ▲▲▲ 【修正 v22】 ▲▲▲ ---
+    "AdaptiveLIFNeuron", # (v22)
     "IzhikevichNeuron",
     "ProbabilisticLIFNeuron",
     "GLIFNeuron",
@@ -281,9 +292,7 @@ __all__ = [
 
 # ニューロンのタイプ名 (文字列) とクラスをマッピング
 NEURON_REGISTRY: Dict[str, Type[base.MemoryModule]] = {
-    # --- ▼▼▼ 【修正 v22】 ▼▼▼ ---
-    "lif": AdaptiveLIFNeuron, # v22: 'FallbackAdaptiveLIFNeuron' -> 'AdaptiveLIFNeuron'
-    # --- ▲▲▲ 【修正 v22】 ▲▲▲ ---
+    "lif": AdaptiveLIFNeuron, # (v22)
     "bif": BistableIFNeuron,
     "izhikevich": IzhikevichNeuron,
     "glif": GLIFNeuron,
@@ -346,7 +355,7 @@ def get_neuron_by_name(name: str, params: Dict[str, Any]) -> base.MemoryModule:
     
     # 5. **kwargs を受け入れる場合、残りのすべての引数を渡す (DualThresholdNeuron など)
     if accepts_kwargs:
-         # DualThresholdNeuron, AdaptiveLIFNeuron (v22) は **kwargs を受け付ける
+         # DualThresholdNeuron, AdaptiveLIFNeuron (v23) は **kwargs を受け付ける
          for k, v in current_params.items():
              if k not in filtered_params:
                  filtered_params[k] = v
@@ -354,13 +363,11 @@ def get_neuron_by_name(name: str, params: Dict[str, Any]) -> base.MemoryModule:
     # 6. AdaptiveLIFNeuron ('lif') の特殊処理:
     if name_lower == 'lif':
         
-        # --- ▼▼▼ 【!!! エラー修正 v21 (v22でも維持) !!!】 ▼▼▼
-        # 'lif' (AdaptiveLIFNeuron v22) が期待する引数を
+        # --- ▼▼▼ 【!!! エラー修正 v21 (v23でも維持) !!!】 ▼▼▼
+        # 'lif' (AdaptiveLIFNeuron v23) が期待する引数を
         # 削除しないように keys_to_purge リストを修正します。
-        # 期待: 'features', 'v_init', 'v_threshold', 'decay', 'bias_init', 'time_steps'
-        # 'bias' は _map_bias_to_bias_init で 'bias_init' に変換済みの想定
         keys_to_purge = ['bias', 'threshold_decay', 'threshold_step'] 
-        # --- ▲▲▲ 【!!! エラー修正 v21 (v22でも維持) !!!】 ▲▲▲
+        # --- ▲▲▲ 【!!! エラー修正 v21 (v23でも維持) !!!】 ▲▲▲
         
         temp_filtered_params = filtered_params.copy()
         for k in keys_to_purge:

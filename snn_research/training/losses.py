@@ -4,31 +4,37 @@
 # 機能の説明: 知識蒸留 (KD)、スパイク正則化、スパース性正則化など、
 # SNNの学習に使用するカスタム損失関数を定義する。
 #
+# 【修正内容 v32: ImportError (cannot import name 'CombinedLoss') の修正】
+# - health-check 実行時に 'ImportError: cannot import name 'CombinedLoss''
+#   が発生する問題に対処します。
+# - v31.2 の循環インポート修正時に、'CombinedLoss' クラス
+#   がファイルから欠落していました。
+# - (L: 186) 'CombinedLoss'
+#   の定義をファイル末尾に追加しました。
+# - (v31.2の修正も維持) 'BaseLoss' (L: 24)
+#   および 'CombinedLoss' (L: 186)
+#   が 'SNNCore' ではなく
+#   'nn.Module' を継承するようにし、循環インポートを回避します。
+#
 # 【修正内容 v31.2: 循環インポート (Circular Import) の修正】
-# - health-check (項目2) の 'ImportError: ... (benchmark.tasks)'
-#   の根本原因となっていた循環参照を修正します。
-# - (L: 21) 'from snn_research.core.snn_core import SNNCore' が、
-#   snn_core.py (L:29) -> benchmark.tasks (L:38) -> losses.py (L:21)
-#   という循環参照を引き起こしていました。
-# - (L: 24, 76, 122) 'BaseLoss(SNNCore)' や 'DistillationLoss(BaseLoss)'
-#   が 'SNNCore' を継承するのは誤りです。
-# - 損失関数は 'nn.Module' を継承すべきです。
-# - (L: 21) 'SNNCore' のインポートを削除しました。
-# - (L: 24, 76, 122) 継承元を 'nn.Module' に変更しました。
+# - (v32でも維持) 'SNNCore'
+#   へのインポート (L: 21) を削除。
+# - (v32でも維持) 継承元を 'nn.Module' に変更 (L: 24, 76, 122)。
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Dict, Any, Optional, Tuple
+# (v32: 'CombinedLoss' の 'List' のために追加)
+from typing import Dict, Any, Optional, Tuple, List, Union
 
-# --- ▼▼▼ 【!!! 修正 v31.2: 循環インポート修正 !!!】 ▼▼▼
+# --- ▼▼▼ 【!!! 修正 v31.2: 循環インポート修正 (v32でも維持) !!!】 ▼▼▼
 # (from snn_research.core.snn_core import SNNCore を削除)
 # --- ▲▲▲ 【!!! 修正 v31.2】 ▲▲▲
 
 
 # === 1. 基底損失クラス (v17) ===
 
-# --- ▼▼▼ 【!!! 修正 v31.2: 循環インポート修正 !!!】 ▼▼▼
+# --- ▼▼▼ 【!!! 修正 v31.2: 循環インポート修正 (v32でも維持) !!!】 ▼▼▼
 class BaseLoss(nn.Module): # 'SNNCore' -> 'nn.Module' に変更
 # --- ▲▲▲ 【!!! 修正 v31.2】 ▲▲▲
     """
@@ -75,16 +81,12 @@ class BaseLoss(nn.Module): # 'SNNCore' -> 'nn.Module' に変更
 
 # === 2. 知識蒸留 (KD) 損失 (v17) ===
 
-# --- ▼▼▼ 【!!! 修正 v31.2: 循環インポート修正 !!!】 ▼▼▼
+# --- ▼▼▼ 【!!! 修正 v31.2: 循環インポート修正 (v32でも維持) !!!】 ▼▼▼
 class DistillationLoss(BaseLoss): # BaseLoss (nn.Module) を継承
 # --- ▲▲▲ 【!!! 修正 v31.2】 ▲▲▲
     """
     (v17)
     知識蒸留 (Knowledge Distillation) 損失。
-    通常の CrossEntropy (CE) 損失と、
-    教師モデルのロジットとの Kullback-Leibler (KL) ダイバージェンス損失を
-    重み付けして合計する。
-    
     (HPO (Turn 5) (L:341) の 'distill_loss' (KD) と 
      'ce_loss' を計算するために使用)
     """
@@ -141,14 +143,12 @@ class DistillationLoss(BaseLoss): # BaseLoss (nn.Module) を継承
 
 # === 3. スパイク正則化損失 (v17) ===
 
-# --- ▼▼▼ 【!!! 修正 v31.2: 循環インポート修正 !!!】 ▼▼▼
+# --- ▼▼▼ 【!!! 修正 v31.2: 循環インポート修正 (v32でも維持) !!!】 ▼▼▼
 class SpikeRegularizationLoss(BaseLoss): # BaseLoss (nn.Module) を継承
 # --- ▲▲▲ 【!!! 修正 v31.2】 ▲▲▲
     """
     (v17)
     スパイク発火率 (平均スパイク数) に対する L2 正則化損失。
-    スパイク活動を抑制（または促進）するために使用する。
-    
     (HPO (Turn 5) (L:341) の 'spike_reg_loss' を計算)
     """
     def __init__(self, weight: float = 1e-4, target_rate: float = 0.0):
@@ -159,13 +159,10 @@ class SpikeRegularizationLoss(BaseLoss): # BaseLoss (nn.Module) を継承
         """
         (v17)
         Args:
-            avg_spikes (torch.Tensor): モデル (またはレイヤー) の
-                                       平均スパイク数 (スカラー)
-
+            avg_spikes (torch.Tensor): 平均スパイク数 (スカラー)
         Returns:
             torch.Tensor: L2 損失 (スカラー)
         """
-        # (v17) (平均スパイク - ターゲット)^2
         loss = (avg_spikes - self.target_rate) ** 2
         return loss
 
@@ -176,8 +173,6 @@ class SparsityRegularizationLoss(BaseLoss):
     """
     (v17)
     スパイク発火率 (平均スパイク数) に対する L1 正則化損失。
-    スパース性 (発火数を 0 に近づける) を促進するために使用する。
-    
     (HPO (Turn 5) (L:341) の 'sparsity_loss' を計算)
     """
     def __init__(self, weight: float = 1e-4):
@@ -187,12 +182,60 @@ class SparsityRegularizationLoss(BaseLoss):
         """
         (v17)
         Args:
-            avg_spikes (torch.Tensor): モデル (またはレイヤー) の
-                                       平均スパイク数 (スカラー)
-
+            avg_spikes (torch.Tensor): 平均スパイク数 (スカラー)
         Returns:
             torch.Tensor: L1 損失 (スカラー)
         """
-        # (v17) |平均スパイク| (L1)
         loss = torch.abs(avg_spikes)
         return loss
+
+
+# --- ▼▼▼ 【!!! 修正 v32: 欠落していた 'CombinedLoss' を追加 !!!】 ▼▼▼
+class CombinedLoss(BaseLoss):
+    """
+    (v17)
+    複数の損失関数 (BaseLoss のサブクラス) を
+    辞書またはリストで受け取り、合計するラッパー。
+    
+    (v31.2 / v32) BaseLoss (nn.Module) を継承
+    """
+    def __init__(
+        self, 
+        loss_functions: Union[Dict[str, BaseLoss], List[BaseLoss]],
+        **kwargs # (v17: BaseLoss の weight を吸収)
+    ):
+        super().__init__(weight=1.0) # (v17: ラッパー自体は重み 1.0)
+        
+        if isinstance(loss_functions, dict):
+            self.loss_functions = nn.ModuleDict(loss_functions)
+        elif isinstance(loss_functions, list):
+            # (v17) 辞書に変換 (ModuleList は辞書を返せないため)
+            self.loss_functions = nn.ModuleDict(
+                {f"loss_{i}": fn for i, fn in enumerate(loss_functions)}
+            )
+        else:
+            raise TypeError(
+                f"loss_functions must be a dict or list, "
+                f"got {type(loss_functions)}"
+            )
+
+    def forward(self, *args, **kwargs) -> torch.Tensor:
+        """
+        (v17)
+        全ての損失関数を実行し、合計 (スカラー) を返す。
+        
+        Returns:
+            torch.Tensor: 合計損失 (スカラー)
+        """
+        total_loss = torch.tensor(0.0, 
+                                  device=self._get_device_from_args(*args, **kwargs),
+                                  dtype=torch.float32)
+        
+        # (v17) ModuleDict をイテレート
+        for name, loss_fn in self.loss_functions.items():
+            # (v17) BaseLoss.__call__ (重み付け) を実行
+            loss = loss_fn(*args, **kwargs) 
+            total_loss += loss
+            
+        return total_loss
+# --- ▲▲▲ 【!!! 修正 v32】 ▲▲▲

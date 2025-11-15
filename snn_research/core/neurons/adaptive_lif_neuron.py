@@ -3,15 +3,17 @@
 # 機能説明: 
 #   入力電流を受け取り、LIFダイナミクスに基づいて膜電位を更新し、
 #   スパイクを生成する nn.Module。
-#   (SpikingTransformerV2 が実際に使用するニューロンモジュール)
 #
 #   【修正点】:
-#   - `lif_layer.py` からデバッグ履歴の修正 (ステップ 1, 2, 4) を移植。
-#   - ステップ1: ゼロへのハードリセット (V_reset = V_new * (1.0 - spikes_t)) を実装。
-#   - ステップ2: `bias_init` を受け取り、`self.b` を初期化。
-#   - ステップ4: `v_init` を受け取り、`self.membrane_potential` の初期値として使用。
-#   - (注意: ステップ5 (Xavier初期化) は、このファイルには適用できません。
-#     このモジュールは重み(W)を持たないためです。)
+#   - (中略)
+#
+#   【!!! スパイク消滅 (spike_rate=0) 修正 v3 !!!】
+#   - L.101-142 の forward ロジックを修正。
+#   - t=0 (self.membrane_potential is None) の時、v_init (0.4995) が
+#     入力 (inputs) より先にディケイ (decay) されてしまい、
+#     V_new が 0.4845 + inputs となり閾値 0.5 を超えられない問題を修正。
+#   - t=0 の時はディケイを適用せず、V_new = v_init + inputs + bias となるように
+#     ロジックを変更する。
 
 import logging
 from typing import Dict, Any, Optional, Tuple, cast
@@ -93,6 +95,8 @@ class AdaptiveLIFNeuron(BaseModel):
     def _init_state(self, batch_size: int, device: torch.device) -> None:
         """
         （B, C）の形状で膜電位を初期化します。
+        (注: このメソッドは v3 修正により forward 内で直接処理されるため、
+         現在は使用されていません。)
         """
         shape = (batch_size, self.features)
         
@@ -126,44 +130,51 @@ class AdaptiveLIFNeuron(BaseModel):
         if not self.built:
             raise RuntimeError(f"Layer {self.name} has not been built.")
         
-        batch_size: int = inputs.shape[0]
-
-        # 状態が未初期化 (t=0) の場合、v_init を使って初期化
-        if self.membrane_potential is None:
-            # --- ▼ 修正 (ステップ 4) ▼ ---
-            # (B, N, C) のようなViTの形状に対応
-            if inputs.dim() > 2:
-                self.membrane_potential = torch.full(
-                    inputs.shape, # (B, N, C)
-                    fill_value=self.v_init, 
-                    device=inputs.device,
-                    dtype=torch.float
-                )
-            else:
-                self._init_state(batch_size, inputs.device) # (B, C)
-            # --- ▲ 修正 ▲ ---
-        
-        V_t_minus_1: Tensor = cast(Tensor, self.membrane_potential)
-
-        # --- ▼ 修正 (ステップ 1: ゼロへのハードリセット) ▼ ---
+        # --- ▼▼▼ 【!!! spike_rate=0 修正 v3 !!!】 ▼▼▼
         
         # 1. 入力電流にバイアスを加算
         # (B, ..., C) + (C,) -> (B, ..., C) (ブロードキャスト)
         I_t_biased: Tensor = inputs + self.b
         
-        # 2. 膜電位のリーク
-        V_leaked: Tensor = V_t_minus_1 * self.decay
+        V_t_minus_1_decayed: Tensor
+
+        if self.membrane_potential is None:
+            # t=0 (状態が未初期化) の場合
+            # v_init (0.4995) をディケイ(decay)させずにそのまま使用する
+            
+            # (B, N, C) のようなViTの形状に対応
+            if inputs.dim() > 2:
+                V_t_minus_1_decayed = torch.full(
+                    inputs.shape, # (B, N, C)
+                    fill_value=self.v_init, 
+                    device=inputs.device,
+                    dtype=torch.float
+                )
+            else: # (B, C)
+                 V_t_minus_1_decayed = torch.full(
+                    (inputs.shape[0], self.features), 
+                    fill_value=self.v_init, 
+                    device=inputs.device,
+                    dtype=torch.float
+                )
+        else:
+            # t > 0 の場合
+            # 既存の膜電位 (V_t_minus_1) をディケイさせる
+            V_t_minus_1: Tensor = cast(Tensor, self.membrane_potential)
+            V_t_minus_1_decayed = V_t_minus_1 * self.decay
+
+        # 2. 膜電位の更新 (積分)
+        # (t=0): V_new = v_init + (inputs + bias)
+        # (t>0): V_new = (V_t-1 * decay) + (inputs + bias)
+        V_new: Tensor = V_t_minus_1_decayed + I_t_biased
         
-        # 3. 膜電位の更新 (積分)
-        V_new: Tensor = V_leaked + I_t_biased
-        
-        # 4. スパイクの生成
+        # 3. スパイクの生成
         spikes_t: Tensor = (V_new > self.threshold).float()
         
-        # 5. 膜電位のリセット (ゼロへのハードリセット)
+        # 4. 膜電位のリセット (ゼロへのハードリセット)
         V_reset: Tensor = V_new * (1.0 - spikes_t)
         
-        # --- ▲ 修正 ▲ ---
+        # --- ▲▲▲ 【!!! spike_rate=0 修正 v3 !!!】 ▲▲▲
         
         # 次のタイムステップのために状態を更新
         self.membrane_potential = V_reset

@@ -403,8 +403,10 @@ async def main() -> None:
         epochs=container.config.training.epochs(), # 設定ファイルからエポック数を取得
         model_id=f"{args.task}_distilled_from_{args.teacher_model}",
         task_description=f"An expert SNN for {args.task}, distilled from {args.teacher_model}.",
-        # 修正: model.to_dict() ではなく、コンテナから辞書を取得
-        student_config=container.config.model.to_dict()
+        # 修正 (v_hpo_config_fix): コンテナから取得した OmegaConf オブジェクトを使用して、
+        # 最終的なモデル設定 (model) を確実にプレーンな Python 辞書として抽出する。
+        # これにより、ConfigurationProvider.to_dict() の問題や、設定の型不整合を防ぐ。
+        student_config=cast(Dict[str, Any], OmegaConf.to_container(manager_config_omegaconf.model, resolve=True))
     )
 
 if __name__ == "__main__":

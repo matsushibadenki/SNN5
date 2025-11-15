@@ -16,10 +16,9 @@
 # - L.171-181 のブロックをコメントアウトし、モデル側の
 #   v_init 自動設定ロジックを復活させる。
 #
-# 【!!! MemoryModule.__init__ got unexpected keyword argument 'type' 修正 v7 (Config変換の安全化) !!!】
-# - 以前の修正 (v4/v6) が、次のHPOトライアルで生の dict を OmegaConf.to_container に渡すことによる
-#   'ValueError: Input cfg is not an OmegaConf config object' を引き起こしていた問題を修正。
-# - raw_model_config が OmegaConfオブジェクトかdictかをチェックし、安全にdictに変換する。
+# 【!!! MemoryModule.__init__ got unexpected keyword argument 'type' 修正 v8 (SyntaxError解消) !!!】
+# - 以前の修正 (v7) で導入された task_init_kwargs の定義において、
+#   辞書の閉じ括弧 '{' がリストの閉じ括弧 ']' と誤って使用されていた問題を修正する。
 
 import argparse
 import asyncio
@@ -383,7 +382,7 @@ async def main() -> None:
         "tokenizer": container.tokenizer(),
         "device": device,
         "hardware_profile": {}
-    ]
+    } # <- シンタックスエラーの修正 (v8)
     if args.task == 'cifar10':
         task_init_kwargs['img_size'] = container.config.data.img_size()
 

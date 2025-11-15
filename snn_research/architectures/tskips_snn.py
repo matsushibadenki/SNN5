@@ -12,6 +12,10 @@
 # TSkipsBlock のスタックを「モチーフ層」と「構文層」に分離し、
 # 階層的な時系列処理を実現する。
 #
+# --- 修正 (mypy v3) ---
+# 1. [no-redef] (L307 vs L323): 構文層のループ変数名を 'layer' から 'syntax_layer' に変更。
+# 2. [no-redef] (L278-L280 vs L354-L359): T_seq=0 のケースで変数を定義せず、戻り値を直接返すように修正。
+#
 # mypy --strict 準拠。
 #
 # 修正 (v_hpo_fix_attribute_error):
@@ -275,10 +279,12 @@ class TSkipsSNN(BaseModel):
         B, T_seq, F_in = input_sequence.shape
         if T_seq == 0:
              logger.warning("TSkipsSNN received empty sequence (T=0). Returning zeros.")
-             logits = torch.zeros(B, cast(int, self.output_proj.out_features), device=input_sequence.device)
-             avg_spikes = torch.tensor(0.0, device=input_sequence.device)
-             mem = torch.tensor(0.0, device=input_sequence.device)
-             return logits, avg_spikes, mem
+             # FIX L278-L280: 変数を定義せず、タプルを直接返す
+             return (
+                 torch.zeros(B, cast(int, self.output_proj.out_features), device=input_sequence.device),
+                 torch.tensor(0.0, device=input_sequence.device),
+                 torch.tensor(0.0, device=input_sequence.device)
+             )
              
         device: torch.device = input_sequence.device
         
@@ -304,10 +310,10 @@ class TSkipsSNN(BaseModel):
             # --- 1. モチーフ層 (短時間処理) ---
             x_motif = x_t
             for i in range(self.num_motif_layers):
-                layer: TSkipsBlock = cast(TSkipsBlock, self.motif_layers[i])
+                motif_layer: TSkipsBlock = cast(TSkipsBlock, self.motif_layers[i]) # FIX L307: Renamed to motif_layer
                 current_b_inputs: List[torch.Tensor] = motif_b_inputs[i]
                 
-                x_motif, b_outputs = layer(x_motif, current_b_inputs)
+                x_motif, b_outputs = motif_layer(x_motif, current_b_inputs)
                 
                 if (i + 1) < self.num_motif_layers:
                     motif_b_inputs[i+1] = b_outputs
@@ -320,16 +326,18 @@ class TSkipsSNN(BaseModel):
             
             # --- 3. 構文層 (長時間処理) ---
             for i in range(self.num_syntax_layers):
-                layer: TSkipsBlock = cast(TSkipsBlock, self.syntax_layers[i])
+                syntax_layer: TSkipsBlock = cast(TSkipsBlock, self.syntax_layers[i]) # FIX L323: Renamed to syntax_layer
                 
                 # 構文層の最初の層は、モチーフ層の最後の層からの
                 # 逆方向(B)接続を受け取る (もしあれば)
                 if i == 0:
-                    current_b_inputs = b_outputs # モチーフ層の最後の b_outputs
+                    # current_b_inputs = b_outputs # This line relies on b_outputs from the last motif layer
+                    # モチーフ層の最後の b_outputs (最後の層の出力)を渡す
+                    current_b_inputs = b_outputs
                 else:
                     current_b_inputs = syntax_b_inputs[i]
                 
-                x_syntax, b_outputs = layer(x_syntax, current_b_inputs)
+                x_syntax, b_outputs = syntax_layer(x_syntax, current_b_inputs)
                 
                 if (i + 1) < self.num_syntax_layers:
                     syntax_b_inputs[i+1] = b_outputs
@@ -351,11 +359,11 @@ class TSkipsSNN(BaseModel):
         # --- ▲ 修正 (HOPE P1.3) ▲ ---
 
         # 時間全体で膜電位を平均化
-        logits: torch.Tensor = torch.stack(output_voltages, dim=1).mean(dim=1) # (B, F_out)
+        logits: torch.Tensor = torch.stack(output_voltages, dim=1).mean(dim=1) # FIX L354: No longer re-defined
         
         # (mypy互換性) T_seq が 0 でないことは上でチェック済み
         avg_spikes_val: float = self.get_total_spikes() / (B * T_seq) if return_spikes else 0.0
-        avg_spikes: torch.Tensor = torch.tensor(avg_spikes_val, device=device)
-        mem: torch.Tensor = torch.tensor(0.0, device=device)
+        avg_spikes: torch.Tensor = torch.tensor(avg_spikes_val, device=device) # FIX L358: No longer re-defined
+        mem: torch.Tensor = torch.tensor(0.0, device=device) # FIX L359: No longer re-defined
 
         return logits, avg_spikes, mem

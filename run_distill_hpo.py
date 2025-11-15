@@ -16,9 +16,11 @@
 # - L.171-181 のブロックをコメントアウトし、モデル側の
 #   v_init 自動設定ロジックを復活させる。
 #
-# 【!!! MemoryModule.__init__ got unexpected keyword argument 'type' 修正 v8 (SyntaxError解消) !!!】
-# - 以前の修正 (v7) で導入された task_init_kwargs の定義において、
-#   辞書の閉じ括弧 '{' がリストの閉じ括弧 ']' と誤って使用されていた問題を修正する。
+# 【!!! MemoryModule.__init__ got unexpected keyword argument 'v_threshold' 修正 v9 (全ニューロン引数の強制削除) !!!】
+# - ニューロンのコンストラクタが 'self' 以外の引数を期待していないにもかかわらず、
+#   DIコンテナが設定の全パラメータを渡している問題を修正。
+# - モデル設定全体を取得し、'neuron' サブ設定から、問題の原因となっているすべての引数を pop() で削除した後、
+#   親のConfigurationProviderに from_dict() で再バインドすることで設定を強制的に更新する。
 
 import argparse
 import asyncio
@@ -264,39 +266,58 @@ async def main() -> None:
     # DIコンテナから必要なコンポーネントを正しい順序で取得・構築
     device = container.device()
 
-    # --- ▼▼▼ 【エラー修正 (MemoryModule.__init__() got unexpected keyword argument 'type' & ValueError) v7 (Config変換の安全化) 】 ▼▼▼ ---
-    # 既存のモデル設定全体を取得し、neuronサブ設定から 'type' キーを削除した新しい設定をコンテナに再バインドする。
+    # --- ▼▼▼ 【エラー修正 (MemoryModule.__init__ got unexpected keyword argument 'v_threshold') v9 (ニューロン引数の強制削除) 】 ▼▼▼ ---
+    # MemoryModule.__init__ が 'self' 以外の引数を取らないため、ニューロン設定から全ての不要な引数を削除する。
     try:
-        # 1. モデル設定全体を ConfigurationProvider から取得
         model_config_provider = container.config.model 
-        raw_model_config = model_config_provider() # DictConfigまたはDictの値を取得
+        raw_model_config = model_config_provider()
 
-        # 2. 設定オブジェクトを安全に Python の dict に変換
+        # 1. 設定オブジェクトを安全に Python の dict に変換
         if OmegaConf.is_config(raw_model_config):
-             # DictConfigをPythonのdictに変換
             clean_model_config = cast(Dict[str, Any], OmegaConf.to_container(raw_model_config, resolve=True))
         elif isinstance(raw_model_config, dict):
-             # すでにPythonのdictであれば、コピーを作成して使用
             clean_model_config = raw_model_config.copy()
             print("  - 【DEBUG INFO v7】 Model config is already a raw dict (Likely from previous HPO run). Using copy for cleanup.")
         else:
              raise TypeError(f"Model config has unexpected type: {type(raw_model_config)}")
         
-        # 3. 'neuron' サブ設定の 'type' キーを確実に削除（以前のニューロンエラーを解消するためのロジック）
-        if 'neuron' in clean_model_config and 'type' in clean_model_config['neuron']:
-            neuron_type = clean_model_config['neuron'].pop('type')
+        # 2. 'neuron' サブ設定から、MemoryModuleが予期しない全ての引数を削除する
+        if 'neuron' in clean_model_config:
+            neuron_config = clean_model_config['neuron']
+            deleted_keys: List[str] = []
             
-            # 4. 修正された辞書でコンテナの設定を上書き (model全体を from_dict で上書き)
-            model_config_provider.from_dict(clean_model_config) 
-            print(f"  - 【DEBUG FIX v7】 Removed neuron type '{neuron_type}' key and forcefully re-bound model config.")
+            # ニューロンクラスが受け付けない引数リスト (ログより推測)
+            keys_to_remove = [
+                'type', # 以前の修正対象
+                'v_threshold', 
+                'threshold_decay', 
+                'threshold_step', 
+                'bias', 
+                'v_init', 
+                'bias_init',
+                # 'features' はモデルのレイヤーサイズなので残しておくべきだが、念の為ログに残す
+                # 'features' 
+            ]
+
+            for key in keys_to_remove:
+                if key in neuron_config:
+                    neuron_config.pop(key)
+                    deleted_keys.append(key)
             
+            if deleted_keys:
+                # 3. 修正された辞書でコンテナの設定を上書き (model全体を from_dict で上書き)
+                model_config_provider.from_dict(clean_model_config) 
+                print(f"  - 【DEBUG FIX v9】 Cleaned neuron config. Removed keys: {', '.join(deleted_keys)} and forcefully re-bound model config.")
+            else:
+                 print(f"  - 【DEBUG INFO v9】 No problematic keys found in model.neuron config. Proceeding.")
+                 
         else:
-             print(f"  - 【DEBUG INFO v7】 'type' key not found in model.neuron config. Skipping removal.")
+             print("  - 【DEBUG INFO v9】 'neuron' key not found in model config. Skipping neuron cleanup.")
              
     except Exception as e:
-        # DIコンテナのバグ回避ロジックであるため、この処理自体の失敗は警告として出力し、プログラムを続行する。
-        print(f"Warning: Failed to clean 'type' key from neuron config before model instantiation (v7): {e}")
-    # --- ▲▲▲ 【エラー修正 v7】 ▲▲▲ ---
+        print(f"Warning: Failed to clean neuron config before model instantiation (v9): {e}")
+    # --- ▲▲▲ 【エラー修正 v9】 ▲▲▲ ---
+
 
     # ssn_core.py 側で vocab_size を処理するように修正したため、ここは変更不要
     student_model = container.snn_model(vocab_size=10).to(device)
@@ -382,7 +403,7 @@ async def main() -> None:
         "tokenizer": container.tokenizer(),
         "device": device,
         "hardware_profile": {}
-    } # <- シンタックスエラーの修正 (v8)
+    } 
     if args.task == 'cifar10':
         task_init_kwargs['img_size'] = container.config.data.img_size()
 

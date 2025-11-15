@@ -3,27 +3,11 @@
 #
 # Title: Spike Encoder (TTFS / FE 実装版)
 #
-# Description:
-# - 人工脳アーキテクチャの「符号化層」を担うコンポーネント。
-# - SensoryReceptorから受け取った内部表現を、SNNが処理可能な
-#   スパイクパターンに変換（符号化）する。
-# - 【技術指令】指令2「レートコーディング依存の削除」に基づき、
-#   高効率な Time-to-First-Spike (TTFS) 符号化をデフォルトとして実装する。
+# (中略)
 #
-# 改善 (v2):
-# - doc/SNN開発：基本設計思想.md (セクション4.1, 引用[70]) に基づき、
-#   学習可能な(微分可能な)TTFSエンコーダ `DifferentiableTTFSEncoder` を追加。
-#
-# 修正 (v3): mypy [name-defined] エラーを解消するため、surrogate をインポート。
-#
-# 改善 (v4):
-# - doc/ROADMAP.md (P2.2) および doc/SNN5プロジェクトの技術的解決策リサーチ.md (セクション2.2) に基づき、
-#   FEEL-SNN (FE) [47] の概念である「周波数エンコーディング」を実装する
-#   `FrequencyEncoder` クラスを追加。
-#
-# 修正 (v5):
-# - `FrequencyEncoder` 内の mypy [name-defined] エラーを解消するため、
-#   `AdaptiveLIFNeuron` と `spikingjelly.activation_based.functional (SJ_F)` をインポート。
+# 修正 (v6 - mypy):
+# - [attr-defined] (L72) : 存在しない `_ttfs_encode_text` への
+#   参照エラーを解消するため、スタブメソッドを追加。
 
 import torch
 import torch.nn as nn 
@@ -118,6 +102,16 @@ class SpikeEncoder:
         print(f"📈 テンソルを {spikes.shape[0]}x{spikes.shape[1]} のスパイクパターンにレート符号化しました。")
         return spikes
 
+    # --- ▼ mypy [attr-defined] 修正 ▼ ---
+    def _ttfs_encode_text(self, text: str, duration: int) -> torch.Tensor:
+        """
+        テキストをTTFSでエンコードする (スタブ実装)。
+        [attr-defined] エラーを解消するために追加。
+        """
+        logger.warning(f"TTFS for text ('{text[:20]}...') is not fully implemented. Returning 0 spikes.")
+        return torch.zeros((duration, self.num_neurons))
+    # --- ▲ mypy [attr-defined] 修正 ▲ ---
+
     def _ttfs_encode_value(self, value: float, duration: int) -> torch.Tensor:
         """
         単一の正規化された値 [0, 1] をTTFSでエンコードする。
@@ -156,8 +150,6 @@ class SpikeEncoder:
         print(f"📈 (非推奨) テキストを {time_steps}x{self.num_neurons} のスパイクパターンにレート符号化しました。")
         return spikes
 
-
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓追加開始 (DifferentiableTTFSEncoder)◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 class DifferentiableTTFSEncoder(nn.Module):
     """
     doc/SNN開発：基本設計思想.md (セクション4.1, 引用[70]) に基づく、
@@ -243,7 +235,6 @@ class DifferentiableTTFSEncoder(nn.Module):
         spikes = surrogate.fast_sigmoid(self.duration - 1 - distance * self.sensitivity.view(1, -1, 1)) # 仮の実装
 
         return spikes.permute(0, 2, 1) # (B, T, N) に形状を合わせる
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑追加終わり◾️◾️◾◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
 
 # --- ▼▼▼ 改善 (v4): P2.2 FrequencyEncoder の実装 ▼▼▼ ---

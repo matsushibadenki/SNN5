@@ -16,10 +16,10 @@
 # - L.171-181 のブロックをコメントアウトし、モデル側の
 #   v_init 自動設定ロジックを復活させる。
 #
-# 【!!! TypeError: MemoryModule.__init__() got an unexpected keyword argument 'v_init' 修正 v10 (ニューロン関連引数の包括的削除) !!!】
-# - MemoryModuleのコンストラクタが 'self' 以外の引数を取らないにもかかわらず、
-#   DIコンテナが設定の全パラメータを渡す問題を解決するため、ニューロン設定から
-#   'features' 以外のすべての動的パラメータを強制的に削除し、設定を再バインドする。
+# 【!!! TypeError: MemoryModule.__init__() got an unexpected keyword argument 'v_init' 修正 v11 (残存引数の包括的削除) !!!】
+# - 以前の修正後も 'v_init' と 'features' がコンストラクタに渡されていることがログから判明。
+# - MemoryModule.__init__ が 'self' 以外の引数を取らないため、ニューロン設定から
+#   'v_init', 'bias_init', 'features' を含め、すべての不要な動的パラメータを強制的に削除し、設定を再バインドする。
 
 import argparse
 import asyncio
@@ -265,7 +265,7 @@ async def main() -> None:
     # DIコンテナから必要なコンポーネントを正しい順序で取得・構築
     device = container.device()
 
-    # --- ▼▼▼ 【エラー修正 (MemoryModule.__init__ got unexpected keyword argument 'v_init') v10 (ニューロン引数の包括的削除) 】 ▼▼▼ ---
+    # --- ▼▼▼ 【エラー修正 (MemoryModule.__init__ got unexpected keyword argument 'v_init') v11 (残存引数の包括的削除) 】 ▼▼▼ ---
     # MemoryModule.__init__ が 'self' 以外の引数を取らないため、ニューロン設定から全ての動的引数を削除する。
     try:
         model_config_provider = container.config.model 
@@ -285,15 +285,16 @@ async def main() -> None:
             neuron_config = clean_model_config['neuron']
             deleted_keys: List[str] = []
             
-            # ニューロンクラスが受け付けない引数リスト (ログより、features以外すべて削除)
+            # ニューロンクラスが受け付けない引数リスト (features と v_init が最後に残っているため、すべて削除対象とする)
             keys_to_remove = [
                 'type', 
                 'v_threshold', 
                 'threshold_decay', 
                 'threshold_step', 
                 'bias', 
-                'v_init', 
+                'v_init', # <-- 今回エラーの原因
                 'bias_init',
+                'features', # <-- v_initとセットで渡されている引数
             ]
 
             for key in keys_to_remove:
@@ -304,20 +305,19 @@ async def main() -> None:
             if deleted_keys:
                 # 3. 修正された辞書でコンテナの設定を上書き (model全体を from_dict で上書き)
                 model_config_provider.from_dict(clean_model_config) 
-                print(f"  - 【DEBUG FIX v10】 Cleaned neuron config. Removed keys: {', '.join(deleted_keys)} and forcefully re-bound model config.")
+                print(f"  - 【DEBUG FIX v11】 Cleaned neuron config. Removed keys: {', '.join(deleted_keys)} and forcefully re-bound model config.")
             else:
-                 print(f"  - 【DEBUG INFO v10】 No problematic keys found in model.neuron config. Proceeding.")
+                 print(f"  - 【DEBUG INFO v11】 No problematic keys found in model.neuron config. Proceeding.")
                  
         else:
-             print("  - 【DEBUG INFO v10】 'neuron' key not found in model config. Skipping neuron cleanup.")
+             print("  - 【DEBUG INFO v11】 'neuron' key not found in model config. Skipping neuron cleanup.")
              
     except Exception as e:
-        print(f"Warning: Failed to clean neuron config before model instantiation (v10): {e}")
-    # --- ▲▲▲ 【エラー修正 v10】 ▲▲▲ ---
+        print(f"Warning: Failed to clean neuron config before model instantiation (v11): {e}")
+    # --- ▲▲▲ 【エラー修正 v11】 ▲▲▲ ---
 
 
     # ssn_core.py 側で vocab_size を処理するように修正したため、ここは変更不要
-    # HPO実行時にこの行でエラーが発生する。
     student_model = container.snn_model(vocab_size=10).to(device)
     
     # --- ▼▼▼ 【!!! HPO修正 (v16): aggressive_init は *無効* のまま !!!】 ▼▼▼ ---

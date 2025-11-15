@@ -13,17 +13,13 @@
 #   spiking_transformer_v2.py (L.49-57) の
 #   「v_init を v_threshold * 0.999 (0.4995) に設定する」
 #   ロジックを無効化していたことが原因と特定。
-# - L.171-171 のブロックをコメントアウトし、モデル側の
+# - L.171-181 のブロックをコメントアウトし、モデル側の
 #   v_init 自動設定ロジックを復活させる。
 #
-# 【!!! MemoryModule.__init__ got unexpected keyword argument 'type' 修正 v6 (DIコンテナのモデル解決を迂回) !!!】
-# - DIコンテナのキャッシュ問題を完全に回避するため、container.snn_model() の呼び出しを停止し、
-# - 必要な設定を手動で抽出し、'type' キーを削除した後、snn_core.py の SNNModel コンストラクタを直接呼び出すか、
-# - あるいは snn_core.py の依存性解決の最終地点である `snn_research.core.snn_core.SNNModel` を手動でインスタンス化する。
-# - 簡易化のため、ここでは container.snn_model の**戻り値**からニューロン設定を推測し、その設定を修正した後に
-# - **snn_model を呼び出す前の手動クリーンアップと再バインドを維持し、ログ出力を追加する**。
-#
-# ※ v6では、これまでの修正をさらに堅牢にしつつ、モデル構築時の引数を強制的にクリーンアップします。
+# 【!!! MemoryModule.__init__ got unexpected keyword argument 'type' 修正 v7 (Config変換の安全化) !!!】
+# - 以前の修正 (v4/v6) が、次のHPOトライアルで生の dict を OmegaConf.to_container に渡すことによる
+#   'ValueError: Input cfg is not an OmegaConf config object' を引き起こしていた問題を修正。
+# - raw_model_config が OmegaConfオブジェクトかdictかをチェックし、安全にdictに変換する。
 
 import argparse
 import asyncio
@@ -269,48 +265,42 @@ async def main() -> None:
     # DIコンテナから必要なコンポーネントを正しい順序で取得・構築
     device = container.device()
 
-    # --- ▼▼▼ 【エラー修正 (MemoryModule.__init__() got an unexpected keyword argument 'type') v6 (DIコンテナのモデル解決を迂回) 】 ▼▼▼ ---
-    # DIコンテナのキャッシュ問題を完全に回避するため、container.snn_model() の呼び出しを停止し、
-    # 必要な設定を手動で抽出・クリーンアップした後に、コンテナのファクトリを直接手動で呼び出す。
-    
-    # 1. モデル構築に必要なすべての設定を取得（DictConfigとして）
-    model_config_provider = container.config.model 
-    raw_model_config = model_config_provider()
-    
-    # 2. Pythonのdictに変換し、クリーンアップ処理を行う
-    model_config_dict = cast(Dict[str, Any], OmegaConf.to_container(raw_model_config, resolve=True))
-    
-    # 3. 'neuron' サブ設定の 'type' キーを確実に削除（このクリーンアップが重要）
-    if 'neuron' in model_config_dict and 'type' in model_config_dict['neuron']:
-        neuron_type = model_config_dict['neuron'].pop('type')
-        print(f"  - 【DEBUG FIX v6】 Manually removed neuron type '{neuron_type}' from model config dictionary.")
-        
-        # 4. **クリーンアップされた設定を、snn_modelファクトリの引数として手動で再構築し注入する。**
-        #    これにより、コンテナがキャッシュしている可能性のある古い設定を上書きする。
-        #    snn_modelファクトリが model_config を依存性として受け取っていると仮定。
-        #    ここでは、model_config_dict のキーと値を個別の引数として渡す
-        
-        # SNNModelの依存性: config.model のDictConfig全体、または個別の設定値。
-        # ここでは、SNNModelが内部で設定を再利用するため、修正された設定をコンテナに再バインドする
-        # v5のロジックが失敗したため、今回は model_config_provider.from_value は行わない。
-        
-        # 代わりに、container.snn_model の**内部**で使われる可能性のある依存性を手動で上書きする。
-        # DIコンテナの特性上、最も確実なのは、依存性の解決前に `snn_research.core.snn_core.SNNModel` が
-        # 依存するオブジェクトの属性を直接修正することである。
-        
-        # 再度、修正されたモデル設定全体をコンテナに再バインドする (v4の再実行)
-        model_config_provider.from_dict(model_config_dict)
-        print("  - 【DEBUG FIX v6】 Forcefully re-bound entire model config after cleaning neuron 'type' key.")
-        
-    else:
-        print(f"  - 【DEBUG INFO v6】 'type' key not found in model.neuron config after initial load. Proceeding.")
+    # --- ▼▼▼ 【エラー修正 (MemoryModule.__init__() got unexpected keyword argument 'type' & ValueError) v7 (Config変換の安全化) 】 ▼▼▼ ---
+    # 既存のモデル設定全体を取得し、neuronサブ設定から 'type' キーを削除した新しい設定をコンテナに再バインドする。
+    try:
+        # 1. モデル設定全体を ConfigurationProvider から取得
+        model_config_provider = container.config.model 
+        raw_model_config = model_config_provider() # DictConfigまたはDictの値を取得
 
+        # 2. 設定オブジェクトを安全に Python の dict に変換
+        if OmegaConf.is_config(raw_model_config):
+             # DictConfigをPythonのdictに変換
+            clean_model_config = cast(Dict[str, Any], OmegaConf.to_container(raw_model_config, resolve=True))
+        elif isinstance(raw_model_config, dict):
+             # すでにPythonのdictであれば、コピーを作成して使用
+            clean_model_config = raw_model_config.copy()
+            print("  - 【DEBUG INFO v7】 Model config is already a raw dict (Likely from previous HPO run). Using copy for cleanup.")
+        else:
+             raise TypeError(f"Model config has unexpected type: {type(raw_model_config)}")
+        
+        # 3. 'neuron' サブ設定の 'type' キーを確実に削除（以前のニューロンエラーを解消するためのロジック）
+        if 'neuron' in clean_model_config and 'type' in clean_model_config['neuron']:
+            neuron_type = clean_model_config['neuron'].pop('type')
+            
+            # 4. 修正された辞書でコンテナの設定を上書き (model全体を from_dict で上書き)
+            model_config_provider.from_dict(clean_model_config) 
+            print(f"  - 【DEBUG FIX v7】 Removed neuron type '{neuron_type}' key and forcefully re-bound model config.")
+            
+        else:
+             print(f"  - 【DEBUG INFO v7】 'type' key not found in model.neuron config. Skipping removal.")
+             
+    except Exception as e:
+        # DIコンテナのバグ回避ロジックであるため、この処理自体の失敗は警告として出力し、プログラムを続行する。
+        print(f"Warning: Failed to clean 'type' key from neuron config before model instantiation (v7): {e}")
+    # --- ▲▲▲ 【エラー修正 v7】 ▲▲▲ ---
 
     # ssn_core.py 側で vocab_size を処理するように修正したため、ここは変更不要
-    # HPO実行時にこの行でエラーが発生する。
     student_model = container.snn_model(vocab_size=10).to(device)
-    
-    # --- ▲▲▲ 【エラー修正 v6】 ▲▲▲ ---
     
     # --- ▼▼▼ 【!!! HPO修正 (v16): aggressive_init は *無効* のまま !!!】 ▼▼▼ ---
     
@@ -393,7 +383,7 @@ async def main() -> None:
         "tokenizer": container.tokenizer(),
         "device": device,
         "hardware_profile": {}
-    }
+    ]
     if args.task == 'cifar10':
         task_init_kwargs['img_size'] = container.config.data.img_size()
 
@@ -428,7 +418,7 @@ async def main() -> None:
     print("\n=============================================")
     print("🚨 FINAL DEBUG CHECK (RE-FORCED PARAMETERS) 🚨")
     print(f"  V_THRESHOLD (HPO/YAML): {container.config.model.neuron.v_threshold()}")
-    print(f"  LR (HPO/YAML): {container.config.model.neuron.learning_rate()}") # 修正後のコンフィグを利用
+    print(f"  LR (HPO/YAML): {container.config.training.gradient_based.learning_rate()}")
     print(f"  SPIKE_REG_W (HPO/YAML): {container.config.training.gradient_based.distillation.loss.spike_reg_weight()}")
     
     print("--- FORCED VALUES (v12: Most should be DISABLED) ---")

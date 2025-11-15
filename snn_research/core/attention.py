@@ -109,6 +109,7 @@ class SpikeDrivenSelfAttention(base.MemoryModule):
         self.to_v = nn.Linear(dim, dim)
 
         # スパイク生成ニューロン
+        # --- ▼▼▼ 修正 (v18): 'bias_init' と 'v_init' を許可リストに追加 ▼▼▼ ---
         lif_params = {k: v for k, v in neuron_config.items() if k in [
             'tau_mem', 'base_threshold', 'adaptation_strength', 'target_spike_rate', 
             'noise_intensity', 'threshold_decay', 'threshold_step', 
@@ -116,7 +117,7 @@ class SpikeDrivenSelfAttention(base.MemoryModule):
         ]}
         # --- ▲▲▲ 修正 (v18) ▲▲▲ ---
         lif_params['base_threshold'] = neuron_config.get("sdsa_threshold", lif_params.get('base_threshold', 1.0))
-        
+                
         # --- ▼ 修正: 型キャストをエイリアス名 (LIFNeuron) に変更 ▼ ---
         self.lif_q = cast(LIFNeuron, LIFNeuron(features=dim, **lif_params))
         self.lif_k = cast(LIFNeuron, LIFNeuron(features=dim, **lif_params))

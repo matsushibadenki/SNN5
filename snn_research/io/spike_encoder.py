@@ -8,6 +8,10 @@
 # 修正 (v6 - mypy):
 # - [attr-defined] (L72) : 存在しない `_ttfs_encode_text` への
 #   参照エラーを解消するため、スタブメソッドを追加。
+#
+# 修正 (v7 - mypy):
+# - [name-defined] (L111) : logger が未定義だったため、
+#   logging をインポートし、logger を定義。
 
 import torch
 import torch.nn as nn 
@@ -17,6 +21,12 @@ from spikingjelly.activation_based import surrogate # type: ignore[import-untype
 
 from spikingjelly.activation_based import functional as SJ_F # type: ignore[import-untyped]
 from snn_research.core.neurons import AdaptiveLIFNeuron
+
+# --- ▼ mypy [name-defined] 修正 (v7) ▼ ---
+import logging
+logger = logging.getLogger(__name__)
+# --- ▲ mypy [name-defined] 修正 (v7) ▲ ---
+
 
 class SpikeEncoder:
     """
@@ -102,15 +112,17 @@ class SpikeEncoder:
         print(f"📈 テンソルを {spikes.shape[0]}x{spikes.shape[1]} のスパイクパターンにレート符号化しました。")
         return spikes
 
-    # --- ▼ mypy [attr-defined] 修正 ▼ ---
+    # --- ▼ mypy [attr-defined] 修正 (v6) ▼ ---
     def _ttfs_encode_text(self, text: str, duration: int) -> torch.Tensor:
         """
         テキストをTTFSでエンコードする (スタブ実装)。
         [attr-defined] エラーを解消するために追加。
         """
+        # --- ▼ mypy [name-defined] 修正 (v7) ▼ ---
         logger.warning(f"TTFS for text ('{text[:20]}...') is not fully implemented. Returning 0 spikes.")
+        # --- ▲ mypy [name-defined] 修正 (v7) ▲ ---
         return torch.zeros((duration, self.num_neurons))
-    # --- ▲ mypy [attr-defined] 修正 ▲ ---
+    # --- ▲ mypy [attr-defined] 修正 (v6) ▲ ---
 
     def _ttfs_encode_value(self, value: float, duration: int) -> torch.Tensor:
         """
@@ -150,6 +162,8 @@ class SpikeEncoder:
         print(f"📈 (非推奨) テキストを {time_steps}x{self.num_neurons} のスパイクパターンにレート符号化しました。")
         return spikes
 
+
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓追加開始 (DifferentiableTTFSEncoder)◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 class DifferentiableTTFSEncoder(nn.Module):
     """
     doc/SNN開発：基本設計思想.md (セクション4.1, 引用[70]) に基づく、
@@ -235,6 +249,7 @@ class DifferentiableTTFSEncoder(nn.Module):
         spikes = surrogate.fast_sigmoid(self.duration - 1 - distance * self.sensitivity.view(1, -1, 1)) # 仮の実装
 
         return spikes.permute(0, 2, 1) # (B, T, N) に形状を合わせる
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑追加終わり◾️◾️◾◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
 
 # --- ▼▼▼ 改善 (v4): P2.2 FrequencyEncoder の実装 ▼▼▼ ---

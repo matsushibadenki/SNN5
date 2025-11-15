@@ -21,33 +21,34 @@ from .bif_neuron import BistableIFNeuron
 from .probabilistic_lif_neuron import ProbabilisticLIFNeuron 
 
 # 欠損している可能性のあるモジュールを捕捉し、ダミークラスを定義
+# SyntaxError: invalid syntax を修正するため、クラス定義を標準の複数行ブロックにする
 try: 
     from .izhikevich_neuron import IzhikevichNeuron 
 except ModuleNotFoundError: 
     class IzhikevichNeuron(base.MemoryModule): 
-        def __init__(self, **kwargs): super().__init__()
+        def __init__(self, **kwargs): 
+            super().__init__()
 
 try: 
     from .glif_neuron import GLIFNeuron 
 except ModuleNotFoundError: 
     class GLIFNeuron(base.MemoryModule): 
-        def __init__(self, **kwargs): super().__init__()
+        def __init__(self, **kwargs): 
+            super().__init__()
 
 try: 
     from .tc_lif import TC_LIF 
 except ModuleNotFoundError: 
     class TC_LIF(base.MemoryModule): 
-        def __init__(self, **kwargs): super().__init__()
+        def __init__(self, **kwargs): 
+            super().__init__()
 
 try: 
     from .scale_and_fire_neuron import ScaleAndFireNeuron 
 except ModuleNotFoundError: 
     class ScaleAndFireNeuron(base.MemoryModule): 
-        def __init__(self, **kwargs): super().__init__()
-
-# DualThresholdNeuron はこのファイル内に定義があるため、インポートは不要
-# ただし、以前の修正で他のファイルに移動した可能性を考慮し、ここではローカル定義を維持する
-
+        def __init__(self, **kwargs): 
+            super().__init__()
 # --- ▲▲▲ 【修正 v14】 ▲▲▲ ---
 
 

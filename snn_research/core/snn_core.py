@@ -5,15 +5,20 @@
 # データ(cifar10.yamlなど)の構成を管理し、モデルの初期化とフォワードパスを
 # 実行する中心的なクラス。
 #
+# 【修正内容 v26: 循環インポート (Circular Import) の修正】
+# - health-check 実行時に 'ImportError: cannot import name 'BreakthroughSNN' ...
+#   (most likely due to a circular import)' が発生する問題に対処します。
+# - このエラーは、snn_core.py (L:31) が .neurons モジュールをインポートし、
+#   同時に .neurons モジュール (またはその子) が snn_core.py から 'BreakthroughSNN' を
+#   インポートしようとするために発生していました。
+# - snn_core.py (L:31-39) でインポートされていた 'AdaptiveLIFNeuron',
+#   'BistableIFNeuron' などの個別のニューロンクラスは、
+#   SNNCore クラスの動作に不要（get_neuron_by_name が使用されるため）
+#   であるため、該当のインポートブロック (L:31-39) を全て削除しました。
+#
 # 【修正内容 v24: TypeError (missing 'vocab_size') の修正】
-# - health-check 実行時 (train.py --config configs/smoke_test_config.yaml) に
-#   'TypeError: SNNCore.__init__() missing 1 required positional argument: 'vocab_size''
-#   が発生する問題に対処します。
-# - smoke_test (ビジョンモデル) は vocab_size を定義しないため、
-#   SNNCore の __init__ (L: 115) において、'vocab_size: int' を
-#   'vocab_size: Optional[int] = None' に変更し、オプション引数としました。
-# - これにより、親クラス BaseModel (base.py L:40) の定義と一致し、
-#   ビジョンモデルでもテキストモデルでも初期化が可能になります。
+# - (v26でも維持) SNNCore の __init__ (L: 115) において、
+#   'vocab_size: int' を 'vocab_size: Optional[int] = None' に変更。
 
 import torch
 import torch.nn as nn
@@ -31,18 +36,22 @@ from ..utils.config_utils import (
     get_config_value, 
     merge_configs
 )
-# (v22で 'AdaptiveLIFNeuron' が __init__.py で定義されたため、
-#  'snn_research.core.neurons' から直接インポート可能)
-from .neurons import (
-    AdaptiveLIFNeuron,
-    IzhikevichNeuron,
-    ProbabilisticLIFNeuron,
-    GLIFNeuron,
-    TC_LIF,
-    DualThresholdNeuron,
-    ScaleAndFireNeuron,
-    BistableIFNeuron
-)
+
+# --- ▼▼▼ 【!!! 修正 v26: 循環インポートの原因 (L:31-39) を削除】 ▼▼▼
+# (このブロックは SNNCore の動作に不要であり、
+#  .neurons モジュールとの循環参照を引き起こしていたため削除)
+#
+# from .neurons import (
+#     AdaptiveLIFNeuron,
+#     IzhikevichNeuron,
+#     ProbabilisticLIFNeuron,
+#     GLIFNeuron,
+#     TC_LIF,
+#     DualThresholdNeuron,
+#     ScaleAndFireNeuron,
+#     BistableIFNeuron
+# )
+# --- ▲▲▲ 【!!! 修正 v26】 ▲▲▲
 
 
 logger = logging.getLogger(__name__)
@@ -97,13 +106,10 @@ class SNNCore(BaseModel):
         model_config: Dict[str, Any],
         task_config: Dict[str, Any],
         data_config: Dict[str, Any],
-        # --- ▼▼▼ 【!!! 修正 v24 !!!】 ▼▼▼
+        # --- ▼▼▼ 【!!! 修正 v24 (v26でも維持) !!!】 ▼▼▼
         # (TypeError: missing 'vocab_size' 修正)
-        # health-check (smoke_test) 実行時に vocab_size が None で
-        # エラーになるため、BaseModel (base.py L:40) と同様に
-        # Optional[int] = None に変更する。
         vocab_size: Optional[int] = None,
-        # --- ▲▲▲ 【!!! 修正 v24 !!!】 ▲▲▲
+        # --- ▲▲▲ 【!!! 修正 v24 (v26でも維持) !!!】 ▲▲▲
         paradigm: str = "gradient_based",
         **kwargs
     ):
@@ -114,7 +120,7 @@ class SNNCore(BaseModel):
             model_config (Dict[str, Any]): モデル固有の構成 (例: d_model, nhead)
             task_config (Dict[str, Any]): タスク固有の構成 (例: loss_weights)
             data_config (Dict[str, Any]): データ固有の構成 (例: num_classes, img_size)
-            vocab_size (Optional[int]): 語彙サイズ (テキストタスク用、v24でOptionalに変更)
+            vocab_size (Optional[int]): V24でOptionalに変更)
             paradigm (str): 学習パラダイム (例: 'gradient_based')
         """
         # BaseModel の __init__ を呼び出す (v13)

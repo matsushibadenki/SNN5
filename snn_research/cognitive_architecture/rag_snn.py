@@ -13,6 +13,11 @@
 # symbol_grounding.py, causal_inference_engine.py, memory.py から
 # 呼び出される `add_relationship` と `add_causal_relationship` の
 # スタブメソッドを追加。
+#
+# --- 修正 (v3 - mypy) ---
+# 1. [syntax] Unmatched '}' エラーを修正。
+#    add_causal_relationship メソッドの metadata 辞書定義の末尾に
+#    不要な '}' があったため削除。
 
 import faiss # type: ignore[import-untyped]
 import numpy as np
@@ -174,7 +179,12 @@ class RAGSystem:
         logger.info(f"[RAG-STUB] Adding causal relationship: IF ({condition}), THEN ({cause}) -> ({effect})")
         
         causal_text = f"Causal rule: Under condition '{condition}', the event '{cause}' leads to '{effect}'."
+        
+        # --- ▼ mypy [syntax] 修正 (v3) ▼ ---
+        # metadata 辞書定義の末尾にあった不要な '}' を削除
         metadata: Dict[str, Any] = {"type": "causal_rule", "cause": cause, "effect": effect, "condition": condition}
+        # --- ▲ mypy [syntax] 修正 (v3) ▲ ---
+        
         self.add_documents([causal_text], [metadata])
 
     # --- ▲ mypy [attr-defined] 修正 ▲ ---
@@ -215,5 +225,3 @@ class RAGSystem:
         """
         self.vector_store.clear()
         logger.info("RAG system (VectorStore) cleared.")
-
-}

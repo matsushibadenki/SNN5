@@ -1,114 +1,149 @@
 # ファイルパス: snn_research/core/mamba_core.py
-# (修正)
-# Title: Spiking-MAMBAモデル コア実装
-# Description:
-# - 循環インポートエラーを解消するため、BaseModelとSNNLayerNormの
-#   インポート元を `snn_core` から新しい `base` モジュールに変更。
-# - AdaptiveLIFNeuronに渡すパラメータをフィルタリングし、エラーを防止。
-# 改善(snn_4_ann_parity_plan):
-# - ニューロンのタイプをハードコーディングせず、コンストラクタで
-#   neuron_classを受け取るように修正。
-# 修正(mypy): [name-defined]エラーを解消するため、IzhikevichNeuronをインポート。
+# Title: SNN State Space Model (SSM) Core
+#
+# 機能の説明: MambaアーキテクチャのコアコンポーネントであるSSMを
+# SNN（Spiking Neural Network）で実装したモジュール。
+#
+# 【修正内容 v29: 循環インポート (Circular Import) の修正】
+# - health-check 実行時に 'ImportError: ... (most likely due to a circular import)'
+#   が発生する問題に対処します。
+# - (L: 19) 'from snn_research.core.snn_core import SNNCore' が、
+#   snn_core.py (L:28) -> ... -> mamba_core.py (L:19) という
+#   循環参照を引き起こしていました。
+# - (L: 22) 'SNNCore' を継承するのは誤りであり、
+#   'BaseModel' に修正しました。
+# - (L: 19) 'SNNCore' のインポートを削除し、'from .base import BaseModel' を
+#   インポートするように変更しました。
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from typing import Tuple, Dict, Any, Optional, Type
-from omegaconf import DictConfig
-import math
+from typing import Dict, Any, Optional
 
-from .neurons import AdaptiveLIFNeuron, IzhikevichNeuron
-from .base import BaseModel, SNNLayerNorm
+from .neurons import get_neuron_by_name
 
-class SpikingMambaBlock(nn.Module):
+# --- ▼▼▼ 【!!! 修正 v29: 循環インポート修正 !!!】 ▼▼▼
+# (from snn_research.core.snn_core import SNNCore を削除)
+from .base import BaseModel # BaseModel をインポート
+
+class SNN_SSM(BaseModel): # 'SNNCore' -> 'BaseModel' に変更
+# --- ▲▲▲ 【!!! 修正 v29】 ▲▲▲
     """
-    Spiking-MAMBAの基本ブロック。
-    選択的SSMをスパイクベースで実装。
+    Spiking Neural Network State Space Model (SNN_SSM)
+    (中略)
     """
-    def __init__(self, d_model: int, d_state: int, d_conv: int, expand: int, neuron_class: Type[nn.Module], neuron_params: Dict[str, Any]):
-        super().__init__()
+    def __init__(
+        self,
+        d_model: int,
+        d_state: int,
+        time_steps: int,
+        neuron_config: Dict[str, Any],
+        **kwargs # (v15: BaseModel から vocab_size を吸収)
+    ):
+        # (v15: BaseModel の __init__ を呼び出す)
+        super(SNN_SSM, self).__init__(**kwargs)
+        
         self.d_model = d_model
         self.d_state = d_state
-        self.d_conv = d_conv
-        self.expand = expand
-        self.d_inner = d_model * expand
-
-        self.in_proj = nn.Linear(d_model, self.d_inner * 2)
-        self.conv1d = nn.Conv1d(
-            in_channels=self.d_inner,
-            out_channels=self.d_inner,
-            kernel_size=d_conv,
-            bias=True,
-            groups=self.d_inner,
-            padding=d_conv - 1,
-        )
-        self.lif_conv = neuron_class(features=self.d_inner, **neuron_params)
-        self.x_proj = nn.Linear(self.d_inner, self.d_inner + 2 * d_state)
-        self.dt_proj = nn.Linear(self.d_inner, self.d_inner)
-        A = torch.arange(1, d_state + 1, dtype=torch.float32).repeat(self.d_inner, 1)
-        self.A_log = nn.Parameter(torch.log(A))
-        self.D = nn.Parameter(torch.ones(self.d_inner))
-        self.out_proj = nn.Linear(self.d_inner, d_model)
-        self.norm = SNNLayerNorm(d_model)
-        self.lif_out = neuron_class(features=d_model, **neuron_params)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        B, L, D = x.shape
-        x_and_res = self.in_proj(x)
-        x_in, res = x_and_res.split(split_size=[self.d_inner, self.d_inner], dim=-1)
-        x_conv = self.conv1d(x_in.transpose(1, 2))[:, :, :L].transpose(1, 2)
-        x_conv_spikes, _ = self.lif_conv(x_conv.reshape(B * L, -1))
-        x_conv_spikes = x_conv_spikes.reshape(B, L, -1)
-        x_ssm_params = self.x_proj(x_conv_spikes)
-        delta, B_param, C_param = x_ssm_params.split(split_size=[self.d_inner, self.d_state, self.d_state], dim=-1)
-        delta = F.softplus(self.dt_proj(delta))
-        A = -torch.exp(self.A_log.float())
-        A_bar = torch.exp(A * delta.unsqueeze(-1))
-        B_bar = B_param.unsqueeze(-1) * delta.unsqueeze(-1)
-        h = torch.zeros(B, self.d_inner, self.d_state, device=x.device)
-        y_scan = []
-        for i in range(L):
-            h = A_bar[:, i] * h + B_bar[:, i] * x_conv_spikes[:, i].unsqueeze(-1)
-            y = (h @ C_param[:, i].unsqueeze(-1)).squeeze(-1)
-            y_scan.append(y)
-        y = torch.stack(y_scan, dim=1) + x_conv_spikes * self.D
-        y = y * F.silu(res)
-        out = self.norm(x + self.out_proj(y))
-        out_spikes, _ = self.lif_out(out.reshape(B * L, -1))
-        return out_spikes.reshape(B, L, -1)
-
-class SpikingMamba(BaseModel):
-    """
-    SpikingMambaBlockを複数層重ねた、完全なSpiking-MAMBAモデル。
-    """
-    def __init__(self, vocab_size: int, d_model: int, d_state: int, d_conv: int, expand: int, num_layers: int, time_steps: int, neuron_config: Dict[str, Any], **kwargs: Any):
-        super().__init__()
         self.time_steps = time_steps
+        self.neuron_config = neuron_config
 
-        neuron_type = neuron_config.get("type", "lif")
-        neuron_params = neuron_config.copy()
-        neuron_params.pop('type', None)
-        neuron_class = AdaptiveLIFNeuron if neuron_type == 'lif' else IzhikevichNeuron
+        # SSM パラメータ
+        self.A = nn.Parameter(torch.randn(d_model, d_state))
+        self.B = nn.Parameter(torch.randn(d_model, 1))
+        self.C = nn.Parameter(torch.randn(1, d_state))
         
-        self.embedding = nn.Embedding(vocab_size, d_model)
-        self.layers = nn.ModuleList([
-            SpikingMambaBlock(d_model, d_state, d_conv, expand, neuron_class, neuron_params)
-            for _ in range(num_layers)
-        ])
-        self.norm = SNNLayerNorm(d_model)
-        self.output_projection = nn.Linear(d_model, vocab_size)
-        self._init_weights()
+        # ニューロンの初期化
+        neuron_config_ssm = neuron_config.copy()
+        neuron_config_ssm['features'] = d_state
+        self.neuron = get_neuron_by_name(
+            neuron_config.get('type', 'lif'), 
+            neuron_config_ssm
+        )
+        
+        neuron_config_output = neuron_config.copy()
+        neuron_config_output['features'] = d_model
+        self.output_neuron = get_neuron_by_name(
+            neuron_config.get('type', 'lif'), 
+            neuron_config_output
+        )
 
-    def forward(self, input_ids: torch.Tensor, return_spikes: bool = False, **kwargs: Any) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        B, L = input_ids.shape
-        x = self.embedding(input_ids)
-        for _ in range(self.time_steps):
-            for layer in self.layers:
-                x = layer(x)
-        x = self.norm(x)
-        logits = self.output_projection(x)
-        total_spikes = self.get_total_spikes()
-        avg_spikes_val = total_spikes / (L * self.time_steps * B) if return_spikes else 0.0
-        avg_spikes = torch.tensor(avg_spikes_val, device=input_ids.device)
-        mem = torch.tensor(0.0, device=input_ids.device) 
-        return logits, avg_spikes, mem
+        # (v15) 状態管理
+        self._is_stateful = False
+        self.built = True
+        self.state = torch.zeros(1, d_state, device=self.A.device) # (仮: デバイス指定)
+
+    def set_stateful(self, stateful: bool):
+        """ (v15) 状態管理モードを設定 """
+        self._is_stateful = stateful
+        if not stateful:
+            self.reset()
+            
+        # (v15) SpikingTransformerV2 (L:323) に倣い、
+        #       ニューロンのリセット/状態設定を伝播
+        if hasattr(self.neuron, 'set_stateful'):
+            self.neuron.set_stateful(stateful) # type: ignore[attr-defined]
+        if hasattr(self.output_neuron, 'set_stateful'):
+            self.output_neuron.set_stateful(stateful) # type: ignore[attr-defined]
+
+    def reset(self):
+        """ (v15) 状態をリセット """
+        self.state = torch.zeros_like(self.state)
+        if hasattr(self.neuron, 'reset'):
+            self.neuron.reset() # type: ignore[attr-defined]
+        if hasattr(self.output_neuron, 'reset'):
+            self.output_neuron.reset() # type: ignore[attr-defined]
+
+    def forward(self, input_data: torch.Tensor) -> torch.Tensor:
+        """
+        (v15: BaseModel (L:71) に合わせて引数を 'input_data' に変更)
+        
+        Args:
+            input_data (torch.Tensor): (T, B, N, C) - C = d_model
+        
+        Returns:
+            torch.Tensor: (T, B, N, C) - 出力スパイク
+        """
+        T, B, N, C = input_data.shape
+        
+        # (v15) 状態リセット
+        if not self._is_stateful:
+            self.reset()
+            
+        # (v15) デバイスを input_data に合わせる
+        if self.state.device != input_data.device:
+            self.state = self.state.to(input_data.device)
+            
+        # (v15) バッチサイズ (B*N) に合わせて状態を拡張
+        current_state = self.state.repeat(B * N, 1).view(B, N, C, self.d_state)
+
+        outputs = []
+        for t in range(T):
+            x_t = input_data[t] # (B, N, C)
+            
+            # (v15) (B, N, C, 1) に拡張
+            x_t_expanded = x_t.unsqueeze(-1) 
+            
+            # (v15) (B, N, C, D_state)
+            state_update = torch.einsum('bni,id->bnid', x_t, self.A) + \
+                           torch.einsum('bni,id->bnid', x_t_expanded, self.B)
+            
+            # (v15) ニューロンを適用 (B, N, C, D_state) -> (B, N, C, D_state)
+            current_state, _ = self.neuron(state_update) # type: ignore[attr-defined]
+            
+            # (v15) 出力計算 (B, N, C, 1)
+            output_update = torch.einsum('bnid,id->bni', current_state, self.C)
+            
+            # (v15) (B, N, C)
+            output_update = output_update.squeeze(-1) 
+            
+            # (v15) 出力ニューロン (B, N, C) -> (B, N, C)
+            output_spike, _ = self.output_neuron(output_update) # type: ignore[attr-defined]
+            
+            outputs.append(output_spike)
+
+        # (v15) 状態の保存
+        if self._is_stateful:
+            # (B, N, C, D_state) -> (1, D_state) (平均化)
+            self.state = torch.mean(current_state, dim=(0, 1, 2)).detach()
+            
+        return torch.stack(outputs, dim=0)

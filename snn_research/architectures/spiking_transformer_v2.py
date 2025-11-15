@@ -4,13 +4,6 @@
 #
 # (中略)
 #
-# 【!!! エラー修正 (log.txt v8) !!!】
-# 1. TypeError: unsupported operand type(s) for ** or pow(): 'NoneType' and 'int'
-#    - (L335-L343) SpikingTransformerV2.forward が avg_mem=None を
-#      返していた。
-#    - 損失関数 (losses.py) が None**2 を計算しようとしてクラッシュしたため、
-#      None の代わりに 0.0 のテンソルを返すように修正。
-#
 # 【!!! スパイク消滅 (spike_rate=0) 修正 v2 !!!】
 # - (L.156) run_distill_hpo.py (L.171) 側で v_init=0.0 が強制されていた
 #   ことが原因と特定。
@@ -18,6 +11,10 @@
 #   v_init=0.4995 を自動設定するロジックが復活する。
 # - そのため、前回適用した gain=3.0 の修正は元に戻し（revert）、
 #   スパイク爆発を防ぐ。
+#
+# 【!!! mypy 修正 (v3) !!!】
+# 1. [syntax] / [operator] エラーを解消するため、
+#    ファイル末尾 (L510) の不要な '}' を削除。
 
 import torch
 import torch.nn as nn
@@ -224,7 +221,10 @@ class SpikingTransformerV2(BaseModel):
         
         **kwargs # (snn_core.py から渡される 'vocab_size' などを吸収)
     ):
-        super(SpikingTransformerV2, self).__init__()
+        # --- ▼ mypy [call-arg] 修正 (v2) ▼ ---
+        # BaseModel の __init__ に kwargs を渡す
+        super(SpikingTransformerV2, self).__init__(**kwargs)
+        # --- ▲ mypy [call-arg] 修正 (v2) ▲ ---
         
         # --- 型キャストの一元化 ---
         img_size = int(img_size)
@@ -288,8 +288,9 @@ class SpikingTransformerV2(BaseModel):
         self._is_stateful = stateful
         
         # (Fix 3) 各レイヤーに状態管理モードを伝播
-        self.embedding.neuron.set_stateful(stateful) 
-        self.pool_neuron.set_stateful(stateful)
+        # (mypy互換性) self.embedding.neuron は MemoryModule を継承
+        cast(base.MemoryModule, self.embedding.neuron).set_stateful(stateful) 
+        cast(base.MemoryModule, self.pool_neuron).set_stateful(stateful)
         for layer in self.layers:
             if isinstance(layer, SDSAEncoderLayer):
                 layer.set_stateful(stateful)
@@ -305,11 +306,13 @@ class SpikingTransformerV2(BaseModel):
         
         # --- (Fix 3): 状態リセット（全コンポーネント） ---
         if not self._is_stateful:
-            self.embedding.neuron.reset()
-            self.pool_neuron.reset()
+            # (mypy互換性) self.embedding.neuron は MemoryModule を継承
+            cast(base.MemoryModule, self.embedding.neuron).reset()
+            cast(base.MemoryModule, self.pool_neuron).reset()
             for layer in self.layers:
                 # set_stateful(False) が内部で reset() を呼ぶ
-                layer.set_stateful(False) 
+                if isinstance(layer, SDSAEncoderLayer):
+                    layer.set_stateful(False) 
         # --- ▲▲▲ ---
 
         # 1. 埋め込み: (B, C, H, W) -> (T, B, N, D)
@@ -452,15 +455,20 @@ class SDSAEncoderLayer(nn.Module):
 
         # ニューロンの状態をリセット
         if not stateful:
-            self.neuron.reset() 
-            self.ffn_neuron1.reset()
-            self.ffn_neuron2.reset()
+            # (mypy互換性) get_neuron_by_name は MemoryModule を返す
+            cast(base.MemoryModule, self.neuron).reset() 
+            cast(base.MemoryModule, self.ffn_neuron1).reset()
+            cast(base.MemoryModule, self.ffn_neuron2).reset()
             
             # (self_attn のリセットも必要か？)
             # 補足: SpikeDrivenSelfAttention も内部にニューロンを持つため、
             # 本来はリセットが必要ですが、SDSA側に set_stateful/reset
             # が実装されていない場合があるため、ここでは上記3つのみとします。
             # (SDSAの実装 (attention.py) 側での対応が必要な可能性)
+            if hasattr(self.self_attn, 'set_stateful'):
+                self.self_attn.set_stateful(stateful)
+            elif hasattr(self.self_attn, 'reset'):
+                self.self_attn.reset()
 
 
     # (Fix 1): forward のロジック全体を修正
@@ -514,3 +522,7 @@ class SDSAEncoderLayer(nn.Module):
             outputs.append(x_t)
         
         return torch.stack(outputs, dim=0) # (T, B, N, C)
+
+# --- ▼ mypy [syntax] 修正 (v3) ▼ ---
+# (ファイル末尾の不要な '}' を削除)
+# --- ▲ mypy [syntax] 修正 (v3) ▲ ---

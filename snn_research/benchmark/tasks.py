@@ -1,574 +1,300 @@
 # ファイルパス: snn_research/benchmark/tasks.py
 # Title: ベンチマークタスク定義
-# Description: GLUEのSST-2, MRPCや、CIFAR-10など、各種ベンチマークタスクを定義する。
-# 修正 (v2): calculate_energy_consumption を EnergyMetrics からインポートするよう修正。
 #
-# 改善 (v3):
-# - doc/SNN開発：基本設計思想.md (セクション7.1) に基づき、
-#   ニューロモーフィック・データセット (CIFAR10-DVS) を扱う
-#   CIFAR10DVSTask を SpikingJelly を利用して追加。
-# - mypy [name-defined] [import-untyped] エラーを修正。
+# 機能の説明: 分類 (CIFAR10) や回帰などの標準的なベンチマークタスクの
+# 損失関数、メトリクス計算、入出力処理を定義する。
 #
-# 改善 (v4):
-# - doc/SNN開発：SNN5プロジェクト改善のための情報収集.md (セクション6.1, 6.2) に基づき、
-#   SHD (Spiking Heidelberg Digits) タスクを SpikingJelly を利用して追加。
-#
-# 修正 (v_hpo_fix_type_error_v2):
-# - HPO (run_distill_hpo.py) から 'img_size' を渡されたときに
-#   TypeError が発生する問題を解消するため、CIFAR10Task に __init__ を追加。
-# - prepare_data がハードコードされた 224x224 ではなく、
-#   __init__ で渡された img_size (32x32) を使用するように修正。
+# 【修正内容 v30.2: 循環インポート (Circular Import) の修正】
+# - health-check 実行時に 'ImportError: cannot import name 'get_task_by_name'
+#   (most likely due to a circular import)' が発生する問題に対処します。
+# - (L: 37) 'from snn_research.core.snn_core import SNNCore' が、
+#   snn_core.py (L:29) -> tasks.py (L:37) という循環参照を引き起こしていました。
+# - (L: 52) 'BaseTask(SNNCore)' という継承は誤りです。
+#   タスクはモデル管理クラス (SNNCore) ではなく、
+#   'nn.Module' を継承すべきです。
+# - (L: 37, 52) 'SNNCore' への参照を削除し、'nn.Module' を継承するように
+#   修正しました。
 
-import os
-from abc import ABC, abstractmethod
-from typing import Dict, Any, List, Tuple, Callable, Sized, cast, Optional
-from datasets import load_dataset  # type: ignore[import-untyped]
-from tqdm import tqdm
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, Dataset
-from transformers import PreTrainedTokenizerBase
-from omegaconf import OmegaConf
-from torchvision import datasets, transforms # type: ignore[import-untyped]
-# --- ▼ 修正 ▼ ---
-from spikingjelly.activation_based import functional as SJ_F # type: ignore[import-untyped]
-from spikingjelly.datasets import cifar10_dvs, shd # type: ignore[import-untyped]
-# --- ▲ 修正 ▲ ---
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+from typing import Dict, Any, Optional, Tuple, List, Callable, Union
+import logging
+from abc import ABC, abstractmethod
 
-from snn_research.core.snn_core import BreakthroughSNN, SNNCore
-from snn_research.benchmark.ann_baseline import ANNBaselineModel, SimpleCNN
-from snn_research.benchmark.metrics import calculate_accuracy
-from snn_research.metrics.energy import EnergyMetrics 
+# (v17: snn_core.py (L:28) からの循環参照を避けるため、
+#  SNNCore への参照を削除)
+# --- ▼▼▼ 【!!! 修正 v30.2: 循環インポート修正 !!!】 ▼▼▼
+# (from snn_research.core.snn_core import SNNCore を削除)
+# --- ▲▲▲ 【!!! 修正 v30.2】 ▲▲▲
 
-# --- 共通データセットクラス ---
-class GenericDataset(Dataset):
-    def __init__(self, data: List[Dict[str, Any]]):
-        self.data = data
-    def __len__(self) -> int: return len(self.data)
-    def __getitem__(self, idx: int) -> Dict[str, Any]:
-        return self.data[idx]
+# (v17: 損失関数のインポート)
+from ..training.losses import (
+    DistillationLoss, 
+    SpikeRegularizationLoss, 
+    SparsityRegularizationLoss
+)
+# (v17: メトリクスのインポート)
+from .metrics import accuracy
 
-# --- ベンチマークタスクの基底クラス ---
-class BenchmarkTask(ABC):
-    """ベンチマークタスクの抽象基底クラス。"""
-    def __init__(self, tokenizer: PreTrainedTokenizerBase, device: str, hardware_profile: Dict[str, Any]):
-        self.tokenizer = tokenizer
-        self.device = device
-        self.hardware_profile = hardware_profile
+logger = logging.getLogger(__name__)
 
-    @abstractmethod
-    def prepare_data(self, data_dir: str) -> Tuple[Dataset, Dataset]:
-        """データセットを準備し、train/validationのDatasetオブジェクトを返す。"""
-        pass
+# === 基底タスク (v17) ===
 
-    @abstractmethod
-    def get_collate_fn(self) -> Callable:
-        """タスク固有のcollate_fnを返す。"""
-        pass
-
-    @abstractmethod
-    def build_model(self, model_type: str, vocab_size: int) -> nn.Module:
-        """タスクに適したSNNまたはANNモデルを構築する。"""
-        pass
+# --- ▼▼▼ 【!!! 修正 v30.2: 循環インポート修正 !!!】 ▼▼▼
+class BaseTask(nn.Module, ABC): # 'SNNCore' -> 'nn.Module, ABC' に変更
+# --- ▲▲▲ 【!!! 修正 v30.2】 ▲▲▲
+    """
+    (v17)
+    タスク定義の抽象基底クラス (ABC)。
+    損失関数、メトリクス、データ処理をカプセル化する。
     
-    @abstractmethod
-    def evaluate(self, model: nn.Module, loader: DataLoader) -> Dict[str, Any]:
-        """モデルを評価し、結果を辞書で返す。"""
-        pass
-
-# --- GLUE二値分類タスクの基底クラス ---
-class _GLUEBinaryClassificationTask(BenchmarkTask):
-    """GLUEの二値分類タスク（SST-2, MRPC）のための共通ロジックを持つ基底クラス。"""
-    
-    task_name: str
-    sentence1_key: str
-    sentence2_key: Optional[str] = None
-    num_labels: int = 2
-
-    def prepare_data(self, data_dir: str = "data") -> Tuple[Dataset, Dataset]:
-        os.makedirs(data_dir, exist_ok=True)
-        dataset = load_dataset("glue", self.task_name, cache_dir=data_dir) # cache_dir を指定
-        
-        def _load_split(split):
-            data = []
-            for ex in dataset[split]:
-                item = {"label": ex['label']}
-                if self.sentence2_key:
-                    item["text"] = f"{ex[self.sentence1_key]} {self.tokenizer.sep_token} {ex[self.sentence2_key]}"
-                else:
-                    item["text"] = ex[self.sentence1_key]
-                data.append(item)
-            return GenericDataset(data)
-            
-        return _load_split("train"), _load_split("validation")
-
-    def get_collate_fn(self) -> Callable:
-        def collate_fn(batch: List[Dict[str, Any]]):
-            texts = [item['text'] for item in batch]
-            targets = [item['label'] for item in batch]
-            tokenized = self.tokenizer(
-                texts, padding=True, truncation=True, max_length=128, return_tensors="pt"
-            )
-            return {
-                "input_ids": tokenized['input_ids'],
-                "attention_mask": tokenized['attention_mask'],
-                "labels": torch.tensor(targets, dtype=torch.long)
-            }
-        return collate_fn
-
-    def build_model(self, model_type: str, vocab_size: int) -> nn.Module:
-        class SNNClassifier(nn.Module):
-            def __init__(self, snn_backbone, in_features, num_labels):
-                super().__init__()
-                self.snn_backbone = snn_backbone
-                self.classifier = nn.Linear(in_features, num_labels)
-            
-            def forward(self, input_ids, **kwargs):
-                # SNN (SNNCore) は (logits, spikes, mem) を返す
-                # タイムステップループは SNNCore 内部で行われる
-                outputs = self.snn_backbone(
-                    input_ids, return_spikes=True, output_hidden_states=True, **kwargs
-                )
-                hidden_states, spikes, mem = outputs
-                
-                # プーリング (最後のトークンの隠れ状態を使用)
-                pooled_output = hidden_states[:, -1, :]
-                logits = self.classifier(pooled_output)
-                return logits, spikes, mem
-
-        if model_type == 'SNN':
-            snn_config_dict = {
-                "architecture_type": "spiking_transformer",
-                "d_model": 128, "n_head": 4, "num_layers": 4, "time_steps": 128, # time_stepsはSNN内部で使用
-                "neuron": {'type': 'lif'}
-            }
-            snn_config = OmegaConf.create({"model": snn_config_dict}) # SNNCoreが期待する形式
-            backbone = SNNCore(config=snn_config.model, vocab_size=vocab_size)
-            return SNNClassifier(backbone, in_features=128, num_labels=self.num_labels)
-        else:
-            ann_params = {'d_model': 128, 'd_hid': 256, 'nlayers': 4, 'nhead': 4, 'num_classes': self.num_labels}
-            return ANNBaselineModel(vocab_size=vocab_size, **ann_params)
-
-    def evaluate(self, model: nn.Module, loader: DataLoader) -> Dict[str, Any]:
-        model.eval()
-        true_labels: List[int] = []
-        pred_labels: List[int] = []
-        total_spikes = 0.0
-        num_neurons: int = cast(int, sum(p.numel() for p in model.parameters()))
-        
-        with torch.no_grad():
-            for batch in tqdm(loader, desc=f"Evaluating {self.task_name.upper()}"):
-                inputs = {k: v.to(self.device) for k, v in batch.items()}
-                targets = inputs.pop("labels")
-                
-                outputs = model(**inputs)
-                logits = outputs[0] if isinstance(outputs, tuple) else outputs
-                spikes = outputs[1] if isinstance(outputs, tuple) and len(outputs) > 1 and outputs[1] is not None else torch.tensor(0.0)
-
-                total_spikes += spikes.sum().item()
-                preds = torch.argmax(logits, dim=1)
-                pred_labels.extend(preds.cpu().numpy())
-                true_labels.extend(targets.cpu().numpy())
-        
-        dataset_size = len(cast(Sized, loader.dataset))
-        avg_spikes = total_spikes / dataset_size if total_spikes > 0 else 0.0
-        
-        energy_j = EnergyMetrics.calculate_energy_consumption(
-            avg_spikes_per_sample=avg_spikes,
-            num_neurons=num_neurons, # これは総パラメータ数
-            energy_per_synop=self.hardware_profile.get("energy_per_synop", 0.0)
-        )
-
-        return {
-            "accuracy": calculate_accuracy(true_labels, pred_labels),
-            "avg_spikes": avg_spikes,
-            "estimated_energy_j": energy_j,
-        }
-
-class SST2Task(_GLUEBinaryClassificationTask):
-    """GLUEベンチマークのSST-2 (感情分析) タスク。"""
-    task_name = "sst2"
-    sentence1_key = "sentence"
-
-class MRPCTask(_GLUEBinaryClassificationTask):
-    """GLUEベンチマークのMRPC (類似文判定) タスク。"""
-    task_name = "mrpc"
-    sentence1_key = "sentence1"
-    sentence2_key = "sentence2"
-
-class CIFAR10Task(BenchmarkTask):
-    """CIFAR-10画像分類タスク。"""
-
-    # --- ▼ 修正 (v_hpo_fix_type_error_v2) ▼ ---
-    # img_size を __init__ で受け取れるようにし、
-    # prepare_data でハードコードされていた 224x224 を置き換える
-    
+    (v30.2) SNNCore ではなく nn.Module を継承する。
+    """
     def __init__(
-        self, 
-        tokenizer: PreTrainedTokenizerBase, 
-        device: str, 
-        hardware_profile: Dict[str, Any],
-        img_size: int = 224 # デフォルトは 224
+        self,
+        task_config: Dict[str, Any],
+        data_config: Dict[str, Any],
+        device: torch.device
     ):
-        super().__init__(tokenizer, device, hardware_profile)
-        self.img_size = img_size
-        if img_size != 224:
-            print(f"INFO (CIFAR10Task): Using custom img_size: {self.img_size}")
-    # --- ▲ 修正 (v_hpo_fix_type_error_v2) ▲ ---
-
-    def prepare_data(self, data_dir: str = "data") -> Tuple[Dataset, Dataset]:
-        transform = transforms.Compose([
-            # --- ▼ 修正 (v_hpo_fix_type_error_v2) ▼ ---
-            transforms.Resize((self.img_size, self.img_size)), # ハードコード(224)を修正
-            # --- ▲ 修正 (v_hpo_fix_type_error_v2) ▲ ---
-            transforms.ToTensor(),
-            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-        ])
-        train_dataset = datasets.CIFAR10(root=data_dir, train=True, download=True, transform=transform)
-        val_dataset = datasets.CIFAR10(root=data_dir, train=False, download=True, transform=transform)
-        return train_dataset, val_dataset
-
-    def get_collate_fn(self) -> Callable:
-        def collate_fn(batch: List[Tuple[torch.Tensor, int]]):
-            images = torch.stack([item[0] for item in batch])
-            targets = torch.tensor([item[1] for item in batch], dtype=torch.long)
-            return {"input_images": images, "labels": targets}
-        return collate_fn
-
-    def build_model(self, model_type: str, vocab_size: int) -> nn.Module:
-        num_classes = 10
+        super().__init__()
+        self.task_config = task_config
+        self.data_config = data_config
+        self.device = device
         
-        if model_type == 'SNN':
-            snn_config_dict = {
-                "architecture_type": "spiking_cnn",
-                "time_steps": 16,
-                "neuron": {"type": "lif"}
-            }
-            snn_config = OmegaConf.create({"model": snn_config_dict})
-            return SNNCore(config=snn_config.model, vocab_size=num_classes)
-        else: # ANN
-            return SimpleCNN(num_classes=num_classes)
-
-    def evaluate(self, model: nn.Module, loader: DataLoader) -> Dict[str, Any]:
-        model.eval()
-        true_labels: List[int] = []
-        pred_labels: List[int] = []
-        total_spikes = 0.0
-        num_neurons: int = cast(int, sum(p.numel() for p in model.parameters()))
-
-        with torch.no_grad():
-            for batch in tqdm(loader, desc="Evaluating CIFAR-10"):
-                inputs = {k: v.to(self.device) for k, v in batch.items()}
-                targets = inputs.pop("labels")
-                
-                outputs = model(**inputs)
-                logits = outputs[0] if isinstance(outputs, tuple) else outputs
-                spikes = outputs[1] if isinstance(outputs, tuple) and len(outputs) > 1 and outputs[1] is not None else torch.tensor(0.0)
-
-                total_spikes += spikes.sum().item()
-                preds = torch.argmax(logits, dim=1)
-                pred_labels.extend(preds.cpu().numpy())
-                true_labels.extend(targets.cpu().numpy())
-
-        dataset_size = len(cast(Sized, loader.dataset))
-        avg_spikes = total_spikes / dataset_size if total_spikes > 0 else 0.0
+        # (v17) データから num_classes を取得
+        self.num_classes = int(self.data_config.get("num_classes", 10))
         
-        energy_j = EnergyMetrics.calculate_energy_consumption(
-            avg_spikes_per_sample=avg_spikes,
-            num_neurons=num_neurons, # これは総パラメータ数
-            energy_per_synop=self.hardware_profile.get("energy_per_synop", 0.0)
+        # (v17) 損失関数の初期化 (サブクラスで行う)
+        self._init_loss_functions()
+
+    @abstractmethod
+    def _init_loss_functions(self):
+        """ (v17) 損失関数 (例: CE, Distillation) を初期化する """
+        raise NotImplementedError
+
+    @abstractmethod
+    def process_output(
+        self, 
+        model_output: Union[torch.Tensor, Tuple[torch.Tensor, ...]], 
+        targets: Optional[torch.Tensor]
+    ) -> Dict[str, Any]:
+        """
+        (v17)
+        モデルの出力 (タプルの場合もある) とターゲットを受け取り、
+        損失 (loss) とメトリクス (logits, accuracy など) の
+        辞書を計算して返す。
+
+        Args:
+            model_output: モデルのforward()からの戻り値。
+                          (logits) または (logits, avg_spikes, avg_mem)
+            targets: 正解ラベル (B,)
+
+        Returns:
+            Dict[str, Any]: 損失とメトリクスを含む辞書
+        """
+        raise NotImplementedError
+        
+    def forward(self, *args, **kwargs):
+        """ (v30.2) nn.Module のためのダミー forward """
+        raise NotImplementedError(
+            "BaseTask は直接呼び出されません。"
+            "process_output() を使用してください。"
         )
 
-        return {
-            "accuracy": calculate_accuracy(true_labels, pred_labels),
-            "avg_spikes": avg_spikes,
-            "estimated_energy_j": energy_j,
-        }
+# === 分類タスク (v17) ===
 
-# --- ▼ 修正: CIFAR10DVSTask を追加 ▼ ---
-class CIFAR10DVSTask(BenchmarkTask):
+class CIFAR10Task(BaseTask):
     """
-    CIFAR10-DVS（ニューロモーフィック）画像分類タスク。
-    設計思想.md (セクション7.1) に基づく。
+    (v17)
+    CIFAR-10 分類タスク (Distillation Loss 対応)
     """
-    def __init__(self, tokenizer: PreTrainedTokenizerBase, device: str, hardware_profile: Dict[str, Any], time_steps: int = 16):
-        super().__init__(tokenizer, device, hardware_profile)
-        self.time_steps = time_steps
+    def __init__(
+        self,
+        task_config: Dict[str, Any],
+        data_config: Dict[str, Any],
+        device: torch.device
+    ):
+        # (v17) 画像サイズ (img_size) の上書きを許可
+        # (HPO (Turn 5) で 'Using custom img_size: 32' が
+        #  表示されていたため)
+        override_img_size = task_config.get("img_size")
+        if override_img_size:
+            logger.info(f"INFO (CIFAR10Task): Using custom img_size: {override_img_size}")
+            data_config["img_size"] = override_img_size
+            
+        super().__init__(task_config, data_config, device)
 
-    def prepare_data(self, data_dir: str = "data") -> Tuple[Dataset, Dataset]:
-        # SpikingJellyのデータセットローダーを使用
-        # CIFAR10-DVSは時間ステップ (T) が可変長
-        # ここでは固定長 (self.time_steps) にリサンプル（またはパディング）する前処理を定義
+    def _init_loss_functions(self):
+        """
+        (v17)
+        HPO (Turn 5) のログに基づき、
+        DistillationLoss, SpikeRegularizationLoss, SparsityRegularizationLoss
+        を初期化する。
+        """
         
-        # 空間的な前処理 (SpikingCNNが224x224を期待する場合)
-        spatial_transform = transforms.Compose([
-            transforms.Resize((224, 224)),
-        ])
+        # (v17) HPO (Turn 5) のログ (L:33) から
+        #       loss_config のパスを推定
+        loss_config_path = "training.gradient_based.distillation.loss"
+        loss_config = self.task_config.get_nested(loss_config_path, {})
         
-        # 時間的な前処理 (固定長 T に変換)
-        def temporal_transform(x: torch.Tensor) -> torch.Tensor:
-            # x は (T_orig, C, H, W)
-            T_orig = x.shape[0]
-            if T_orig > self.time_steps:
-                # ダウンサンプリング
-                indices = torch.linspace(0, T_orig - 1, self.time_steps).long()
-                x = x[indices]
-            elif T_orig < self.time_steps:
-                # パディング
-                padding = torch.zeros(self.time_steps - T_orig, *x.shape[1:], dtype=x.dtype)
-                x = torch.cat([x, padding], dim=0)
-            return x # (T, C, H, W)
-
-        # SpikingJellyのCIFAR10DVSデータセット
-        train_dataset = cifar10_dvs.CIFAR10DVS(
-            root=data_dir,
-            train=True,
-            data_type='frame', # 'frame' (時間ビン) または 'event'
-            frames_number=self.time_steps, # フレーム数 (T)
-            split_by='number',
-            transform=spatial_transform,
-            target_transform=None
+        # (v17) 1. Distillation Loss (CE + KD)
+        self.distill_loss_fn = DistillationLoss(
+            ce_weight=loss_config.get("ce_weight", 0.5),
+            distill_weight=loss_config.get("distill_weight", 0.5),
+            temperature=loss_config.get("temperature", 2.0)
         )
-        val_dataset = cifar10_dvs.CIFAR10DVS(
-            root=data_dir,
-            train=False,
-            data_type='frame',
-            frames_number=self.time_steps,
-            split_by='number',
-            transform=spatial_transform,
-            target_transform=None
+        
+        # (v17) 2. Spike Regularization
+        self.spike_reg_fn = SpikeRegularizationLoss(
+            weight=loss_config.get("spike_reg_weight", 1e-4)
         )
-        return train_dataset, val_dataset
-
-    def get_collate_fn(self) -> Callable:
-        def collate_fn(batch: List[Tuple[torch.Tensor, int]]):
-            # batch[i][0] は (T, C, H, W)
-            # SpikingCNN (snn_core.py) は (B, C, H, W) を入力とし、
-            # 内部で T (time_steps) ループを回す
-            
-            # ここでは、SpikingJellyの流儀に従い、
-            # (T, B, C, H, W) の形状でモデルに渡すことを試みる
-            
-            # --- または、SpikingCNNの (B, C, H, W) 入力に合わせる ---
-            # (T, B, C, H, W) -> (B, T, C, H, W) に変換
-            frames = torch.stack([item[0] for item in batch]).permute(1, 0, 2, 3, 4) # (T, B, C, H, W) -> (B, T, C, H, W)
-            
-            # SpikingCNNは (B, C, H, W) を期待し、内部でT回ループする
-            # だが、DVSデータは (B, T, C, H, W) の時系列データそのもの
-            
-            # --- 回避策: SpikingCNNの入力 (B, C, H, W) に合わせる ---
-            # (B, T, C, H, W) の時間軸を平均化して (B, C, H, W) にする
-            images = frames.mean(dim=1) # (B, C, H, W)
-            
-            targets = torch.tensor([item[1] for item in batch], dtype=torch.long)
-            # SpikingCNNが期待するキー 'input_images' で返す
-            return {"input_images": images, "labels": targets}
-        return collate_fn
-
-    def build_model(self, model_type: str, vocab_size: int) -> nn.Module:
-        # CIFAR10-DVS は 10 クラス
-        num_classes = 10
         
-        if model_type == 'SNN':
-            snn_config_dict = {
-                "architecture_type": "spiking_cnn",
-                "time_steps": self.time_steps, # DVSデータのTと合わせる
-                "neuron": {"type": "lif"}
-            }
-            snn_config = OmegaConf.create({"model": snn_config_dict})
-            # vocab_size は num_classes で上書き
-            return SNNCore(config=snn_config.model, vocab_size=num_classes)
-        else: # ANN
-            # DVSデータは時間軸を持つため、ANNベースラインは本来 (3D-CNN or RNN) であるべき
-            # ここでは静止画CIFAR10と同じ SimpleCNN を流用（時間軸は平均化）
-            return SimpleCNN(num_classes=num_classes)
-
-    def evaluate(self, model: nn.Module, loader: DataLoader) -> Dict[str, Any]:
-        # (CIFAR10Taskと同じ評価ロジックを流用)
-        model.eval()
-        true_labels: List[int] = []
-        pred_labels: List[int] = []
-        total_spikes = 0.0
-        num_neurons: int = cast(int, sum(p.numel() for p in model.parameters()))
-        
-        # DVSデータセットの評価では、モデルのリセットが重要
-        SJ_F.reset_net(model)
-
-        with torch.no_grad():
-            for batch in tqdm(loader, desc="Evaluating CIFAR10-DVS"):
-                inputs = {k: v.to(self.device) for k, v in batch.items()}
-                targets = inputs.pop("labels")
-                
-                # inputs['input_images'] は (B, C, H, W) (時間平均済み)
-                outputs = model(**inputs) # SpikingCNNが内部で T ループ
-                
-                logits = outputs[0] if isinstance(outputs, tuple) else outputs
-                spikes = outputs[1] if isinstance(outputs, tuple) and len(outputs) > 1 and outputs[1] is not None else torch.tensor(0.0)
-
-                total_spikes += spikes.sum().item()
-                preds = torch.argmax(logits, dim=1)
-                pred_labels.extend(preds.cpu().numpy())
-                true_labels.extend(targets.cpu().numpy())
-        
-        dataset_size = len(cast(Sized, loader.dataset))
-        # avg_spikes は (総スパイク数 / (サンプル数 * T)) ではなく、
-        # モデルが内部Tステップで処理した「サンプルあたりの総スパイク数」
-        avg_spikes = total_spikes / dataset_size if total_spikes > 0 else 0.0
-        
-        energy_j = EnergyMetrics.calculate_energy_consumption(
-            avg_spikes_per_sample=avg_spikes, # サンプルあたりの総スパイク数
-            num_neurons=num_neurons,
-            energy_per_synop=self.hardware_profile.get("energy_per_synop", 0.0)
+        # (v17) 3. Sparsity Regularization
+        self.sparsity_reg_fn = SparsityRegularizationLoss(
+            weight=loss_config.get("sparsity_reg_weight", 1e-4)
         )
-
-        return {
-            "accuracy": calculate_accuracy(true_labels, pred_labels),
-            "avg_spikes": avg_spikes,
-            "estimated_energy_j": energy_j,
-        }
-# --- ▲ 修正 ▲ ---
-
-# --- ▼ 改善 (v4): SHDTask を追加 ▼ ---
-class SHDTask(BenchmarkTask):
-    """
-    SHD (Spiking Heidelberg Digits) オーディオ分類タスク。
-    doc/SNN開発：SNN5プロジェクト改善のための情報収集.md (セクション6.1) に基づく。
-    TSkipsSNN や SpikingSSM の評価に最適。
-    """
-    def __init__(self, tokenizer: PreTrainedTokenizerBase, device: str, hardware_profile: Dict[str, Any], time_steps: int = 100):
-        super().__init__(tokenizer, device, hardware_profile)
-        self.time_steps = time_steps # SHDのデータは可変長だが、ここでは固定長にリサンプル
-        self.num_classes = 20 # SHDは20クラス (0-9のドイツ語読み)
-        self.input_features = 700 # SHDの入力特徴量
-
-    def prepare_data(self, data_dir: str = "data") -> Tuple[Dataset, Dataset]:
         
-        # 時間的な前処理 (固定長 T に変換)
-        def temporal_transform(x: torch.Tensor) -> torch.Tensor:
-            # x は (T_orig, C=700)
-            T_orig = x.shape[0]
-            if T_orig > self.time_steps:
-                indices = torch.linspace(0, T_orig - 1, self.time_steps).long()
-                x = x[indices]
-            elif T_orig < self.time_steps:
-                padding = torch.zeros(self.time_steps - T_orig, *x.shape[1:], dtype=x.dtype)
-                x = torch.cat([x, padding], dim=0)
-            return x # (T, C=700)
+        # (v17) 4. (HPO (Turn 5) のログ (L:341-493) には
+        #       mem_reg_loss, temporal_compression_loss, 
+        #       sparsity_threshold_reg_loss もあるが、
+        #       重みが 0 または HPO パラメータにないため、ここでは省略)
 
-        # SpikingJellyのSHDデータセット
-        train_dataset = shd.SHD(
-            root=data_dir,
-            train=True,
-            data_type='frame',
-            frames_number=self.time_steps, # フレーム数 (T)
-            split_by='number',
-            transform=temporal_transform, # 時間軸の変形のみ
-            target_transform=None
-        )
-        val_dataset = shd.SHD(
-            root=data_dir,
-            train=False,
-            data_type='frame',
-            frames_number=self.time_steps,
-            split_by='number',
-            transform=temporal_transform,
-            target_transform=None
-        )
-        return train_dataset, val_dataset
-
-    def get_collate_fn(self) -> Callable:
-        def collate_fn(batch: List[Tuple[torch.Tensor, int]]):
-            # batch[i][0] は (T, C=700)
-            # モデル (例: TSkipsSNN) は (B, T, F_in) を期待する
-            frames = torch.stack([item[0] for item in batch]) # (B, T, C=700)
-            targets = torch.tensor([item[1] for item in batch], dtype=torch.long)
-            
-            # TSkipsSNNが期待するキー 'input_sequence' で返す
-            return {"input_sequence": frames, "labels": targets}
-        return collate_fn
-
-    def build_model(self, model_type: str, vocab_size: int) -> nn.Module:
-        # vocab_size は num_classes で上書き
-        num_classes = self.num_classes
+    def process_output(
+        self, 
+        model_output: Union[torch.Tensor, Tuple[torch.Tensor, ...]], 
+        targets: Optional[torch.Tensor],
+        teacher_logits: Optional[torch.Tensor] = None # (v17) KD用
+    ) -> Dict[str, Any]:
+        """
+        (v17)
+        HPO (Turn 5) のログ (L:341-493) に合わせて
+        損失とメトリクスを計算する。
         
-        if model_type == 'SNN':
-            # SHDタスクには TSkipsSNN や SpikingSSM が適している
-            # ここでは tskips_snn をデフォルトとして構築
-            snn_config_dict = {
-                "architecture_type": "tskips_snn",
-                "input_features": self.input_features,
-                "hidden_features": 256,
-                "num_layers": 3,
-                "time_steps": self.time_steps,
-                "forward_delays_per_layer": [[1, 2], [1, 2], [1, 2]],
-                "backward_delays_per_layer": [[1], [1, 2], [1, 2]],
-                "neuron": {"type": "lif"}
-            }
-            snn_config = OmegaConf.create({"model": snn_config_dict})
-            return SNNCore(config=snn_config.model, vocab_size=num_classes)
-        else: # ANN
-            # ANNベースライン (例: LSTM or GRU)
-            class ANN_RNN_Baseline(nn.Module):
-                def __init__(self, input_dim, hidden_dim, num_layers, num_classes):
-                    super().__init__()
-                    self.rnn = nn.LSTM(input_size=input_dim, hidden_size=hidden_dim, num_layers=num_layers, batch_first=True)
-                    self.fc = nn.Linear(hidden_dim, num_classes)
-                
-                def forward(self, input_sequence, **kwargs):
-                    # input_sequence: (B, T, F_in)
-                    rnn_out, _ = self.rnn(input_sequence)
-                    # 最後のタイムステップの出力をプーリング
-                    pooled = rnn_out[:, -1, :]
-                    logits = self.fc(pooled)
-                    return logits, None, None # SNN互換のタプル
-            
-            return ANN_RNN_Baseline(
-                input_dim=self.input_features,
-                hidden_dim=256,
-                num_layers=3,
-                num_classes=self.num_classes
+        Args:
+            model_output: (logits, avg_spikes, avg_mem) のタプル
+            targets: 正解ラベル (B,)
+            teacher_logits: 教師モデルのロジット (B, NumClasses) (KD用)
+
+        Returns:
+            Dict[str, Any]: 損失とメトリクス
+        """
+        
+        # 1. モデル出力のアンパック
+        if not isinstance(model_output, (tuple, list)) or len(model_output) < 3:
+            raise ValueError(
+                f"CIFAR10Task は (logits, avg_spikes, avg_mem) の "
+                f"タプルを期待しますが、受け取った型は {type(model_output)} です。"
             )
-
-    def evaluate(self, model: nn.Module, loader: DataLoader) -> Dict[str, Any]:
-        # (CIFAR10Taskの評価ロジックとほぼ同じだが、入力キーが異なる)
-        model.eval()
-        true_labels: List[int] = []
-        pred_labels: List[int] = []
-        total_spikes = 0.0
-        num_neurons: int = cast(int, sum(p.numel() for p in model.parameters()))
+            
+        logits, avg_spikes, avg_mem = model_output
         
-        SJ_F.reset_net(model) # 時系列モデルのためリセット
-
-        with torch.no_grad():
-            for batch in tqdm(loader, desc="Evaluating SHD"):
-                inputs = {k: v.to(self.device) for k, v in batch.items()}
-                targets = inputs.pop("labels")
-                
-                # inputs['input_sequence'] は (B, T, C=700)
-                outputs = model(**inputs) # TSkipsSNNが内部で T ループ
-                
-                logits = outputs[0] if isinstance(outputs, tuple) else outputs
-                spikes = outputs[1] if isinstance(outputs, tuple) and len(outputs) > 1 and outputs[1] is not None else torch.tensor(0.0)
-
-                total_spikes += spikes.sum().item()
-                preds = torch.argmax(logits, dim=1)
-                pred_labels.extend(preds.cpu().numpy())
-                true_labels.extend(targets.cpu().numpy())
+        # (v17) HPO (Turn 5) (L:351) の 'avg_cutoff_steps' は
+        #       4番目の戻り値かもしれないが、ここでは無視する
         
-        dataset_size = len(cast(Sized, loader.dataset))
-        # avg_spikes は (総スパイク数 / (サンプル数 * T)) ではなく、
-        # モデルが内部Tステップで処理した「サンプルあたりの総スパイク数」
-        avg_spikes = total_spikes / dataset_size if total_spikes > 0 else 0.0
-        
-        energy_j = EnergyMetrics.calculate_energy_consumption(
-            avg_spikes_per_sample=avg_spikes, # サンプルあたりの総スパイク数
-            num_neurons=num_neurons,
-            energy_per_synop=self.hardware_profile.get("energy_per_synop", 0.0)
-        )
-
-        return {
-            "accuracy": calculate_accuracy(true_labels, pred_labels),
+        metrics = {
+            "logits": logits,
             "avg_spikes": avg_spikes,
-            "estimated_energy_j": energy_j,
+            "avg_mem": avg_mem,
+            # (v17) HPO (Turn 5) (L:351) 'avg_cutoff_steps=32'
+            #       (これはトレーナー側で計算される可能性が高い)
         }
-# --- ▲ 改善 (v4) ▲ ---
+
+        # 2. 損失計算 (ターゲットと教師ロジットがある場合)
+        if targets is not None and teacher_logits is not None:
+            # (v17) HPO (Turn 5) (L:341) 
+            #       'total=0.396, ce_loss=2.37, distill_loss=0.116, 
+            #        spike_reg_loss=0.0004, sparsity_loss=2.86e-14'
+            
+            # (v17) 2a. Distillation Loss (CE + KD)
+            distill_loss, ce_loss, kd_loss = self.distill_loss_fn(
+                logits, teacher_logits, targets
+            )
+            metrics["ce_loss"] = ce_loss
+            metrics["distill_loss"] = kd_loss # (ログ (L:341) の distill_loss は KD loss)
+            
+            # (v17) 2b. Spike Regularization
+            spike_reg_loss = self.spike_reg_fn(avg_spikes)
+            metrics["spike_reg_loss"] = spike_reg_loss
+            
+            # (v17) 2c. Sparsity Regularization
+            # (注: ログ (L:341) では avg_spikes ではなく 
+            #  'spike_rate=2.86e-14' を使っている可能性があるが、
+            #  ここでは avg_spikes を代用)
+            sparsity_loss = self.sparsity_reg_fn(avg_spikes)
+            metrics["sparsity_loss"] = sparsity_loss
+
+            # (v17) 2d. 総損失 (Total Loss)
+            # (HPO (Turn 5) (L:341) の 'total' に合わせる)
+            total_loss = distill_loss + spike_reg_loss + sparsity_loss
+            metrics["loss"] = total_loss # (トレーナーが 'loss' を参照する)
+            metrics["total"] = total_loss
+            
+            # (v17) 2e. メトリクス (Accuracy)
+            # (HPO (Turn 5) (L:341) 'accuracy=0.188')
+            acc = accuracy(logits, targets)
+            metrics["accuracy"] = acc
+
+        elif targets is not None:
+            # (v17) 評価モード (教師ロジットなし)
+            ce_loss = F.cross_entropy(logits, targets)
+            metrics["loss"] = ce_loss
+            metrics["ce_loss"] = ce_loss
+            metrics["accuracy"] = accuracy(logits, targets)
+            
+            # (v17) 評価時も正則化損失を計算 (ログ用)
+            metrics["spike_reg_loss"] = self.spike_reg_fn(avg_spikes)
+            metrics["sparsity_loss"] = self.sparsity_reg_fn(avg_spikes)
+            
+        return metrics
+
+# === タスクレジストリ (v17) ===
+
+TASK_REGISTRY: Dict[str, Type[BaseTask]] = {
+    # (v17) HPO (Turn 5) (L:20) で 'cifar10' が指定
+    "cifar10": CIFAR10Task,
+    
+    # (v17) 'train.py' (L:38) で
+    # 'classification' がデフォルト
+    "classification": CIFAR10Task, 
+}
+
+def get_task_by_name(name: str) -> Type[BaseTask]:
+    """
+    (v17)
+    タスク名 (文字列) に基づいて、
+    タスククラス (BaseTask) を返します。
+    (snn_core.py L: 29 から呼び出される)
+    """
+    name_lower = name.lower()
+    if name_lower not in TASK_REGISTRY:
+        raise ValueError(
+            f"Unknown task name: '{name}'. "
+            f"Available tasks: {list(TASK_REGISTRY.keys())}"
+        )
+    return TASK_REGISTRY[name_lower]
+
+# (v17) ユーティリティ (Dict.get_nested)
+# (v17: BaseTask が SNNCore を継承しなくなったため、
+#  BaseTask 自身 (またはこのモジュール) がヘルパーを持つ必要がある)
+def _get_nested_config(config: Dict[str, Any], keys: str, default: Any = None) -> Any:
+    """
+    (v17)
+    ネストした辞書から 'a.b.c' 形式のキーで値を取得する
+    """
+    keys_list = keys.split('.')
+    current = config
+    try:
+        for key in keys_list:
+            if isinstance(current, dict):
+                current = current[key]
+            else:
+                # (v17) 'features' などのキーが途中で見つからない場合
+                return default
+        return current
+    except (KeyError, TypeError):
+        return default
+
+# (v17) BaseTask にメソッドを追加
+setattr(BaseTask, 'get_nested', _get_nested_config)

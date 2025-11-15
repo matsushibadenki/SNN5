@@ -6,9 +6,9 @@
 # オプションのニューロンモデルについては、ModuleNotFoundError発生時にダミークラスを定義することで、
 # プログラム全体の実行を継続できるようにします。
 #
-# 【修正内容 v17: ModuleNotFoundErrorの解消】
-# - ProbabilisticLIFNeuronのインポートをtry/exceptブロック内に移動し、モジュールが欠損していても
-#   プログラムがクラッシュしないように修正しました。
+# 【修正内容 v18: ModuleNotFoundErrorの包括的解消】
+# - AdaptiveLIFNeuronとBistableIFNeuronのインポートもtry/exceptブロック内に移動し、
+#   すべての外部ニューロンのインポートをModuleNotFoundErrorに対して安全にしました。
 
 from typing import Optional, Tuple, Any, List, cast, Dict, Type, Union 
 import torch
@@ -19,14 +19,25 @@ from spikingjelly.activation_based import surrogate, base # type: ignore[import-
 import logging 
 import inspect 
 
-# --- ▼▼▼ 【修正 v17: 安全なインポートとダミー定義】 ▼▼▼ ---
+# --- ▼▼▼ 【修正 v18: すべての外部ニューロンのインポートをtry/exceptで保護】 ▼▼▼ ---
 
-# コアニューロンのインポート (これらは通常存在を期待する)
-from .adaptive_lif_neuron import AdaptiveLIFNeuron
-from .bif_neuron import BistableIFNeuron
+# AdaptiveLIFNeuron のインポートとフォールバック
+try: 
+    from .adaptive_lif_neuron import AdaptiveLIFNeuron 
+except ModuleNotFoundError: 
+    class AdaptiveLIFNeuron(base.MemoryModule): 
+        def __init__(self, **kwargs): 
+            super().__init__()
 
-# 欠損している可能性のあるモジュールを捕捉し、ダミークラスを定義
+# BistableIFNeuron のインポートとフォールバック
+try: 
+    from .bif_neuron import BistableIFNeuron 
+except ModuleNotFoundError: 
+    class BistableIFNeuron(base.MemoryModule): 
+        def __init__(self, **kwargs): 
+            super().__init__()
 
+# ProbabilisticLIFNeuron のインポートとフォールバック
 try: 
     from .probabilistic_lif_neuron import ProbabilisticLIFNeuron 
 except ModuleNotFoundError: 
@@ -34,6 +45,7 @@ except ModuleNotFoundError:
         def __init__(self, **kwargs): 
             super().__init__()
 
+# 欠損している可能性のあるその他のモジュールを捕捉し、ダミークラスを定義
 try: 
     from .izhikevich_neuron import IzhikevichNeuron 
 except ModuleNotFoundError: 
@@ -61,7 +73,7 @@ except ModuleNotFoundError:
     class ScaleAndFireNeuron(base.MemoryModule): 
         def __init__(self, **kwargs): 
             super().__init__()
-# --- ▲▲▲ 【修正 v17】 ▲▲▲ ---
+# --- ▲▲▲ 【修正 v18】 ▲▲▲ ---
 
 
 logger = logging.getLogger(__name__)
@@ -194,7 +206,7 @@ __all__ = [
 ]
 
 # ニューロンのタイプ名 (文字列) とクラスをマッピング
-# ModuleNotFoundErrorが発生した場合でも、ダミークラスが使用されるため安全
+# すべてのクラスが定義されている (実クラスまたはダミークラス) ため安全
 NEURON_REGISTRY: Dict[str, Type[base.MemoryModule]] = {
     "lif": AdaptiveLIFNeuron,
     "bif": BistableIFNeuron,

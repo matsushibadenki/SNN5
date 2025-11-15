@@ -16,11 +16,10 @@
 # - L.171-181 のブロックをコメントアウトし、モデル側の
 #   v_init 自動設定ロジックを復活させる。
 #
-# 【!!! MemoryModule.__init__ got unexpected keyword argument 'v_threshold' 修正 v9 (全ニューロン引数の強制削除) !!!】
-# - ニューロンのコンストラクタが 'self' 以外の引数を期待していないにもかかわらず、
-#   DIコンテナが設定の全パラメータを渡している問題を修正。
-# - モデル設定全体を取得し、'neuron' サブ設定から、問題の原因となっているすべての引数を pop() で削除した後、
-#   親のConfigurationProviderに from_dict() で再バインドすることで設定を強制的に更新する。
+# 【!!! TypeError: MemoryModule.__init__() got an unexpected keyword argument 'v_init' 修正 v10 (ニューロン関連引数の包括的削除) !!!】
+# - MemoryModuleのコンストラクタが 'self' 以外の引数を取らないにもかかわらず、
+#   DIコンテナが設定の全パラメータを渡す問題を解決するため、ニューロン設定から
+#   'features' 以外のすべての動的パラメータを強制的に削除し、設定を再バインドする。
 
 import argparse
 import asyncio
@@ -266,8 +265,8 @@ async def main() -> None:
     # DIコンテナから必要なコンポーネントを正しい順序で取得・構築
     device = container.device()
 
-    # --- ▼▼▼ 【エラー修正 (MemoryModule.__init__ got unexpected keyword argument 'v_threshold') v9 (ニューロン引数の強制削除) 】 ▼▼▼ ---
-    # MemoryModule.__init__ が 'self' 以外の引数を取らないため、ニューロン設定から全ての不要な引数を削除する。
+    # --- ▼▼▼ 【エラー修正 (MemoryModule.__init__ got unexpected keyword argument 'v_init') v10 (ニューロン引数の包括的削除) 】 ▼▼▼ ---
+    # MemoryModule.__init__ が 'self' 以外の引数を取らないため、ニューロン設定から全ての動的引数を削除する。
     try:
         model_config_provider = container.config.model 
         raw_model_config = model_config_provider()
@@ -286,17 +285,15 @@ async def main() -> None:
             neuron_config = clean_model_config['neuron']
             deleted_keys: List[str] = []
             
-            # ニューロンクラスが受け付けない引数リスト (ログより推測)
+            # ニューロンクラスが受け付けない引数リスト (ログより、features以外すべて削除)
             keys_to_remove = [
-                'type', # 以前の修正対象
+                'type', 
                 'v_threshold', 
                 'threshold_decay', 
                 'threshold_step', 
                 'bias', 
                 'v_init', 
                 'bias_init',
-                # 'features' はモデルのレイヤーサイズなので残しておくべきだが、念の為ログに残す
-                # 'features' 
             ]
 
             for key in keys_to_remove:
@@ -307,19 +304,20 @@ async def main() -> None:
             if deleted_keys:
                 # 3. 修正された辞書でコンテナの設定を上書き (model全体を from_dict で上書き)
                 model_config_provider.from_dict(clean_model_config) 
-                print(f"  - 【DEBUG FIX v9】 Cleaned neuron config. Removed keys: {', '.join(deleted_keys)} and forcefully re-bound model config.")
+                print(f"  - 【DEBUG FIX v10】 Cleaned neuron config. Removed keys: {', '.join(deleted_keys)} and forcefully re-bound model config.")
             else:
-                 print(f"  - 【DEBUG INFO v9】 No problematic keys found in model.neuron config. Proceeding.")
+                 print(f"  - 【DEBUG INFO v10】 No problematic keys found in model.neuron config. Proceeding.")
                  
         else:
-             print("  - 【DEBUG INFO v9】 'neuron' key not found in model config. Skipping neuron cleanup.")
+             print("  - 【DEBUG INFO v10】 'neuron' key not found in model config. Skipping neuron cleanup.")
              
     except Exception as e:
-        print(f"Warning: Failed to clean neuron config before model instantiation (v9): {e}")
-    # --- ▲▲▲ 【エラー修正 v9】 ▲▲▲ ---
+        print(f"Warning: Failed to clean neuron config before model instantiation (v10): {e}")
+    # --- ▲▲▲ 【エラー修正 v10】 ▲▲▲ ---
 
 
     # ssn_core.py 側で vocab_size を処理するように修正したため、ここは変更不要
+    # HPO実行時にこの行でエラーが発生する。
     student_model = container.snn_model(vocab_size=10).to(device)
     
     # --- ▼▼▼ 【!!! HPO修正 (v16): aggressive_init は *無効* のまま !!!】 ▼▼▼ ---
@@ -437,7 +435,12 @@ async def main() -> None:
         
     print("\n=============================================")
     print("🚨 FINAL DEBUG CHECK (RE-FORCED PARAMETERS) 🚨")
-    print(f"  V_THRESHOLD (HPO/YAML): {container.config.model.neuron.v_threshold()}")
+    # v_threshold は削除されている可能性があるので、取得を試みる
+    try:
+        print(f"  V_THRESHOLD (HPO/YAML): {container.config.model.neuron.v_threshold()}")
+    except:
+        print("  V_THRESHOLD (HPO/YAML): (KEY LIKELY DELETED)")
+        
     print(f"  LR (HPO/YAML): {container.config.training.gradient_based.learning_rate()}")
     print(f"  SPIKE_REG_W (HPO/YAML): {container.config.training.gradient_based.distillation.loss.spike_reg_weight()}")
     
